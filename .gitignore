@@ -1,0 +1,17 @@
+# 忽略所有大文件夹
+data/
+outputs/
+np/
+__pycache__/
+*.pyc
+*.pth
+*.h5
+*.ckpt
+*.pt
+*.bin
+*.onnx
+*.log
+*.png
+*.jpg
+*.mp4
+download/

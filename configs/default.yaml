@@ -1,0 +1,55 @@
+data:
+  root_dir: data
+  raw_dir: data/raw
+  processed_dir: data/processed
+  cache_dir: data/cache
+
+  trajectory_csv: data/raw/trajectories.csv
+
+  dictionary_txt: data/raw/makemeahanzi/dictionary.txt
+  graphics_txt: data/raw/makemeahanzi/graphics.txt
+
+  image_dir: data/raw/images
+  json_dir: data/raw/json_files
+  image_ext: .jpg
+
+  data_csv: data/raw/data.csv
+  chirography_filter: 楷
+
+  canvas_size: 128
+  svg_canvas_size: 1024
+
+train:
+  output_dir: outputs
+  batch_size: 32
+  epochs: 100
+  lr: 0.001
+  weight_decay: 0.000001
+  num_workers: 0
+  save_interval: 10
+  seed: 42
+  device: cuda
+
+bbsmg:
+  input_dim: 10
+  latent_dim: 128
+  base_channels: 64
+  out_channels: 1
+  image_size: 128
+  use_tanh: false
+
+dynamic_brush:
+  width_poly_degree: 3
+  drag_poly_degree: 3
+  offset_poly_degree: 3
+  inertia_w: 0.65
+  inertia_d: 0.65
+  friction_limit: 0.85
+
+optim:
+  chebyshev_order: 5
+  lm_max_steps: 30
+  lm_damping: 0.01
+  z_reg_weight: 0.001
+  angle_reg_weight: 0.0001
+  render_samples_per_stroke: 128
