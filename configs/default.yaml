@@ -47,9 +47,10 @@ dynamic_brush:
   friction_limit: 0.85
 
 optim:
-  chebyshev_order: 5
-  lm_max_steps: 30
-  lm_damping: 0.01
-  z_reg_weight: 0.001
-  angle_reg_weight: 0.0001
+  cheb_order_min: 3
+  cheb_order_max: 4
+  lm_damping: 0.05
+  lm_max_steps: 10
   render_samples_per_stroke: 128
+  z_reg_weight: 0.01
+  angle_reg_weight: 0.01

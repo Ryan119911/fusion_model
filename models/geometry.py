@@ -150,6 +150,29 @@ def normalize_trajectory_xy(sample: CharacterTrajectory, canvas_size: int = 128,
         normalized.append([tfm.map_point(x, y) for x, y in pts])
     return normalized
 
+def normalize_trajectory_xy_with_bounds(
+    sample: CharacterTrajectory,
+    bounds: Tuple[float, float, float, float],
+    canvas_size: int = 128,
+    padding: int = 4,
+) -> List[List[Tuple[float, float]]]:
+    min_x, max_x, min_y, max_y = bounds
+    tfm = CanvasTransform(
+        min_x,
+        max_x,
+        min_y,
+        max_y,
+        dst_size=canvas_size,
+        padding=padding,
+    )
+
+    normalized: List[List[Tuple[float, float]]] = []
+
+    for stroke in sample.sorted_strokes():
+        pts = [(p.x, p.y) for p in stroke.sorted_points()]
+        normalized.append([tfm.map_point(x, y) for x, y in pts])
+
+    return normalized
 
 def stroke_to_headings(stroke: StrokeTrajectory) -> List[float]:
     pts = [(p.x, p.y) for p in stroke.sorted_points()]

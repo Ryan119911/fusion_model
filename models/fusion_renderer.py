@@ -8,6 +8,11 @@ from utils.types import StrokeTrajectory, CharacterTrajectory, DynamicBrushState
 from models.dynamic_brush import DynamicBrushModel
 from models.geometry import dynamic_state_to_bbsmg_input, normalize_trajectory_xy
 from models.bbsmg import BBSMG
+from models.geometry import (
+    dynamic_state_to_bbsmg_input,
+    normalize_trajectory_xy,
+    normalize_trajectory_xy_with_bounds,
+)
 
 
 NORM_PADDING = 4
@@ -232,7 +237,11 @@ class FusionRenderer:
             "stroke_image": stroke_img,
         }
 
-    def render_character(self, sample: CharacterTrajectory) -> Dict[str, Any]:
+    def render_character(
+    self,
+    sample: CharacterTrajectory,
+    fixed_bounds: Optional[Tuple[float, float, float, float]] = None,
+) -> Dict[str, Any]:
         """
         整字渲染。
 
@@ -248,11 +257,19 @@ class FusionRenderer:
 
         strokes = sample.sorted_strokes()
 
-        norm_strokes = normalize_trajectory_xy(
-            sample,
-            canvas_size=self.image_size,
-            padding=NORM_PADDING,
-        )
+        if fixed_bounds is None:
+            norm_strokes = normalize_trajectory_xy(
+                sample,
+                canvas_size=self.image_size,
+                padding=NORM_PADDING,
+            )
+        else:
+            norm_strokes = normalize_trajectory_xy_with_bounds(
+                sample,
+                bounds=fixed_bounds,
+                canvas_size=self.image_size,
+                padding=NORM_PADDING,
+            )
 
         for stroke_order, stroke in enumerate(strokes):
             sid = stroke.stroke_id

@@ -79,6 +79,7 @@ def main(args):
     optimizer = TrajectoryOptimizer(
         renderer=renderer,
         z_reg_weight=cfg.optim.z_reg_weight,
+        angle_reg_weight=cfg.optim.angle_reg_weight,
         render_samples=cfg.optim.render_samples_per_stroke,
     )
     print(f"Use 6D optimization: {bool(args.use_6d)}")
