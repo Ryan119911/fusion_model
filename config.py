@@ -67,7 +67,7 @@ class OptimConfig:
     cheb_order_min: int = 3
     cheb_order_max: int = 4
     lm_damping: float = 5e-2
-    lm_max_steps: int = 10
+    lm_max_steps: int = 20
     render_samples_per_stroke: int = 128
     z_reg_weight: float = 1e-2
     angle_reg_weight: float = 1e-2

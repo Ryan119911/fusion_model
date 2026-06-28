@@ -48,8 +48,15 @@ def normalize_time_grid(num_samples: int) -> np.ndarray:
 def parameterize_1d(node_values: np.ndarray, num_samples: int) -> np.ndarray:
     node_values = np.asarray(node_values, dtype=np.float64)
     order = len(node_values) - 1
-    nodes = cgl_nodes(order)
-    weights = barycentric_weights(order)
+
+    # 原来：
+    # nodes = cgl_nodes(order)
+    # weights = barycentric_weights(order)
+
+    # 改成：让节点顺序与 normalize_time_grid(-1 -> 1) 和 node_values 顺序一致
+    nodes = cgl_nodes(order)[::-1]
+    weights = barycentric_weights(order)[::-1]
+
     t = normalize_time_grid(num_samples)
     return barycentric_interpolate(t, nodes, node_values, weights)
 

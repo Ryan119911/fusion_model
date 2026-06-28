@@ -84,6 +84,8 @@ def main(args):
     )
     print(f"Use 6D optimization: {bool(args.use_6d)}")
 
+    print(f"[CHECK] cfg.optim.lm_max_steps={cfg.optim.lm_max_steps}", flush=True)
+
     result = optimizer.optimize(
         template=sample,
         target_image=target,

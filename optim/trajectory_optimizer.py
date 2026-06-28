@@ -47,6 +47,207 @@ def sample_angles(sample: CharacterTrajectory) -> np.ndarray:
         return np.zeros((0, 3), dtype=np.float64)
     return np.asarray([[p.alpha, p.beta, p.gamma] for p in pts], dtype=np.float64)
 
+def stroke_to_xyz_angles(stroke: StrokeTrajectory) -> Tuple[np.ndarray, np.ndarray]:
+    pts = stroke.sorted_points()
+    xyz = np.asarray([[p.x, p.y, p.z] for p in pts], dtype=np.float64)
+    angles = np.asarray([[p.alpha, p.beta, p.gamma] for p in pts], dtype=np.float64)
+    return xyz, angles
+
+
+def rebuild_sample_per_stroke_cheb(
+    template: CharacterTrajectory,
+    order: int,
+    freeze_angles: bool = True,
+) -> CharacterTrajectory:
+    new_points: List[TrajectoryPoint] = []
+
+    for stroke in template.sorted_strokes():
+        pts = stroke.sorted_points()
+        n = len(pts)
+
+        if n == 0:
+            continue
+
+        xyz0, ang0 = stroke_to_xyz_angles(stroke)
+
+        # 避免 order >= 点数导致不必要振荡
+        stroke_order = min(order, max(1, n - 1))
+
+        x_nodes, y_nodes, z_nodes = fit_3d_nodes_from_points(xyz0, stroke_order)
+        xyz_rec = parameterize_3d(
+            x_nodes,
+            y_nodes,
+            z_nodes,
+            num_samples=n,
+        )
+
+        if freeze_angles:
+            ang_rec = ang0.copy()
+        else:
+            a_nodes, b_nodes, g_nodes = fit_3d_nodes_from_points(ang0, stroke_order)
+            ang_rec = parameterize_3d(
+                a_nodes,
+                b_nodes,
+                g_nodes,
+                num_samples=n,
+            )
+
+        for i, p in enumerate(pts):
+            new_points.append(
+                TrajectoryPoint(
+                    stroke_id=p.stroke_id,
+                    point_id=p.point_id,
+                    x=float(xyz_rec[i, 0]),
+                    y=float(xyz_rec[i, 1]),
+                    z=float(xyz_rec[i, 2]),
+                    alpha=float(ang_rec[i, 0]),
+                    beta=float(ang_rec[i, 1]),
+                    gamma=float(ang_rec[i, 2]),
+                    state=PointState.from_value(int(p.state)),
+                )
+            )
+
+    bucket: Dict[int, List[TrajectoryPoint]] = {}
+    for p in new_points:
+        bucket.setdefault(p.stroke_id, []).append(p)
+
+    strokes = [
+        StrokeTrajectory(
+            stroke_id=sid,
+            points=sorted(pts, key=lambda q: q.point_id),
+        )
+        for sid, pts in sorted(bucket.items(), key=lambda x: x[0])
+    ]
+
+    return CharacterTrajectory(
+        character=template.character,
+        strokes=strokes,
+        meta=dict(template.meta),
+    )
+
+def build_per_stroke_xyz_decision(
+    template: CharacterTrajectory,
+    order: int,
+):
+    """
+    返回：
+      decision0: 所有 stroke 的 x/y/z Chebyshev nodes 拼起来
+      specs: 每一笔的解码元信息
+    """
+    parts = []
+    specs = []
+
+    offset = 0
+
+    for stroke in template.sorted_strokes():
+        pts = stroke.sorted_points()
+        n_pts = len(pts)
+        if n_pts == 0:
+            continue
+
+        xyz0 = np.asarray(
+            [[p.x, p.y, p.z] for p in pts],
+            dtype=np.float64,
+        )
+        ang0 = np.asarray(
+            [[p.alpha, p.beta, p.gamma] for p in pts],
+            dtype=np.float64,
+        )
+
+        stroke_order = min(order, max(1, n_pts - 1))
+        x_nodes, y_nodes, z_nodes = fit_3d_nodes_from_points(xyz0, stroke_order)
+
+        vec = np.concatenate([x_nodes, y_nodes, z_nodes], axis=0).astype(np.float64)
+        parts.append(vec)
+
+        size = len(vec)
+        specs.append({
+            "stroke_id": stroke.stroke_id,
+            "points": pts,
+            "n_pts": n_pts,
+            "order": stroke_order,
+            "node_count": stroke_order + 1,
+            "offset": offset,
+            "size": size,
+            "angles": ang0,
+        })
+        offset += size
+
+    if len(parts) == 0:
+        return np.zeros((0,), dtype=np.float64), specs
+
+    return np.concatenate(parts, axis=0).astype(np.float64), specs
+
+def decode_per_stroke_xyz_decision(
+    template: CharacterTrajectory,
+    decision_vec: np.ndarray,
+    specs: List[Dict[str, Any]],
+    x_lo: float,
+    x_hi: float,
+    y_lo: float,
+    y_hi: float,
+    z_lo: float,
+    z_hi: float,
+) -> CharacterTrajectory:
+    new_points: List[TrajectoryPoint] = []
+
+    for spec in specs:
+        off = spec["offset"]
+        size = spec["size"]
+        n_node = spec["node_count"]
+        n_pts = spec["n_pts"]
+        pts = spec["points"]
+        ang = spec["angles"]
+
+        local = decision_vec[off:off + size]
+
+        x_nodes = local[:n_node]
+        y_nodes = local[n_node:2 * n_node]
+        z_nodes = local[2 * n_node:3 * n_node]
+
+        xyz = parameterize_3d(
+            x_nodes,
+            y_nodes,
+            z_nodes,
+            num_samples=n_pts,
+        )
+
+        xyz[:, 0] = np.clip(xyz[:, 0], x_lo, x_hi)
+        xyz[:, 1] = np.clip(xyz[:, 1], y_lo, y_hi)
+        xyz[:, 2] = np.clip(xyz[:, 2], z_lo, z_hi)
+
+        for i, p in enumerate(pts):
+            new_points.append(
+                TrajectoryPoint(
+                    stroke_id=p.stroke_id,
+                    point_id=p.point_id,
+                    x=float(xyz[i, 0]),
+                    y=float(xyz[i, 1]),
+                    z=float(xyz[i, 2]),
+                    alpha=float(ang[i, 0]),
+                    beta=float(ang[i, 1]),
+                    gamma=float(ang[i, 2]),
+                    state=PointState.from_value(int(p.state)),
+                )
+            )
+
+    bucket: Dict[int, List[TrajectoryPoint]] = {}
+    for p in new_points:
+        bucket.setdefault(p.stroke_id, []).append(p)
+
+    strokes = [
+        StrokeTrajectory(
+            stroke_id=sid,
+            points=sorted(pts, key=lambda q: q.point_id),
+        )
+        for sid, pts in sorted(bucket.items(), key=lambda x: x[0])
+    ]
+
+    return CharacterTrajectory(
+        character=template.character,
+        strokes=strokes,
+        meta=dict(template.meta),
+    )
 
 def stack_decision_vector_6d(
     x_nodes: np.ndarray,
@@ -168,6 +369,8 @@ class TrajectoryOptimizer:
         target_image: np.ndarray,
         order: int,
         fixed_bounds: Tuple[float, float, float, float],
+        stroke_specs: List[Dict[str, Any]],
+        decision0_ref: np.ndarray,
     ):
         xyz0 = sample_to_xyz(template)
         if len(xyz0) == 0:
@@ -175,6 +378,17 @@ class TrajectoryOptimizer:
 
         ang_init = sample_angles(template)
         z_init = xyz0[:, 2].copy()
+
+        # 固定整字 bounds，限制 LM 不要把轨迹推到初始画布外太多
+        min_x, max_x, min_y, max_y = fixed_bounds
+        bw = max(max_x - min_x, 1e-6)
+        bh = max(max_y - min_y, 1e-6)
+
+        xy_margin_ratio = 0.03   # 先保守：允许超出初始 bbox 3%
+        x_lo = min_x - xy_margin_ratio * bw
+        x_hi = max_x + xy_margin_ratio * bw
+        y_lo = min_y - xy_margin_ratio * bh
+        y_hi = max_y + xy_margin_ratio * bh
 
         z_lo = max(0.0, float(np.percentile(z_init, 1)) - 0.25)
         z_hi = float(np.percentile(z_init, 99)) + 0.25
@@ -207,37 +421,23 @@ class TrajectoryOptimizer:
         target_mean = float(target.mean())
 
         def residual_fn(decision_vec: np.ndarray) -> np.ndarray:
-            x_nodes, y_nodes, z_nodes, a_nodes, b_nodes, g_nodes = unstack_decision_vector_6d(decision_vec)
-
-            xyz = parameterize_3d(
-                x_nodes,
-                y_nodes,
-                z_nodes,
-                num_samples=num_points,
-            )
-
-            # temp
-
-            xyz[:, 2] = np.clip(xyz[:, 2], z_lo, z_hi)
-
-            # angles = parameterize_3d(
-            #     a_nodes,
-            #     b_nodes,
-            #     g_nodes,
-            #     num_samples=num_points,
-            # )
-            angles = ang_init.copy()
-
-            sample_cur = rebuild_sample_from_xyz_angles(
-                template,
-                xyz,
-                angles,
+            sample_cur = decode_per_stroke_xyz_decision(
+                template=template,
+                decision_vec=decision_vec,
+                specs=stroke_specs,
+                x_lo=x_lo,
+                x_hi=x_hi,
+                y_lo=y_lo,
+                y_hi=y_hi,
+                z_lo=z_lo,
+                z_hi=z_hi,
             )
 
             out = self.renderer.render_character(
                 sample_cur,
                 fixed_bounds=fixed_bounds,
             )
+
             rendered = np.asarray(
                 out["character_image"],
                 dtype=np.float64,
@@ -295,12 +495,9 @@ class TrajectoryOptimizer:
             else:
                 stroke_presence_res = np.zeros((0,), dtype=np.float64)
 
-            # 6. z 正则
-            z_reg = np.sqrt(self.z_reg_weight) * (xyz[:, 2] - z_init)
-
-            # 7. angle 正则
-            angle_reg = np.sqrt(self.angle_reg_weight) * (
-                angles.reshape(-1) - ang_init.reshape(-1)
+            # 6. per-stroke decision 正则
+            decision_reg = np.sqrt(self.z_reg_weight) * 0.01 * (
+                decision_vec - decision0_ref
             )
 
             return np.concatenate(
@@ -310,8 +507,7 @@ class TrajectoryOptimizer:
                     ink_res.reshape(-1),
                     structure_res.reshape(-1),
                     stroke_presence_res.reshape(-1),
-                    z_reg.reshape(-1),
-                    angle_reg.reshape(-1),
+                    decision_reg.reshape(-1),
                 ],
                 axis=0,
             )
@@ -341,24 +537,34 @@ class TrajectoryOptimizer:
         
         fixed_bounds = trajectory_bounds(template)
 
+
+        min_x, max_x, min_y, max_y = fixed_bounds
+        bw = max(max_x - min_x, 1e-6)
+        bh = max(max_y - min_y, 1e-6)
+
+        xy_margin_ratio = 0.03
+        x_lo = min_x - xy_margin_ratio * bw
+        x_hi = max_x + xy_margin_ratio * bw
+        y_lo = min_y - xy_margin_ratio * bh
+        y_hi = max_y + xy_margin_ratio * bh
+
+
         ang0 = sample_angles(template)
 
-        # 初始 6D Chebyshev 节点
-        x_nodes0, y_nodes0, z_nodes0 = fit_3d_nodes_from_points(xyz0, order)
-        a_nodes0, b_nodes0, g_nodes0 = fit_3d_nodes_from_points(ang0, order)
-
-        decision0 = stack_decision_vector_6d(
-            x_nodes0, y_nodes0, z_nodes0,
-            a_nodes0, b_nodes0, g_nodes0,
+        decision0, stroke_specs = build_per_stroke_xyz_decision(
+            template,
+            order=order,
         )
-        
 
         residual_fn = self._residual_fn_factory(
             template,
             target_image,
             order,
             fixed_bounds=fixed_bounds,
+            stroke_specs=stroke_specs,
+            decision0_ref=decision0.copy(),
         )
+
 
         lm_result = lm_solve(
             residual_fn,
@@ -366,6 +572,15 @@ class TrajectoryOptimizer:
             damping=damping,
             max_steps=max_steps,
         )
+
+        def limit_lm_step(step_vec: np.ndarray) -> np.ndarray:
+            max_abs = float(np.max(np.abs(step_vec))) if step_vec.size > 0 else 0.0
+            max_step = 0.01 * max(bw, bh)
+
+            if max_abs <= max_step or max_abs < 1e-12:
+                return step_vec
+
+            return step_vec * (max_step / max_abs)
 
         hist = getattr(lm_result, "history", {})
         cost_hist = hist.get("cost", [])
@@ -387,31 +602,16 @@ class TrajectoryOptimizer:
 
 
         def decode_and_render(decision_vec: np.ndarray):
-            x_nodes, y_nodes, z_nodes, a_nodes, b_nodes, g_nodes = unstack_decision_vector_6d(decision_vec)
-
-            xyz = parameterize_3d(
-                x_nodes,
-                y_nodes,
-                z_nodes,
-                num_samples=len(template.all_points()),
-            )
-
-            # temp
-
-            xyz[:, 2] = np.clip(xyz[:, 2], z_lo, z_hi)
-
-            # angles = parameterize_3d(
-            #     a_nodes,
-            #     b_nodes,
-            #     g_nodes,
-            #     num_samples=len(template.all_points()),
-            # )
-            angles = ang0.copy()
-
-            sample_candidate = rebuild_sample_from_xyz_angles(
-                template,
-                xyz,
-                angles,
+            sample_candidate = decode_per_stroke_xyz_decision(
+                template=template,
+                decision_vec=decision_vec,
+                specs=stroke_specs,
+                x_lo=x_lo,
+                x_hi=x_hi,
+                y_lo=y_lo,
+                y_hi=y_hi,
+                z_lo=z_lo,
+                z_hi=z_hi,
             )
 
             rendered_candidate = self.renderer.render_character(
@@ -421,10 +621,10 @@ class TrajectoryOptimizer:
 
             return sample_candidate, np.asarray(rendered_candidate, dtype=np.float64)
 
+        
 
         target = np.asarray(target_image, dtype=np.float64)
         initial_sample = template
-
         initial_render = np.asarray(
             self.renderer.render_character(
                 template,
@@ -434,7 +634,6 @@ class TrajectoryOptimizer:
         )
 
         fg_mask = target > 0.1
-
 
         def candidate_score(rendered: np.ndarray) -> float:
             global_diff = float(np.abs(rendered - target).mean())
@@ -451,27 +650,77 @@ class TrajectoryOptimizer:
             mean_gap = abs(float(rendered.mean()) - float(target.mean()))
 
             score = (
-                0.25 * global_diff
+            0.25 * global_diff
                 + 1.00 * fg_diff
                 + 0.80 * fg_under
                 + 0.50 * mean_gap
             )
             return score
 
+        per_stroke_decoded_sample = rebuild_sample_per_stroke_cheb(
+            template,
+            order=order,
+            freeze_angles=True,
+        )
 
-        alphas = [
-            0.0,
-            0.005, 0.01, 0.02, 0.03, 0.05,
-            0.075, 0.10, 0.15, 0.20, 0.25,
-            0.35, 0.50, 0.75, 1.00
-        ]
+        per_stroke_decoded_render = np.asarray(
+            self.renderer.render_character(
+                per_stroke_decoded_sample,
+                fixed_bounds=fixed_bounds,
+            )["character_image"],
+            dtype=np.float64,
+        )
+
+        print(
+            f"[CHECK] per-stroke decoded0 score={candidate_score(per_stroke_decoded_render):.6f}, "
+            f"mean={per_stroke_decoded_render.mean():.6f}",
+            flush=True,
+        )
+        print(
+            f"[CHECK] per-stroke decoded0 global diff={float(np.abs(per_stroke_decoded_render - target).mean()):.6f}",
+            flush=True,
+        )
+
+        # 注意：decoded0 检查必须放在 candidate_score 定义之后
+        decoded0_sample, decoded0_render = decode_and_render(decision0)
+        decoded0_score = candidate_score(decoded0_render)
+        initial_score = candidate_score(initial_render)
+
+        print(
+            f"[CHECK] direct initial score={initial_score:.6f}, "
+            f"mean={initial_render.mean():.6f}",
+            flush=True,
+        )
+        print(
+            f"[CHECK] decoded decision0 score={decoded0_score:.6f}, "
+            f"mean={decoded0_render.mean():.6f}",
+            flush=True,
+        )
+        print(
+            f"[CHECK] decoded0 global diff={float(np.abs(decoded0_render - target).mean()):.6f}",
+            flush=True,
+        )
 
         best_alpha = 0.0
         best_score = candidate_score(initial_render)
         best_sample = initial_sample
         best_rendered = initial_render
 
-        step = lm_result.x - decision0
+        raw_step = lm_result.x - decision0
+        step = limit_lm_step(raw_step)
+
+        print(
+            f"[CHECK] raw_step_norm={np.linalg.norm(raw_step):.6e}, "
+            f"limited_step_norm={np.linalg.norm(step):.6e}",
+            flush=True,
+        )
+        alphas = [
+            0.0,
+            0.005, 0.01, 0.02, 0.03, 0.05,
+            0.075, 0.10, 0.15, 0.20, 0.25,
+            0.35, 0.50, 0.75, 1.00,
+            1.25, 1.50, 2.00, 3.00, 4.00,
+        ]
 
         print(f"[CHECK] initial selection score={best_score:.6f}", flush=True)
 
@@ -479,13 +728,25 @@ class TrajectoryOptimizer:
             candidate_x = decision0 + alpha * step
             sample_candidate, rendered_candidate = decode_and_render(candidate_x)
             score = candidate_score(rendered_candidate)
+            mean_gap = abs(float(rendered_candidate.mean()) - float(target.mean()))
 
             print(
-                f"[CHECK] alpha={alpha:.2f}, "
+                f"[CHECK] alpha={alpha:.4f}, "
                 f"score={score:.6f}, "
-                f"mean={rendered_candidate.mean():.6f}",
+                f"mean={rendered_candidate.mean():.6f}, "
+                f"mean_gap={mean_gap:.6f}",
                 flush=True,
             )
+
+            # 建议先用 0.006；如果想更贴近 target mean，改成 0.003
+            max_mean_gap = 0.003
+
+            if mean_gap > max_mean_gap:
+                print(
+                    f"[CHECK] alpha={alpha:.4f} skipped by mean_gap={mean_gap:.6f}",
+                    flush=True,
+                )
+                continue
 
             if score < best_score:
                 best_score = score
@@ -494,15 +755,15 @@ class TrajectoryOptimizer:
                 best_rendered = rendered_candidate
 
         print(
-            f"[CHECK] selected alpha={best_alpha:.2f}, "
+            f"[CHECK] selected alpha={best_alpha:.4f}, "
             f"best_score={best_score:.6f}",
             flush=True,
         )
 
         if best_alpha == 0.0:
-            print("[CHECK] No beneficial LM update found; using initial forward.", flush=True)
+            print("[CHECK] initial forward accepted; LM update rejected.", flush=True)
         else:
-            print("[CHECK] Using interpolated optimized trajectory.", flush=True)
+            print("[CHECK] optimized accepted", flush=True)
 
         optimized_sample = best_sample
         rendered = best_rendered
@@ -576,7 +837,10 @@ class TrajectoryOptimizer:
             optimized_sample = template
             rendered = initial_render
         else:
-            print("[CHECK] optimized accepted", flush=True)
+            if best_alpha == 0.0:
+                print("[CHECK] final accepted: initial forward", flush=True)
+            else:
+                print("[CHECK] final accepted: optimized trajectory", flush=True)
 
         return TrajectoryOptimizationResult(
             order=order,

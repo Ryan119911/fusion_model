@@ -50,7 +50,7 @@ optim:
   cheb_order_min: 3
   cheb_order_max: 4
   lm_damping: 0.05
-  lm_max_steps: 10
+  lm_max_steps: 20
   render_samples_per_stroke: 128
   z_reg_weight: 0.01
   angle_reg_weight: 0.01
