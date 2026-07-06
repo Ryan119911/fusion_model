@@ -1,3 +1,4 @@
+# 中文注释：本文件读取 MakeMeAHanzi 字典和字形数据，提供汉字结构与中线信息。
 import json
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Callable
@@ -7,6 +8,7 @@ from torch.utils.data import Dataset
 from utils.types import MakeHanziDictionaryRecord, MakeHanziGraphicsRecord
 
 
+# 中文注释：逐行读取 JSONL 文件并跳过空行。
 def _read_jsonl(path: str) -> List[Dict[str, Any]]:
     path_obj = Path(path)
     if not path_obj.exists():
@@ -21,6 +23,7 @@ def _read_jsonl(path: str) -> List[Dict[str, Any]]:
     return rows
 
 
+# 中文注释：加载 MakeMeAHanzi 字典记录。
 def load_dictionary_records(dictionary_path: str) -> List[MakeHanziDictionaryRecord]:
     rows = _read_jsonl(dictionary_path)
     records: List[MakeHanziDictionaryRecord] = []
@@ -39,6 +42,7 @@ def load_dictionary_records(dictionary_path: str) -> List[MakeHanziDictionaryRec
     return records
 
 
+# 中文注释：加载 MakeMeAHanzi 图形记录。
 def load_graphics_records(graphics_path: str) -> List[MakeHanziGraphicsRecord]:
     rows = _read_jsonl(graphics_path)
     records: List[MakeHanziGraphicsRecord] = []
@@ -57,14 +61,17 @@ def load_graphics_records(graphics_path: str) -> List[MakeHanziGraphicsRecord]:
     return records
 
 
+# 中文注释：按字符建立字典记录索引。
 def build_dictionary_index(records: List[MakeHanziDictionaryRecord]) -> Dict[str, MakeHanziDictionaryRecord]:
     return {record.character: record for record in records}
 
 
+# 中文注释：按字符建立图形记录索引。
 def build_graphics_index(records: List[MakeHanziGraphicsRecord]) -> Dict[str, MakeHanziGraphicsRecord]:
     return {record.character: record for record in records}
 
 
+# 中文注释：合并同一字符的字典信息和图形信息。
 def join_makehanzi_records(dictionary_records: List[MakeHanziDictionaryRecord], graphics_records: List[MakeHanziGraphicsRecord]) -> List[Dict[str, Any]]:
     dict_index = build_dictionary_index(dictionary_records)
     graphics_index = build_graphics_index(graphics_records)
@@ -79,7 +86,9 @@ def join_makehanzi_records(dictionary_records: List[MakeHanziDictionaryRecord], 
     return joined
 
 
+# 中文注释：以数据集形式暴露 MakeMeAHanzi 合并记录。
 class MakeHanziDataset(Dataset):
+    # 中文注释：初始化对象并保存后续处理所需的配置和成员变量。
     def __init__(self, dictionary_path: str, graphics_path: str, transform: Optional[Callable[[Dict[str, Any]], Any]] = None, characters: Optional[List[str]] = None):
         self.dictionary_records = load_dictionary_records(dictionary_path)
         self.graphics_records = load_graphics_records(graphics_path)
@@ -89,9 +98,11 @@ class MakeHanziDataset(Dataset):
             self.samples = [sample for sample in self.samples if sample["character"] in char_set]
         self.transform = transform
 
+    # 中文注释：返回数据集或容器中的样本数量。
     def __len__(self) -> int:
         return len(self.samples)
 
+    # 中文注释：按索引读取并返回单个样本。
     def __getitem__(self, index: int):
         sample = self.samples[index]
         if self.transform is not None:
@@ -99,6 +110,7 @@ class MakeHanziDataset(Dataset):
         return sample
 
 
+# 中文注释：提取字符 SVG 路径描述的笔画。
 def extract_character_strokes(sample: Dict[str, Any]) -> List[str]:
     graphics = sample.get("graphics")
     if graphics is None:
@@ -106,6 +118,7 @@ def extract_character_strokes(sample: Dict[str, Any]) -> List[str]:
     return graphics.strokes
 
 
+# 中文注释：提取字符中线点序列。
 def extract_character_medians(sample: Dict[str, Any]) -> List[List[Tuple[int, int]]]:
     graphics = sample.get("graphics")
     if graphics is None:
@@ -113,6 +126,7 @@ def extract_character_medians(sample: Dict[str, Any]) -> List[List[Tuple[int, in
     return graphics.medians
 
 
+# 中文注释：作为脚本直接运行时，从这里进入命令行流程或示例测试。
 if __name__ == "__main__":
     dict_path = "data/raw/makemeahanzi/dictionary.txt"
     graphics_path = "data/raw/makemeahanzi/graphics.txt"

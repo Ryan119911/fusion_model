@@ -1,9 +1,11 @@
+# 中文注释：本文件提供 Chebyshev 节点参数化和插值工具，用于压缩轨迹优化变量。
 from typing import List, Tuple
 import math
 
 import numpy as np
 
 
+# 中文注释：生成 Chebyshev-Gauss-Lobatto 节点。
 def cgl_nodes(order: int) -> np.ndarray:
     if order < 1:
         raise ValueError("order must be >= 1")
@@ -11,6 +13,7 @@ def cgl_nodes(order: int) -> np.ndarray:
     return np.cos(np.pi * k / order)
 
 
+# 中文注释：计算重心插值权重。
 def barycentric_weights(order: int) -> np.ndarray:
     if order < 1:
         raise ValueError("order must be >= 1")
@@ -22,6 +25,7 @@ def barycentric_weights(order: int) -> np.ndarray:
     return w
 
 
+# 中文注释：使用重心公式在任意时间点插值。
 def barycentric_interpolate(t: np.ndarray, nodes: np.ndarray, values: np.ndarray, weights: np.ndarray) -> np.ndarray:
     t = np.asarray(t, dtype=np.float64)
     nodes = np.asarray(nodes, dtype=np.float64)
@@ -39,12 +43,14 @@ def barycentric_interpolate(t: np.ndarray, nodes: np.ndarray, values: np.ndarray
     return out
 
 
+# 中文注释：把序列下标归一化为 0 到 1 的时间网格。
 def normalize_time_grid(num_samples: int) -> np.ndarray:
     if num_samples < 2:
         return np.array([0.0], dtype=np.float64)
     return np.linspace(-1.0, 1.0, num_samples, dtype=np.float64)
 
 
+# 中文注释：用 Chebyshev 节点表示一维序列。
 def parameterize_1d(node_values: np.ndarray, num_samples: int) -> np.ndarray:
     node_values = np.asarray(node_values, dtype=np.float64)
     order = len(node_values) - 1
@@ -61,6 +67,7 @@ def parameterize_1d(node_values: np.ndarray, num_samples: int) -> np.ndarray:
     return barycentric_interpolate(t, nodes, node_values, weights)
 
 
+# 中文注释：分别参数化三维序列的每个坐标。
 def parameterize_3d(x_nodes: np.ndarray, y_nodes: np.ndarray, z_nodes: np.ndarray, num_samples: int) -> np.ndarray:
     x = parameterize_1d(x_nodes, num_samples)
     y = parameterize_1d(y_nodes, num_samples)
@@ -68,6 +75,7 @@ def parameterize_3d(x_nodes: np.ndarray, y_nodes: np.ndarray, z_nodes: np.ndarra
     return np.stack([x, y, z], axis=-1)
 
 
+# 中文注释：把序列重采样到指定长度。
 def resample_sequence(values: np.ndarray, target_len: int) -> np.ndarray:
     values = np.asarray(values, dtype=np.float64)
     if values.ndim == 1:
@@ -79,12 +87,14 @@ def resample_sequence(values: np.ndarray, target_len: int) -> np.ndarray:
         return np.stack(cols, axis=-1)
 
 
+# 中文注释：从原始序列拟合 Chebyshev 控制节点。
 def fit_nodes_from_sequence(values: np.ndarray, order: int) -> np.ndarray:
     values = np.asarray(values, dtype=np.float64)
     target_len = order + 1
     return resample_sequence(values, target_len)
 
 
+# 中文注释：从三维点序列拟合 Chebyshev 控制节点。
 def fit_3d_nodes_from_points(points_xyz: np.ndarray, order: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     points_xyz = np.asarray(points_xyz, dtype=np.float64)
     if points_xyz.ndim != 2 or points_xyz.shape[1] != 3:
@@ -93,10 +103,12 @@ def fit_3d_nodes_from_points(points_xyz: np.ndarray, order: int) -> Tuple[np.nda
     return nodes_xyz[:, 0], nodes_xyz[:, 1], nodes_xyz[:, 2]
 
 
+# 中文注释：把 x/y/z 控制节点拼成优化向量。
 def stack_decision_vector(x_nodes: np.ndarray, y_nodes: np.ndarray, z_nodes: np.ndarray) -> np.ndarray:
     return np.concatenate([np.asarray(x_nodes), np.asarray(y_nodes), np.asarray(z_nodes)], axis=0).astype(np.float64)
 
 
+# 中文注释：把优化向量还原为 x/y/z 控制节点。
 def unstack_decision_vector(vec: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     vec = np.asarray(vec, dtype=np.float64)
     if vec.ndim != 1 or len(vec) % 3 != 0:
@@ -105,6 +117,7 @@ def unstack_decision_vector(vec: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np
     return vec[:n], vec[n:2 * n], vec[2 * n:]
 
 
+# 中文注释：作为脚本直接运行时，从这里进入命令行流程或示例测试。
 if __name__ == "__main__":
     order = 4
     nodes = cgl_nodes(order)

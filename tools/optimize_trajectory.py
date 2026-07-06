@@ -1,3 +1,4 @@
+# 中文注释：本文件命令行工具：加载目标图像和初始样本，执行轨迹优化并保存结果。
 import argparse
 from pathlib import Path
 import csv
@@ -11,6 +12,7 @@ from models.fusion_renderer import FusionRenderer
 from optim.trajectory_optimizer import TrajectoryOptimizer, load_target_image
 
 
+# 中文注释：把优化后的字符轨迹保存为 CSV。
 def save_character_trajectory_csv(sample, out_csv: str) -> None:
     path = Path(out_csv)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -34,6 +36,7 @@ def save_character_trajectory_csv(sample, out_csv: str) -> None:
             })
 
 
+# 中文注释：把张量或数组形式的灰度图保存为图片。
 def save_image(arr: np.ndarray, out_path: str) -> None:
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -41,6 +44,7 @@ def save_image(arr: np.ndarray, out_path: str) -> None:
     img.save(path)
 
 
+# 中文注释：从轨迹数据集中按编号或字符选择初始样本。
 def pick_sample(samples, sample_id=None, character=None, index=0):
     if sample_id is not None:
         for s in samples:
@@ -55,6 +59,7 @@ def pick_sample(samples, sample_id=None, character=None, index=0):
     return samples[min(index, len(samples) - 1)]
 
 
+# 中文注释：解析命令行参数，准备日志文件并分派到对应子命令。
 def main(args):
     cfg = load_config(args.config)
     ensure_dirs(cfg)
@@ -110,6 +115,7 @@ def main(args):
     print(f"Saved outputs to: {out_dir}")
 
 
+# 中文注释：作为脚本直接运行时，从这里进入命令行流程或示例测试。
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default=None, help="Path to yaml config")

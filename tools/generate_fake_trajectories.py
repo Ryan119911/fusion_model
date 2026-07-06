@@ -1,7 +1,9 @@
+# 中文注释：本文件生成模拟轨迹 CSV，便于无真实数据时测试完整流程。
 import json
 import csv
 from pathlib import Path
 
+# 中文注释：按简单几何规则生成多字符、多笔画的模拟轨迹。
 def generate_fake_trajectories(graphics_path, out_csv_path):
     out_path = Path(out_csv_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -79,6 +81,7 @@ def generate_fake_trajectories(graphics_path, out_csv_path):
     print(f"\n大功告成！已成功伪造 {count} 个汉字的物理轨迹。")
     print(f"文件已保存至: {out_csv_path}")
 
+# 中文注释：作为脚本直接运行时，从这里进入命令行流程或示例测试。
 if __name__ == "__main__":
     # 配置输入与输出路径
     GRAPHICS_TXT = "data/raw/makemeahanzi/graphics.txt"

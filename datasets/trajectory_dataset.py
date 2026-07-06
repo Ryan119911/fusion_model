@@ -1,3 +1,4 @@
+# 中文注释：本文件读取并整理轨迹 CSV，生成训练/推理所需的序列张量。
 import csv
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable
@@ -8,18 +9,21 @@ from torch.utils.data import Dataset
 from utils.types import PointState, TrajectoryPoint, CharacterTrajectory, build_character_trajectory
 
 
+# 中文注释：安全地把 CSV 字段转换为整数。
 def _to_int(value: Any, default: int = 0) -> int:
     if value is None or value == "":
         return default
     return int(value)
 
 
+# 中文注释：安全地把 CSV 字段转换为浮点数。
 def _to_float(value: Any, default: float = 0.0) -> float:
     if value is None or value == "":
         return default
     return float(value)
 
 
+# 中文注释：解析轨迹点状态字段，兼容数字和字符串写法。
 def parse_state(value: Any) -> PointState:
     if isinstance(value, PointState):
         return value
@@ -40,6 +44,7 @@ def parse_state(value: Any) -> PointState:
     return PointState.from_value(int(value))
 
 
+# 中文注释：把 CSV 一行转换为 TrajectoryPoint。
 def row_to_point(row: Dict[str, Any]) -> TrajectoryPoint:
     return TrajectoryPoint(
         stroke_id=_to_int(row.get("stroke_id"), 0),
@@ -54,6 +59,7 @@ def row_to_point(row: Dict[str, Any]) -> TrajectoryPoint:
     )
 
 
+# 中文注释：根据 CSV 行提取样本分组键。
 def _sample_key(row: Dict[str, Any]) -> str:
     for key in ["sample_id", "character", "char_id", "file_stem"]:
         if key in row and row[key] not in (None, ""):
@@ -61,6 +67,7 @@ def _sample_key(row: Dict[str, Any]) -> str:
     return "default_sample"
 
 
+# 中文注释：读取轨迹 CSV 并按样本聚合为字符轨迹。
 def load_trajectory_csv(csv_path: str) -> List[CharacterTrajectory]:
     path = Path(csv_path)
     if not path.exists():
@@ -83,6 +90,7 @@ def load_trajectory_csv(csv_path: str) -> List[CharacterTrajectory]:
     return samples
 
 
+# 中文注释：把字符轨迹转换为特征张量和笔画编号张量。
 def trajectory_to_tensor(sample: CharacterTrajectory) -> Dict[str, torch.Tensor]:
     points = sample.all_points()
     xyz = []
@@ -106,15 +114,19 @@ def trajectory_to_tensor(sample: CharacterTrajectory) -> Dict[str, torch.Tensor]
     }
 
 
+# 中文注释：PyTorch 数据集封装字符轨迹样本。
 class TrajectoryDataset(Dataset):
+    # 中文注释：初始化对象并保存后续处理所需的配置和成员变量。
     def __init__(self, csv_path: str, transform: Optional[Callable[[CharacterTrajectory], Any]] = None):
         self.csv_path = csv_path
         self.samples = load_trajectory_csv(csv_path)
         self.transform = transform
 
+    # 中文注释：返回数据集或容器中的样本数量。
     def __len__(self) -> int:
         return len(self.samples)
 
+    # 中文注释：按索引读取并返回单个样本。
     def __getitem__(self, index: int):
         sample = self.samples[index]
         if self.transform is not None:
@@ -122,6 +134,7 @@ class TrajectoryDataset(Dataset):
         return sample
 
 
+# 中文注释：把变长二维序列补齐到同一长度。
 def pad_sequence_2d(sequences: List[torch.Tensor], pad_value: float = 0.0) -> torch.Tensor:
     max_len = max(seq.shape[0] for seq in sequences)
     feat_dim = sequences[0].shape[1]
@@ -131,6 +144,7 @@ def pad_sequence_2d(sequences: List[torch.Tensor], pad_value: float = 0.0) -> to
     return out
 
 
+# 中文注释：把变长一维序列补齐到同一长度。
 def pad_sequence_1d(sequences: List[torch.Tensor], pad_value: int = -1) -> torch.Tensor:
     max_len = max(seq.shape[0] for seq in sequences)
     out = torch.full((len(sequences), max_len), pad_value, dtype=sequences[0].dtype)
@@ -139,6 +153,7 @@ def pad_sequence_1d(sequences: List[torch.Tensor], pad_value: int = -1) -> torch
     return out
 
 
+# 中文注释：整理一个 batch 的变长轨迹样本和掩码。
 def collate_trajectory_batch(batch: List[CharacterTrajectory]) -> Dict[str, Any]:
     tensor_batch = [trajectory_to_tensor(sample) for sample in batch]
     xyz_list = [item["xyz"] for item in tensor_batch]
@@ -159,6 +174,7 @@ def collate_trajectory_batch(batch: List[CharacterTrajectory]) -> Dict[str, Any]
     }
 
 
+# 中文注释：作为脚本直接运行时，从这里进入命令行流程或示例测试。
 if __name__ == "__main__":
     # 简单自检
     example_path = "data/raw/trajectories.csv"

@@ -1,3 +1,4 @@
+# 中文注释：本文件提供坐标归一化、轨迹重采样和书写几何转换工具。
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 import math
@@ -5,6 +6,7 @@ import math
 from utils.types import StrokeTrajectory, CharacterTrajectory, DynamicBrushState, BBSMGInput
 
 
+# 中文注释：描述从源坐标到目标画布坐标的缩放与平移关系。
 @dataclass
 class CanvasTransform:
     src_min_x: float
@@ -14,6 +16,7 @@ class CanvasTransform:
     dst_size: int = 128
     padding: int = 4
 
+    # 中文注释：把单个点映射到目标画布坐标系。
     def map_point(self, x: float, y: float) -> Tuple[float, float]:
         w = max(self.src_max_x - self.src_min_x, 1e-6)
         h = max(self.src_max_y - self.src_min_y, 1e-6)
@@ -34,11 +37,13 @@ class CanvasTransform:
         return nx, ny
 
 
+# 中文注释：将 MakeHanzi 坐标转换为常见显示坐标方向。
 def makehanzi_to_display(x: float, y: float) -> Tuple[float, float]:
     # MakeMeAHanzi: upper-left=(0,900), lower-right=(1024,-124), y decreases downward in source definition
     return x, 900 - y
 
 
+# 中文注释：将 MakeHanzi 点归一化到 0 到 1 范围。
 def makehanzi_to_normalized(x: float, y: float, canvas_size: int = 128) -> Tuple[float, float]:
     dx, dy = makehanzi_to_display(x, y)
     tx = dx / 1024.0 * (canvas_size - 1)
@@ -46,6 +51,7 @@ def makehanzi_to_normalized(x: float, y: float, canvas_size: int = 128) -> Tuple
     return tx, ty
 
 
+# 中文注释：按给定边界框把点集归一化到画布尺寸。
 def normalize_points(points: List[Tuple[float, float]], canvas_size: int = 128, padding: int = 4) -> List[Tuple[float, float]]:
     if len(points) == 0:
         return []
@@ -55,16 +61,19 @@ def normalize_points(points: List[Tuple[float, float]], canvas_size: int = 128, 
     return [tfm.map_point(x, y) for x, y in points]
 
 
+# 中文注释：归一化单条 MakeHanzi 笔画中线。
 def normalize_makehanzi_median(median: List[Tuple[int, int]], canvas_size: int = 128) -> List[Tuple[float, float]]:
     return [makehanzi_to_normalized(float(x), float(y), canvas_size=canvas_size) for x, y in median]
 
 
+# 中文注释：从笔画中线提取起笔点。
 def stroke_start_point_from_median(median: List[Tuple[int, int]], canvas_size: int = 128) -> Tuple[float, float]:
     if len(median) == 0:
         return 0.0, 0.0
     return normalize_makehanzi_median(median, canvas_size=canvas_size)[0]
 
 
+# 中文注释：根据中线前两个点估计初始书写方向。
 def estimate_initial_theta_from_median(median: List[Tuple[int, int]]) -> float:
     if len(median) < 2:
         return 0.0
@@ -74,6 +83,7 @@ def estimate_initial_theta_from_median(median: List[Tuple[int, int]]) -> float:
     return math.atan2(dy, dx)
 
 
+# 中文注释：计算相邻点形成的方向角序列。
 def compute_heading(points: List[Tuple[float, float]]) -> List[float]:
     if len(points) == 0:
         return []
@@ -91,6 +101,7 @@ def compute_heading(points: List[Tuple[float, float]]) -> List[float]:
     return headings
 
 
+# 中文注释：计算折线总长度。
 def _polyline_length(points: List[Tuple[float, float]]) -> float:
     total = 0.0
     for i in range(1, len(points)):
@@ -100,6 +111,7 @@ def _polyline_length(points: List[Tuple[float, float]]) -> float:
     return total
 
 
+# 中文注释：按等弧长方式重采样折线。
 def resample_polyline(points: List[Tuple[float, float]], num_samples: int) -> List[Tuple[float, float]]:
     if len(points) == 0:
         return []
@@ -134,6 +146,7 @@ def resample_polyline(points: List[Tuple[float, float]], num_samples: int) -> Li
     return out[:num_samples]
 
 
+# 中文注释：计算轨迹点的二维外接边界。
 def trajectory_bounds(sample: CharacterTrajectory) -> Tuple[float, float, float, float]:
     pts = sample.all_points()
     xs = [p.x for p in pts] if pts else [0.0]
@@ -141,6 +154,7 @@ def trajectory_bounds(sample: CharacterTrajectory) -> Tuple[float, float, float,
     return min(xs), max(xs), min(ys), max(ys)
 
 
+# 中文注释：把轨迹 xy 坐标归一化到指定画布范围。
 def normalize_trajectory_xy(sample: CharacterTrajectory, canvas_size: int = 128, padding: int = 4) -> List[List[Tuple[float, float]]]:
     min_x, max_x, min_y, max_y = trajectory_bounds(sample)
     tfm = CanvasTransform(min_x, max_x, min_y, max_y, dst_size=canvas_size, padding=padding)
@@ -150,6 +164,7 @@ def normalize_trajectory_xy(sample: CharacterTrajectory, canvas_size: int = 128,
         normalized.append([tfm.map_point(x, y) for x, y in pts])
     return normalized
 
+# 中文注释：使用指定边界归一化轨迹 xy 坐标。
 def normalize_trajectory_xy_with_bounds(
     sample: CharacterTrajectory,
     bounds: Tuple[float, float, float, float],
@@ -174,11 +189,13 @@ def normalize_trajectory_xy_with_bounds(
 
     return normalized
 
+# 中文注释：把笔画点序列转换为书写方向角序列。
 def stroke_to_headings(stroke: StrokeTrajectory) -> List[float]:
     pts = [(p.x, p.y) for p in stroke.sorted_points()]
     return compute_heading(pts)
 
 
+# 中文注释：把动态笔刷状态转换为 B-BSMG 使用的曲线控制描述。
 def dynamic_state_to_bezier(state: DynamicBrushState) -> Tuple[float, float, float]:
     # 近似桥接：w -> Lr, d -> Lt+Lh。此处给出首版可替换实现。
     lt = max(state.d * 0.7, 0.0)
@@ -187,6 +204,7 @@ def dynamic_state_to_bezier(state: DynamicBrushState) -> Tuple[float, float, flo
     return lt, lh, lr
 
 
+# 中文注释：把动态笔刷状态整理成 B-BSMG 输入特征。
 def dynamic_state_to_bbsmg_input(state: DynamicBrushState, x0: Optional[float] = None, y0: Optional[float] = None) -> BBSMGInput:
     # 首版桥接：用 z, theta, theta 近似映射到 (h, alpha, beta)，起点默认取当前 x,y
     return BBSMGInput(
@@ -198,6 +216,7 @@ def dynamic_state_to_bbsmg_input(state: DynamicBrushState, x0: Optional[float] =
     )
 
 
+# 中文注释：按顺序配对真实轨迹笔画与 MakeHanzi 中线。
 def pair_trajectory_strokes_with_medians(sample: CharacterTrajectory, medians: List[List[Tuple[int, int]]]) -> List[Dict[str, Any]]:
     pairs: List[Dict[str, Any]] = []
     strokes = sample.sorted_strokes()

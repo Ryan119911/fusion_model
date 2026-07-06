@@ -1,8 +1,11 @@
+# 中文注释：本文件定义 B-BSMG 神经网络，用低维笔画参数生成局部笔触图像。
 import torch
 import torch.nn as nn
 
 
+# 中文注释：用多层感知机把笔画参数编码为潜变量。
 class MLPEncoder(nn.Module):
+    # 中文注释：初始化对象并保存后续处理所需的配置和成员变量。
     def __init__(self, input_dim: int = 10, latent_dim: int = 256, hidden_dims=(128, 256, 512)):
         super().__init__()
         layers = []
@@ -15,11 +18,14 @@ class MLPEncoder(nn.Module):
         layers.append(nn.ReLU(inplace=True))
         self.net = nn.Sequential(*layers)
 
+    # 中文注释：定义模型或损失的前向计算逻辑。
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
 
+# 中文注释：用转置卷积把潜变量解码为局部笔触图像。
 class ConvDecoder(nn.Module):
+    # 中文注释：初始化对象并保存后续处理所需的配置和成员变量。
     def __init__(self, latent_dim: int = 256, base_channels: int = 64, out_channels: int = 1, image_size: int = 128, use_tanh: bool = False):
         super().__init__()
         self.image_size = image_size
@@ -41,6 +47,7 @@ class ConvDecoder(nn.Module):
             nn.Tanh() if use_tanh else nn.Sigmoid(),
         )
 
+    # 中文注释：定义模型或损失的前向计算逻辑。
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         x = self.fc(z)
         x = x.view(x.shape[0], -1, 8, 8)
@@ -50,13 +57,16 @@ class ConvDecoder(nn.Module):
         return x
 
 
+# 中文注释：组合编码器和解码器的笔触生成网络。
 class BBSMG(nn.Module):
+    # 中文注释：初始化对象并保存后续处理所需的配置和成员变量。
     def __init__(self, input_dim: int = 10, latent_dim: int = 256, base_channels: int = 64, out_channels: int = 1, image_size: int = 128, use_tanh: bool = False):
         super().__init__()
         self.encoder = MLPEncoder(input_dim=input_dim, latent_dim=latent_dim)
         self.decoder = ConvDecoder(latent_dim=latent_dim, base_channels=base_channels, out_channels=out_channels, image_size=image_size, use_tanh=use_tanh)
         self._init_weights()
 
+    # 中文注释：初始化线性层和卷积层权重，提升训练稳定性。
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d, nn.Linear)):
@@ -67,16 +77,19 @@ class BBSMG(nn.Module):
                 nn.init.ones_(m.weight)
                 nn.init.zeros_(m.bias)
 
+    # 中文注释：定义模型或损失的前向计算逻辑。
     def forward(self, params: torch.Tensor) -> torch.Tensor:
         z = self.encoder(params)
         img = self.decoder(z)
         return img
 
 
+# 中文注释：根据配置对象创建 B-BSMG 模型。
 def build_bbsmg(input_dim: int = 5, latent_dim: int = 256, base_channels: int = 64, out_channels: int = 1, image_size: int = 128, use_tanh: bool = False) -> BBSMG:
     return BBSMG(input_dim=input_dim, latent_dim=latent_dim, base_channels=base_channels, out_channels=out_channels, image_size=image_size, use_tanh=use_tanh)
 
 
+# 中文注释：作为脚本直接运行时，从这里进入命令行流程或示例测试。
 if __name__ == "__main__":
     model = build_bbsmg()
     x = torch.randn(4, 10)

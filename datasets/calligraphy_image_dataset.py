@@ -1,3 +1,4 @@
+# 中文注释：本文件读取书法图片与 LabelMe 标注，构造字符/笔画级图像样本。
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable, Tuple
 import json
@@ -8,6 +9,7 @@ from torch.utils.data import Dataset
 import pandas as pd
 
 
+# 中文注释：从 LabelMe 标注点计算矩形框。
 def _labelme_points_to_bbox(points: List[List[float]]) -> Tuple[float, float, float, float]:
     """
     LabelMe rectangle points:
@@ -29,6 +31,7 @@ def _labelme_points_to_bbox(points: List[List[float]]) -> Tuple[float, float, fl
     )
 
 
+# 中文注释：按比例扩展矩形框并裁剪到图像范围内。
 def _expand_and_clip(
     bbox: Tuple[float, float, float, float],
     w: int,
@@ -60,6 +63,7 @@ def _expand_and_clip(
     return x1, y1, x2, y2
 
 
+# 中文注释：裁剪图像区域并转换为归一化张量。
 def _crop_to_tensor(
     img: Image.Image,
     bbox: Tuple[float, float, float, float],
@@ -98,6 +102,7 @@ def _crop_to_tensor(
     return tensor
 
 
+# 中文注释：读取书法字符图像及其笔画标注的 PyTorch 数据集。
 class CalligraphyImageDataset(Dataset):
     """
     一个样本 = 一整幅书法作品中的一个单字 crop。
@@ -128,6 +133,7 @@ class CalligraphyImageDataset(Dataset):
       - 只处理 rectangle
     """
 
+    # 中文注释：初始化对象并保存后续处理所需的配置和成员变量。
     def __init__(
         self,
         image_dir: str,
@@ -160,6 +166,7 @@ class CalligraphyImageDataset(Dataset):
         self.index: List[Dict[str, Any]] = []
         self._build_index()
 
+    # 中文注释：根据数据表和书体筛选生成允许使用的图片相对路径集合。
     def _build_allowed_image_rels(self) -> Optional[set]:
         """
         根据 data.csv 的 chirography 字段筛选图片。
@@ -217,6 +224,7 @@ class CalligraphyImageDataset(Dataset):
         return allowed
 
 
+    # 中文注释：由标注 JSON 路径推导对应的原始图片路径。
     def _json_to_image_path(self, json_path: Path, image_path_in_json: Optional[str] = None) -> Path:
         """
         将：
@@ -241,6 +249,7 @@ class CalligraphyImageDataset(Dataset):
 
         return candidate
 
+    # 中文注释：扫描标注文件并构建可索引样本列表。
     def _build_index(self) -> None:
         json_files = sorted(self.json_dir.rglob("*.json"))
 
@@ -303,9 +312,11 @@ class CalligraphyImageDataset(Dataset):
                 })
         print(f"[INFO] Built LabelMe character index: {len(self.index)} boxes")
 
+    # 中文注释：返回数据集或容器中的样本数量。
     def __len__(self) -> int:
         return len(self.index)
 
+    # 中文注释：根据索引项读取图像、标注并组装一个样本。
     def _build_sample(self, item: Dict[str, Any]) -> Dict[str, Any]:
         with Image.open(item["image_path"]) as img:
             w, h = img.size
@@ -339,6 +350,7 @@ class CalligraphyImageDataset(Dataset):
             "meta": dict(item),
         }
 
+    # 中文注释：按索引读取并返回单个样本。
     def __getitem__(self, index: int):
         sample = self._build_sample(self.index[index])
         if self.transform is not None:
@@ -346,6 +358,7 @@ class CalligraphyImageDataset(Dataset):
         return sample
 
 
+# 中文注释：整理书法图像样本 batch，保留变长笔画列表。
 def collate_calligraphy_image_batch(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     images = torch.stack([item["image"] for item in batch], dim=0)
 
@@ -364,6 +377,7 @@ def collate_calligraphy_image_batch(batch: List[Dict[str, Any]]) -> Dict[str, An
     }
 
 
+# 中文注释：作为脚本直接运行时，从这里进入命令行流程或示例测试。
 if __name__ == "__main__":
     image_dir = "data/raw/images"
     json_dir = "data/raw/json_files"

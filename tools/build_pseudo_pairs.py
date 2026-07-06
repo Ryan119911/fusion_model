@@ -1,3 +1,4 @@
+# 中文注释：本文件根据 MakeHanzi 中线和真实字符图像构建 B-BSMG 训练用伪配对样本。
 import argparse
 from pathlib import Path
 from typing import Dict, Any, List, Tuple
@@ -18,6 +19,7 @@ from models.geometry import (
 NORM_PADDING = 4
 
 
+# 中文注释：根据点集计算外接矩形。
 def bbox_from_points(
     points: List[Tuple[float, float]],
     pad: int = 2,
@@ -45,6 +47,7 @@ def bbox_from_points(
     return x0, y0, x1, y1
 
 
+# 中文注释：把折线栅格化为二值图像。
 def rasterize_polyline(
     points: List[Tuple[float, float]],
     canvas_size: int = 128,
@@ -64,6 +67,7 @@ def rasterize_polyline(
 
     return np.array(img, dtype=np.float32) / 255.0
 
+# 中文注释：根据笔画中线和线宽生成笔画掩码。
 def rasterize_stroke_mask(
     points: List[Tuple[float, float]],
     canvas_size: int = 128,
@@ -86,6 +90,7 @@ def rasterize_stroke_mask(
     return np.array(img, dtype=np.float32) / 255.0
 
 
+# 中文注释：从字符画布中裁剪并归一化单笔目标图。
 def stroke_target_from_canvas(
     char_canvas: np.ndarray,
     norm_points: List[Tuple[float, float]],
@@ -110,6 +115,7 @@ def stroke_target_from_canvas(
     target = char_canvas * mask
     return np.clip(target, 0.0, 1.0).astype(np.float32)
 
+# 中文注释：保持宽高比把字符图放入固定画布。
 def letterbox_char_to_canvas(
     image_tensor,
     canvas_size: int = 128,
@@ -155,6 +161,7 @@ def letterbox_char_to_canvas(
     return canvas
 
 
+# 中文注释：从字符画布中裁剪单笔区域并记录几何信息。
 def crop_stroke_from_canvas(
     char_canvas: np.ndarray,
     bbox: Tuple[int, int, int, int],
@@ -185,6 +192,7 @@ def crop_stroke_from_canvas(
 
     return np.array(patch_img, dtype=np.float32) / 255.0
 
+# 中文注释：统一目标图前景/背景极性，便于训练。
 def normalize_target_polarity(
     target: np.ndarray,
     invert_threshold: float = 0.5,
@@ -209,6 +217,7 @@ def normalize_target_polarity(
 
     return np.clip(target, 0.0, 1.0).astype(np.float32)
 
+# 中文注释：建立 MakeHanzi 字符到中线的索引。
 def build_makehanzi_index(dataset: MakeHanziDataset) -> Dict[str, Dict[str, Any]]:
     """
     MakeMeAHanzi 字符索引：
@@ -217,6 +226,7 @@ def build_makehanzi_index(dataset: MakeHanziDataset) -> Dict[str, Dict[str, Any]
     return {sample["character"]: sample for sample in dataset.samples}
 
 
+# 中文注释：根据数据表建立字符到图片路径的索引。
 def build_image_index(dataset: CalligraphyImageDataset) -> Dict[str, List[Dict[str, Any]]]:
     """
     懒加载版本：
@@ -244,6 +254,7 @@ def build_image_index(dataset: CalligraphyImageDataset) -> Dict[str, List[Dict[s
 
     return index
 
+# 中文注释：计算二维折线长度。
 def polyline_length(points: List[Tuple[float, float]]) -> float:
     total = 0.0
     for i in range(1, len(points)):
@@ -252,6 +263,7 @@ def polyline_length(points: List[Tuple[float, float]]) -> float:
         total += float((dx * dx + dy * dy) ** 0.5)
     return total
 
+# 中文注释：兼容不同字段名提取 MakeHanzi 中线。
 def _get_makehanzi_medians(makehanzi_sample: Dict[str, Any]) -> List[Any]:
     """
     兼容 MakeHanziDataset 的 sample 结构。
@@ -266,6 +278,7 @@ def _get_makehanzi_medians(makehanzi_sample: Dict[str, Any]) -> List[Any]:
     return getattr(graphics, "medians", []) or []
 
 
+# 中文注释：解析命令行参数，准备日志文件并分派到对应子命令。
 def main(args):
     cfg = load_config(args.config)
 
@@ -511,6 +524,7 @@ def main(args):
     print(f"[DONE] rasterized targets : {fake_count}")
 
 
+# 中文注释：作为脚本直接运行时，从这里进入命令行流程或示例测试。
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(

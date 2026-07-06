@@ -1,3 +1,4 @@
+# 中文注释：本文件从标定 CSV 中拟合动态笔刷的宽度、阻尼和偏移多项式。
 import argparse
 import csv
 import json
@@ -11,6 +12,7 @@ from config import load_config, ensure_dirs
 from models.dynamic_brush import fit_poly_from_pairs
 
 
+# 中文注释：读取动态笔刷标定数据。
 def load_calibration_csv(csv_path: str) -> Dict[str, List[float]]:
     path = Path(csv_path)
     if not path.exists():
@@ -26,6 +28,7 @@ def load_calibration_csv(csv_path: str) -> Dict[str, List[float]]:
     return cols
 
 
+# 中文注释：按 z 深度聚合标定样本，降低噪声。
 def aggregate_by_z(curves: Dict[str, List[float]], method: str = "mean") -> Dict[str, List[float]]:
     bucket: Dict[float, Dict[str, List[float]]] = {}
     for z, w, d, o in zip(curves["z"], curves["width"], curves["drag"], curves["offset"]):
@@ -44,6 +47,7 @@ def aggregate_by_z(curves: Dict[str, List[float]], method: str = "mean") -> Dict
     return out
 
 
+# 中文注释：按比例划分训练集和验证集。
 def split_train_val(xs: List[float], ys: List[float], val_ratio: float = 0.2):
     idx = np.arange(len(xs))
     if len(idx) <= 2:
@@ -56,6 +60,7 @@ def split_train_val(xs: List[float], ys: List[float], val_ratio: float = 0.2):
     return (xs_np[train_idx].tolist(), ys_np[train_idx].tolist()), (xs_np[val_idx].tolist(), ys_np[val_idx].tolist())
 
 
+# 中文注释：计算多项式系数在样本上的均方误差。
 def mse_for_coeffs(coeffs: List[float], xs: List[float], ys: List[float]) -> float:
     pred = []
     for x in xs:
@@ -65,6 +70,7 @@ def mse_for_coeffs(coeffs: List[float], xs: List[float], ys: List[float]) -> flo
     return float(np.mean((pred_np - ys_np) ** 2))
 
 
+# 中文注释：在候选阶数中选择验证误差最低的多项式拟合。
 def auto_fit_curve(xs: List[float], ys: List[float], min_degree: int, max_degree: int, val_ratio: float = 0.2) -> Tuple[List[float], int, float]:
     (xtr, ytr), (xva, yva) = split_train_val(xs, ys, val_ratio=val_ratio)
     best_coeffs = None
@@ -80,6 +86,7 @@ def auto_fit_curve(xs: List[float], ys: List[float], min_degree: int, max_degree
     return best_coeffs, best_degree, best_mse
 
 
+# 中文注释：分别拟合宽度、阻尼和偏移曲线。
 def fit_all_auto(curves: Dict[str, List[float]], min_degree: int, max_degree: int, val_ratio: float = 0.2) -> Dict[str, object]:
     z = curves["z"]
     width_coeffs, width_deg, width_mse = auto_fit_curve(z, curves["width"], min_degree, max_degree, val_ratio)
@@ -98,6 +105,7 @@ def fit_all_auto(curves: Dict[str, List[float]], min_degree: int, max_degree: in
     }
 
 
+# 中文注释：把拟合得到的多项式系数保存为 JSON。
 def save_coeffs_json(coeffs: Dict[str, object], out_json: str) -> None:
     path = Path(out_json)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -105,9 +113,11 @@ def save_coeffs_json(coeffs: Dict[str, object], out_json: str) -> None:
         json.dump(coeffs, f, ensure_ascii=False, indent=2)
 
 
+# 中文注释：保存拟合曲线采样点，便于检查。
 def save_fit_samples(coeffs: Dict[str, object], z_values: List[float], out_csv: str) -> None:
     path = Path(out_csv)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # 中文注释：按多项式系数计算给定 x 的拟合值。
     def poly(c, x):
         return sum(ci * (x ** i) for i, ci in enumerate(c))
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
@@ -121,8 +131,10 @@ def save_fit_samples(coeffs: Dict[str, object], z_values: List[float], out_csv: 
                 "offset_fit": poly(coeffs["offset_coeffs"], z),
             })
 
+# 中文注释：绘制标定散点与拟合曲线。
 def plot_fit_curves(raw_curves, agg_curves, coeffs, out_dir: str) -> None:
     Path(out_dir).mkdir(parents=True, exist_ok=True)
+    # 中文注释：按多项式系数计算给定 x 的拟合值。
     def poly(c, x):
         return sum(ci * (x ** i) for i, ci in enumerate(c))
     z_min, z_max = min(agg_curves["z"]), max(agg_curves["z"] )
@@ -143,6 +155,7 @@ def plot_fit_curves(raw_curves, agg_curves, coeffs, out_dir: str) -> None:
         plt.close()
 
 
+# 中文注释：解析命令行参数，准备日志文件并分派到对应子命令。
 def main(args):
     cfg = load_config(args.config)
     ensure_dirs(cfg)
@@ -159,6 +172,7 @@ def main(args):
     plot_fit_curves(raw_curves, curves, coeffs, args.output_plot_dir)
 
 
+# 中文注释：作为脚本直接运行时，从这里进入命令行流程或示例测试。
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default=None, help="Path to yaml config")

@@ -1,3 +1,4 @@
+# 中文注释：本文件融合动态笔刷模型和 B-BSMG 神经网络，将轨迹渲染为笔画/字符图像。
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -18,10 +19,12 @@ from models.geometry import (
 NORM_PADDING = 4
 
 
+# 中文注释：把数组或张量移动到渲染器所在设备并设定类型。
 def _to_device_tensor(x: List[float], device) -> torch.Tensor:
     return torch.tensor(x, dtype=torch.float32, device=device).unsqueeze(0)
 
 
+# 中文注释：计算二维折线长度。
 def polyline_length(points: List[Tuple[float, float]]) -> float:
     total = 0.0
     for i in range(1, len(points)):
@@ -31,6 +34,7 @@ def polyline_length(points: List[Tuple[float, float]]) -> float:
     return total
 
 
+# 中文注释：把局部笔触图像按中心位置贴到大画布上。
 def paste_patch(canvas: np.ndarray, patch: np.ndarray, x0: int, y0: int) -> np.ndarray:
     """
     保留工具函数：如果后续改回局部 patch 粘贴式渲染可以继续用。
@@ -61,7 +65,9 @@ def paste_patch(canvas: np.ndarray, patch: np.ndarray, x0: int, y0: int) -> np.n
     return canvas
 
 
+# 中文注释：负责把轨迹、动态笔刷和神经笔触生成器融合成渲染图。
 class FusionRenderer:
+    # 中文注释：初始化对象并保存后续处理所需的配置和成员变量。
     def __init__(
         self,
         image_size: int = 128,
@@ -88,6 +94,7 @@ class FusionRenderer:
 
         self.bbsmg.eval()
 
+    # 中文注释：加载已训练的 B-BSMG 权重并切换到评估模式。
     def load_weights(self, ckpt_path: str) -> None:
         path = Path(ckpt_path)
         if not path.exists():
@@ -107,6 +114,7 @@ class FusionRenderer:
         self.bbsmg.load_state_dict(state)
         self.bbsmg.eval()
 
+    # 中文注释：把单个动态笔刷状态渲染为局部笔触贴片。
     @torch.no_grad()
     def render_state(
         self,
@@ -138,6 +146,7 @@ class FusionRenderer:
 
         return pred
 
+    # 中文注释：使用额外笔画特征渲染单个状态对应的局部笔触。
     @torch.no_grad()
     def render_state_with_stroke_features(
         self,
@@ -189,6 +198,7 @@ class FusionRenderer:
 
         return pred
 
+    # 中文注释：渲染一条笔画，并返回画布及中间状态。
     def render_stroke(
         self,
         stroke: StrokeTrajectory,
@@ -237,6 +247,7 @@ class FusionRenderer:
             "stroke_image": stroke_img,
         }
 
+    # 中文注释：渲染完整字符的所有笔画。
     def render_character(
     self,
     sample: CharacterTrajectory,
@@ -293,6 +304,7 @@ class FusionRenderer:
         }
 
 
+# 中文注释：作为脚本直接运行时，从这里进入命令行流程或示例测试。
 if __name__ == "__main__":
     renderer = FusionRenderer(
         image_size=128,

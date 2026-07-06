@@ -1,3 +1,4 @@
+# 中文注释：本文件提供命令行入口，串联动态模型拟合、伪样本构建、B-BSMG 训练和轨迹优化流程。
 import argparse
 import subprocess
 import sys
@@ -5,6 +6,7 @@ from pathlib import Path
 from datetime import datetime
 
 
+# 中文注释：在启动子命令前检查输入路径是否存在，尽早暴露配置错误。
 def ensure_exists(path_str: str, desc: str) -> None:
     if path_str is None:
         return
@@ -13,12 +15,14 @@ def ensure_exists(path_str: str, desc: str) -> None:
         raise FileNotFoundError(f"{desc} not found: {path_str}")
 
 
+# 中文注释：按命令名和时间戳生成日志文件路径。
 def get_log_file(log_dir: str, command: str) -> Path:
     Path(log_dir).mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     return Path(log_dir) / f"{command}_{ts}.log"
 
 
+# 中文注释：执行子命令，并可选择将标准输出和错误写入日志。
 def run(cmd, log_file: Path = None):
     print("[RUN]", " ".join(cmd))
     if log_file is None:
@@ -29,6 +33,7 @@ def run(cmd, log_file: Path = None):
             subprocess.run(cmd, check=True, stdout=f, stderr=subprocess.STDOUT)
 
 
+# 中文注释：组织并执行动态笔刷模型拟合命令。
 def cmd_fit(args):
     ensure_exists(args.calibration_csv, "Calibration CSV")
     cmd = [sys.executable, "tools/fit_dynamic_model.py", "--config", args.config, "--calibration_csv", args.calibration_csv, "--output_json", args.output_json, "--output_fit_csv", args.output_fit_csv]
@@ -38,17 +43,20 @@ def cmd_fit(args):
     run(cmd, args.log_file)
 
 
+# 中文注释：组织并执行伪配对样本构建命令。
 def cmd_build(args):
     cmd = [sys.executable, "tools/build_pseudo_pairs.py", "--config", args.config, "--output_npz", args.output_npz]
     run(cmd, args.log_file)
 
 
+# 中文注释：组织并执行 B-BSMG 训练命令。
 def cmd_train(args):
     ensure_exists(args.npz_path, "Training NPZ")
     cmd = [sys.executable, "tools/train_bbsmg.py", "--config", args.config, "--npz_path", args.npz_path, "--val_ratio", str(args.val_ratio)]
     run(cmd, args.log_file)
 
 
+# 中文注释：组织并执行轨迹优化命令。
 def cmd_optimize(args):
     ensure_exists(args.target_image, "Target image")
     if args.bbsmg_ckpt:
@@ -70,6 +78,7 @@ def cmd_optimize(args):
     run(cmd, args.log_file)
 
 
+# 中文注释：按顺序执行完整流水线中未被跳过的步骤。
 def cmd_all(args):
     if not args.skip_fit:
         fit_args = argparse.Namespace(config=args.config, calibration_csv=args.calibration_csv, output_json=args.output_json, output_fit_csv=args.output_fit_csv, output_plot_dir=args.output_plot_dir, aggregate=args.aggregate, min_degree=args.min_degree, max_degree=args.max_degree, val_ratio=args.fit_val_ratio, log_file=args.log_file)
@@ -84,6 +93,7 @@ def cmd_all(args):
     cmd_optimize(opt_args)
 
 
+# 中文注释：构建命令行参数解析器和所有子命令参数。
 def build_parser():
     parser = argparse.ArgumentParser(description="Fusion Brush unified main program (enhanced)")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -158,6 +168,7 @@ def build_parser():
     return parser
 
 
+# 中文注释：解析命令行参数，准备日志文件并分派到对应子命令。
 def main():
     parser = build_parser()
     args = parser.parse_args()
@@ -166,5 +177,6 @@ def main():
     args.func(args)
 
 
+# 中文注释：作为脚本直接运行时，从这里进入命令行流程或示例测试。
 if __name__ == "__main__":
     main()

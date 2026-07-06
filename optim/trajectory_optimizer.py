@@ -1,3 +1,4 @@
+# 中文注释：本文件基于渲染残差优化轨迹控制点，使生成图像贴近目标书法图。
 from dataclasses import dataclass
 from typing import Dict, Any, List, Tuple, Optional
 
@@ -12,6 +13,7 @@ from optim.lm import lm_solve, LMResult
 from models.geometry import trajectory_bounds
 
 
+# 中文注释：保存轨迹优化后的样本、图像、代价和迭代信息。
 @dataclass
 class TrajectoryOptimizationResult:
     order: int
@@ -21,6 +23,7 @@ class TrajectoryOptimizationResult:
     rendered_image: np.ndarray
 
 
+# 中文注释：读取目标灰度图并缩放到指定画布尺寸。
 def load_target_image(path: str, image_size: int = 128) -> np.ndarray:
     img = Image.open(path).convert("L").resize((image_size, image_size))
     arr = np.array(img, dtype=np.float32) / 255.0
@@ -34,6 +37,7 @@ def load_target_image(path: str, image_size: int = 128) -> np.ndarray:
     return arr
 
 
+# 中文注释：从样本轨迹中提取 xyz 点序列。
 def sample_to_xyz(sample: CharacterTrajectory) -> np.ndarray:
     pts = sample.all_points()
     if len(pts) == 0:
@@ -41,12 +45,14 @@ def sample_to_xyz(sample: CharacterTrajectory) -> np.ndarray:
     return np.asarray([[p.x, p.y, p.z] for p in pts], dtype=np.float64)
 
 
+# 中文注释：从样本轨迹中提取姿态角序列。
 def sample_angles(sample: CharacterTrajectory) -> np.ndarray:
     pts = sample.all_points()
     if len(pts) == 0:
         return np.zeros((0, 3), dtype=np.float64)
     return np.asarray([[p.alpha, p.beta, p.gamma] for p in pts], dtype=np.float64)
 
+# 中文注释：把单条笔画拆分为 xyz 位置和姿态角。
 def stroke_to_xyz_angles(stroke: StrokeTrajectory) -> Tuple[np.ndarray, np.ndarray]:
     pts = stroke.sorted_points()
     xyz = np.asarray([[p.x, p.y, p.z] for p in pts], dtype=np.float64)
@@ -54,6 +60,7 @@ def stroke_to_xyz_angles(stroke: StrokeTrajectory) -> Tuple[np.ndarray, np.ndarr
     return xyz, angles
 
 
+# 中文注释：用每笔 Chebyshev 节点重建完整轨迹样本。
 def rebuild_sample_per_stroke_cheb(
     template: CharacterTrajectory,
     order: int,
@@ -125,6 +132,7 @@ def rebuild_sample_per_stroke_cheb(
         meta=dict(template.meta),
     )
 
+# 中文注释：为每笔轨迹构建 xyz 控制节点和优化向量。
 def build_per_stroke_xyz_decision(
     template: CharacterTrajectory,
     order: int,
@@ -178,6 +186,7 @@ def build_per_stroke_xyz_decision(
 
     return np.concatenate(parts, axis=0).astype(np.float64), specs
 
+# 中文注释：把每笔优化向量解码为轨迹采样点。
 def decode_per_stroke_xyz_decision(
     template: CharacterTrajectory,
     decision_vec: np.ndarray,
@@ -249,6 +258,7 @@ def decode_per_stroke_xyz_decision(
         meta=dict(template.meta),
     )
 
+# 中文注释：把每笔 xyz 和姿态角控制节点拼成 6D 优化向量。
 def stack_decision_vector_6d(
     x_nodes: np.ndarray,
     y_nodes: np.ndarray,
@@ -270,6 +280,7 @@ def stack_decision_vector_6d(
     ).astype(np.float64)
 
 
+# 中文注释：把 6D 优化向量拆回每笔控制节点。
 def unstack_decision_vector_6d(vec: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     vec = np.asarray(vec, dtype=np.float64).reshape(-1)
     if len(vec) % 6 != 0:
@@ -285,6 +296,7 @@ def unstack_decision_vector_6d(vec: np.ndarray) -> Tuple[np.ndarray, np.ndarray,
     )
 
 
+# 中文注释：根据重建的 xyz 和姿态角生成新的轨迹样本。
 def rebuild_sample_from_xyz_angles(
     template: CharacterTrajectory,
     xyz: np.ndarray,
@@ -333,7 +345,9 @@ def rebuild_sample_from_xyz_angles(
     )
 
 
+# 中文注释：封装目标图像残差、正则项和 LM 优化流程。
 class TrajectoryOptimizer:
+    # 中文注释：初始化对象并保存后续处理所需的配置和成员变量。
     def __init__(
         self,
         renderer: FusionRenderer,
@@ -363,6 +377,7 @@ class TrajectoryOptimizer:
         self.stroke_keep_ratio = stroke_keep_ratio
 
 
+    # 中文注释：创建给定参数化方式下的残差函数。
     def _residual_fn_factory(
         self,
         template: CharacterTrajectory,
@@ -420,6 +435,7 @@ class TrajectoryOptimizer:
 
         target_mean = float(target.mean())
 
+        # 中文注释：定义当前示例或优化流程使用的残差函数。
         def residual_fn(decision_vec: np.ndarray) -> np.ndarray:
             sample_cur = decode_per_stroke_xyz_decision(
                 template=template,
@@ -515,6 +531,7 @@ class TrajectoryOptimizer:
         return residual_fn
 
 
+    # 中文注释：执行多阶数轨迹优化并返回最佳结果。
     def optimize(
         self,
         template: CharacterTrajectory,
@@ -573,6 +590,7 @@ class TrajectoryOptimizer:
             max_steps=max_steps,
         )
 
+        # 中文注释：限制 LM 更新步长，避免单次迭代造成过大的轨迹突变。
         def limit_lm_step(step_vec: np.ndarray) -> np.ndarray:
             max_abs = float(np.max(np.abs(step_vec))) if step_vec.size > 0 else 0.0
             max_step = 0.01 * max(bw, bh)
@@ -601,6 +619,7 @@ class TrajectoryOptimizer:
         print(f"[CHECK] final cost={lm_result.final_cost:.6f}", flush=True)
 
 
+        # 中文注释：将优化向量解码为轨迹并立即渲染，便于评估候选结果。
         def decode_and_render(decision_vec: np.ndarray):
             sample_candidate = decode_per_stroke_xyz_decision(
                 template=template,
@@ -635,6 +654,7 @@ class TrajectoryOptimizer:
 
         fg_mask = target > 0.1
 
+        # 中文注释：根据目标图和渲染图的差异为候选轨迹打分。
         def candidate_score(rendered: np.ndarray) -> float:
             global_diff = float(np.abs(rendered - target).mean())
 
@@ -851,6 +871,7 @@ class TrajectoryOptimizer:
         )
 
 
+# 中文注释：作为脚本直接运行时，从这里进入命令行流程或示例测试。
 if __name__ == "__main__":
     print("trajectory_optimizer.py provides 6D TrajectoryOptimizer for closed-loop optimization.")
 # 使用说明：该模块实现了融合笔触模型的首版反向优化闭环。

@@ -1,8 +1,10 @@
+# 中文注释：本文件实现 Levenberg-Marquardt 数值优化器及其辅助函数。
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Dict, Any, List
 import numpy as np
 
 
+# 中文注释：保存 LM 优化结束后的参数、代价和迭代信息。
 @dataclass
 class LMResult:
     x: np.ndarray
@@ -13,11 +15,13 @@ class LMResult:
     history: Dict[str, List[float]] = field(default_factory=dict)
 
 
+# 中文注释：把残差向量转换为平方和代价。
 def squared_cost(residual: np.ndarray) -> float:
     r = np.asarray(residual, dtype=np.float64).reshape(-1)
     return 0.5 * float(np.dot(r, r))
 
 
+# 中文注释：用有限差分估计残差函数的雅可比矩阵。
 def numerical_jacobian(residual_fn: Callable[[np.ndarray], np.ndarray], x: np.ndarray, eps: float = 1e-5) -> np.ndarray:
     x = np.asarray(x, dtype=np.float64).reshape(-1)
     r0 = np.asarray(residual_fn(x), dtype=np.float64).reshape(-1)
@@ -35,6 +39,7 @@ def numerical_jacobian(residual_fn: Callable[[np.ndarray], np.ndarray], x: np.nd
     return J
 
 
+# 中文注释：执行 Levenberg-Marquardt 迭代求解非线性最小二乘问题。
 def lm_solve(residual_fn: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, jacobian_fn: Optional[Callable[[np.ndarray], np.ndarray]] = None, damping: float = 1e-2, damping_up: float = 10.0, damping_down: float = 0.3, max_steps: int = 50, xtol: float = 1e-6, ftol: float = 1e-8, gtol: float = 1e-8, eps_jac: float = 1e-5) -> LMResult:
     x = np.asarray(x0, dtype=np.float64).reshape(-1).copy()
     mu = float(damping)
@@ -88,8 +93,10 @@ def lm_solve(residual_fn: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, ja
     return LMResult(x=x, success=False, num_steps=max_steps, final_cost=cost, message="Maximum steps reached", history=history)
 
 
+# 中文注释：作为脚本直接运行时，从这里进入命令行流程或示例测试。
 if __name__ == "__main__":
     # 拟合 x ≈ 3 的简单示例: residual = [x-3]
+    # 中文注释：定义当前示例或优化流程使用的残差函数。
     def residual_fn(v: np.ndarray) -> np.ndarray:
         return np.array([v[0] - 3.0], dtype=np.float64)
 
