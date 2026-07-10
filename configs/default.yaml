@@ -24,8 +24,8 @@ data:
 train:
   output_dir: outputs
   batch_size: 32
-  epochs: 100
-  lr: 0.001
+  epochs: 20
+  lr: 0.0003
   weight_decay: 0.000001
   num_workers: 0
   save_interval: 10
@@ -34,7 +34,7 @@ train:
 
 # 中文注释：B-BSMG 笔触生成网络结构配置。
 bbsmg:
-  input_dim: 10
+  input_dim: 5
   latent_dim: 128
   base_channels: 64
   out_channels: 1
