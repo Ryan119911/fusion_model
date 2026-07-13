@@ -78,7 +78,10 @@ def main(args):
     )
 
     if args.bbsmg_ckpt is not None:
-        renderer.load_weights(args.bbsmg_ckpt)
+        renderer.load_weights(
+            args.bbsmg_ckpt,
+            normalization_npz=args.normalization_npz,
+        )
 
     # 若 trajectory_optimizer.py 已升级为 6D 版，则 use_6d 仅用于日志提示；否则可在此处切换不同优化器实现。
     optimizer = TrajectoryOptimizer(
@@ -122,6 +125,7 @@ if __name__ == "__main__":
     parser.add_argument("--trajectory_csv", type=str, default=None, help="Override trajectory csv path")
     parser.add_argument("--target_image", type=str, required=True, help="Target character image path")
     parser.add_argument("--bbsmg_ckpt", type=str, default=None, help="Path to trained B-BSMG checkpoint")
+    parser.add_argument("--normalization_npz", type=str, default=None, help="Training NPZ for legacy checkpoints without saved input normalization")
     parser.add_argument("--sample_id", type=str, default=None, help="Select trajectory sample by sample_id")
     parser.add_argument("--character", type=str, default=None, help="Select first trajectory sample for given character")
     parser.add_argument("--index", type=int, default=0, help="Index inside character subset if character is used")

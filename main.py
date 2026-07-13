@@ -66,6 +66,8 @@ def cmd_optimize(args):
     cmd = [sys.executable, "tools/optimize_trajectory.py", "--config", args.config, "--target_image", args.target_image, "--output_dir", args.output_dir, "--order", str(args.order)]
     if args.bbsmg_ckpt:
         cmd += ["--bbsmg_ckpt", args.bbsmg_ckpt]
+    if getattr(args, "normalization_npz", None):
+        cmd += ["--normalization_npz", args.normalization_npz]
     if args.trajectory_csv:
         cmd += ["--trajectory_csv", args.trajectory_csv]
     if args.sample_id:
@@ -89,7 +91,7 @@ def cmd_all(args):
     if not args.skip_train:
         train_args = argparse.Namespace(config=args.config, npz_path=args.output_npz, val_ratio=args.train_val_ratio, log_file=args.log_file)
         cmd_train(train_args)
-    opt_args = argparse.Namespace(config=args.config, target_image=args.target_image, output_dir=args.optimize_output_dir, order=args.order, bbsmg_ckpt=args.bbsmg_ckpt, trajectory_csv=args.trajectory_csv, sample_id=args.sample_id, character=args.character, index=args.index, log_file=args.log_file, use_6d=args.use_6d)
+    opt_args = argparse.Namespace(config=args.config, target_image=args.target_image, output_dir=args.optimize_output_dir, order=args.order, bbsmg_ckpt=args.bbsmg_ckpt, normalization_npz=args.normalization_npz, trajectory_csv=args.trajectory_csv, sample_id=args.sample_id, character=args.character, index=args.index, log_file=args.log_file, use_6d=args.use_6d)
     cmd_optimize(opt_args)
 
 
@@ -128,6 +130,7 @@ def build_parser():
     p4.add_argument("--config", type=str, default="configs/default.yaml")
     p4.add_argument("--target_image", type=str, required=True)
     p4.add_argument("--bbsmg_ckpt", type=str, default=None)
+    p4.add_argument("--normalization_npz", type=str, default=None)
     p4.add_argument("--trajectory_csv", type=str, default=None)
     p4.add_argument("--sample_id", type=str, default=None)
     p4.add_argument("--character", type=str, default=None)
@@ -152,6 +155,7 @@ def build_parser():
     p5.add_argument("--train_val_ratio", type=float, default=0.1)
     p5.add_argument("--target_image", type=str, required=True)
     p5.add_argument("--bbsmg_ckpt", type=str, default="outputs/bbsmg_best.pt")
+    p5.add_argument("--normalization_npz", type=str, default=None)
     p5.add_argument("--trajectory_csv", type=str, default=None)
     p5.add_argument("--sample_id", type=str, default=None)
     p5.add_argument("--character", type=str, default=None)

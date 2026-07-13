@@ -25,7 +25,7 @@ def set_seed(seed: int) -> None:
 
 # 中文注释：读取伪配对 NPZ 文件并提供 B-BSMG 训练样本。
 class BBSMGTrainDataset(Dataset):
-    def __init__(self, npz_path: str):
+    def __init__(self, npz_path: str, coordinate_scale: float = 128.0):
         path = Path(npz_path)
         if not path.exists():
             raise FileNotFoundError(f"Training npz not found: {npz_path}")
@@ -41,10 +41,17 @@ class BBSMGTrainDataset(Dataset):
 
         # 输入归一化：你现在是 5D 输入
         h_max = max(float(np.nanmax(self.inputs[:, 0])), 1.0)
-        self.inputs[:, 0] = self.inputs[:, 0] / h_max
-
-        self.inputs[:, 3] = self.inputs[:, 3] / 128.0
-        self.inputs[:, 4] = self.inputs[:, 4] / 128.0
+        scales = np.ones((self.inputs.shape[1],), dtype=np.float32)
+        scales[0] = h_max
+        if self.inputs.shape[1] > 4:
+            scales[3] = float(coordinate_scale)
+            scales[4] = float(coordinate_scale)
+        self.input_normalization = {
+            "version": 1,
+            "input_dim": int(self.inputs.shape[1]),
+            "scales": scales.tolist(),
+        }
+        self.inputs = self.inputs / scales[None, :]
 
         print("[CHECK] inputs shape:", self.inputs.shape)
         print("[CHECK] targets shape:", self.targets.shape)
@@ -431,8 +438,8 @@ def collate_bbsmg_batch(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch
 
 
 # 中文注释：根据 NPZ 数据构建训练和验证 DataLoader。
-def build_dataloaders(npz_path: str, batch_size: int, num_workers: int, val_ratio: float = 0.1):
-    dataset = BBSMGTrainDataset(npz_path)
+def build_dataloaders(npz_path: str, batch_size: int, num_workers: int, val_ratio: float = 0.1, coordinate_scale: float = 128.0):
+    dataset = BBSMGTrainDataset(npz_path, coordinate_scale=coordinate_scale)
     val_len = max(1, int(len(dataset) * val_ratio)) if len(dataset) > 1 else 0
     train_len = len(dataset) - val_len
     if val_len > 0:
@@ -443,7 +450,7 @@ def build_dataloaders(npz_path: str, batch_size: int, num_workers: int, val_rati
     val_loader = None
     if val_set is not None:
         val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=collate_bbsmg_batch)
-    return train_loader, val_loader
+    return train_loader, val_loader, dataset.input_normalization
 
 
 # 中文注释：执行一个 epoch 的训练并返回平均损失。
@@ -519,7 +526,7 @@ def validate(model: nn.Module, loader: Optional[DataLoader], criterion: nn.Modul
 
 
 # 中文注释：保存模型、优化器状态和配置到检查点文件。
-def save_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, epoch: int, train_loss: float, val_loss: Optional[float], ckpt_path: str) -> None:
+def save_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, epoch: int, train_loss: float, val_loss: Optional[float], ckpt_path: str, input_normalization: Optional[Dict[str, Any]] = None) -> None:
     Path(ckpt_path).parent.mkdir(parents=True, exist_ok=True)
     torch.save({
         "epoch": epoch,
@@ -527,6 +534,7 @@ def save_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, epoch: i
         "optimizer_state": optimizer.state_dict(),
         "train_loss": train_loss,
         "val_loss": val_loss,
+        "input_normalization": input_normalization,
     }, ckpt_path)
 
 
@@ -537,11 +545,12 @@ def main(args):
     set_seed(cfg.train.seed)
 
     device = torch.device(cfg.train.device if torch.cuda.is_available() or cfg.train.device == "cpu" else "cpu")
-    train_loader, val_loader = build_dataloaders(
+    train_loader, val_loader, input_normalization = build_dataloaders(
         npz_path=args.npz_path,
         batch_size=cfg.train.batch_size,
         num_workers=cfg.train.num_workers,
         val_ratio=args.val_ratio,
+        coordinate_scale=cfg.bbsmg.image_size,
     )
 
     model = build_bbsmg(
@@ -575,13 +584,13 @@ def main(args):
         print(msg)
 
         if epoch % cfg.train.save_interval == 0:
-            save_checkpoint(model, optimizer, epoch, train_loss, val_loss, str(Path(cfg.train.output_dir) / f"bbsmg_epoch_{epoch:03d}.pt"))
+            save_checkpoint(model, optimizer, epoch, train_loss, val_loss, str(Path(cfg.train.output_dir) / f"bbsmg_epoch_{epoch:03d}.pt"), input_normalization)
 
         if val_loss is not None and (best_val is None or val_loss < best_val):
             best_val = val_loss
-            save_checkpoint(model, optimizer, epoch, train_loss, val_loss, str(Path(cfg.train.output_dir) / "bbsmg_best.pt"))
+            save_checkpoint(model, optimizer, epoch, train_loss, val_loss, str(Path(cfg.train.output_dir) / "bbsmg_best.pt"), input_normalization)
 
-    save_checkpoint(model, optimizer, cfg.train.epochs, train_loss, val_loss, str(Path(cfg.train.output_dir) / "bbsmg_last.pt"))
+    save_checkpoint(model, optimizer, cfg.train.epochs, train_loss, val_loss, str(Path(cfg.train.output_dir) / "bbsmg_last.pt"), input_normalization)
 
 
 # 中文注释：作为脚本直接运行时，从这里进入命令行流程或示例测试。

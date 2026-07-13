@@ -1,6 +1,36 @@
 # 中文注释：本文件定义 B-BSMG 神经网络，用低维笔画参数生成局部笔触图像。
 import torch
 import torch.nn as nn
+from typing import Any, Dict, Optional
+
+
+def normalize_bbsmg_inputs(
+    params: torch.Tensor,
+    normalization: Optional[Dict[str, Any]],
+) -> torch.Tensor:
+    """Apply the exact feature scaling recorded during training."""
+    if normalization is None:
+        raise RuntimeError(
+            "B-BSMG input normalization is missing. Load a checkpoint that "
+            "contains input_normalization, or provide the training NPZ so the "
+            "normalization can be reconstructed."
+        )
+
+    scales = normalization.get("scales")
+    if scales is None:
+        raise ValueError("input_normalization does not contain 'scales'")
+
+    scale_tensor = torch.as_tensor(
+        scales,
+        dtype=params.dtype,
+        device=params.device,
+    )
+    if params.shape[-1] != scale_tensor.numel():
+        raise ValueError(
+            f"Input dimension {params.shape[-1]} does not match normalization "
+            f"dimension {scale_tensor.numel()}"
+        )
+    return params / scale_tensor
 
 
 # 中文注释：用多层感知机把笔画参数编码为潜变量。

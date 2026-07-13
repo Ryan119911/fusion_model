@@ -8,7 +8,7 @@ import torch
 from utils.types import StrokeTrajectory, CharacterTrajectory, DynamicBrushState
 from models.dynamic_brush import DynamicBrushModel
 from models.geometry import dynamic_state_to_bbsmg_input, normalize_trajectory_xy
-from models.bbsmg import BBSMG
+from models.bbsmg import BBSMG, normalize_bbsmg_inputs
 from models.geometry import (
     dynamic_state_to_bbsmg_input,
     normalize_trajectory_xy,
@@ -82,6 +82,7 @@ class FusionRenderer:
         self.input_dim = input_dim
         self.latent_dim = latent_dim
         self.base_channels = base_channels
+        self.input_normalization: Optional[Dict[str, Any]] = None
 
         self.brush = brush if brush is not None else DynamicBrushModel()
 
@@ -95,12 +96,57 @@ class FusionRenderer:
         self.bbsmg.eval()
 
     # 中文注释：加载已训练的 B-BSMG 权重并切换到评估模式。
-    def load_weights(self, ckpt_path: str) -> None:
+    def set_input_normalization(self, normalization: Dict[str, Any]) -> None:
+        scales = normalization.get("scales")
+        if scales is None or len(scales) != self.input_dim:
+            raise ValueError(
+                f"Expected {self.input_dim} normalization scales, got {scales}"
+            )
+        self.input_normalization = dict(normalization)
+
+    def load_input_normalization_from_npz(self, npz_path: str) -> None:
+        """Reconstruct normalization for legacy checkpoints."""
+        path = Path(npz_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Training NPZ not found: {npz_path}")
+        data = np.load(path, allow_pickle=True)
+        inputs = np.asarray(data["inputs"], dtype=np.float32)
+        if inputs.ndim != 2 or inputs.shape[1] != self.input_dim:
+            raise ValueError(
+                f"NPZ inputs shape {inputs.shape} is incompatible with input_dim={self.input_dim}"
+            )
+        scales = np.ones((self.input_dim,), dtype=np.float32)
+        scales[0] = max(float(np.nanmax(inputs[:, 0])), 1.0)
+        if self.input_dim > 4:
+            scales[3] = float(self.image_size)
+            scales[4] = float(self.image_size)
+        self.set_input_normalization({
+            "version": 1,
+            "input_dim": self.input_dim,
+            "scales": scales.tolist(),
+            "source": str(path),
+        })
+
+    def load_weights(
+        self,
+        ckpt_path: str,
+        normalization_npz: Optional[str] = None,
+    ) -> None:
         path = Path(ckpt_path)
         if not path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
         data = torch.load(path, map_location=self.device)
+
+        if isinstance(data, dict) and data.get("input_normalization") is not None:
+            self.set_input_normalization(data["input_normalization"])
+        elif normalization_npz is not None:
+            self.load_input_normalization_from_npz(normalization_npz)
+        else:
+            raise RuntimeError(
+                "This checkpoint does not contain input_normalization. "
+                "Pass normalization_npz with the NPZ used to train it."
+            )
 
         if isinstance(data, dict) and "model_state" in data:
             state = data["model_state"]
@@ -142,6 +188,7 @@ class FusionRenderer:
         )
 
         inp = _to_device_tensor(bbin.as_list(), self.device)
+        inp = normalize_bbsmg_inputs(inp, self.input_normalization)
         pred = self.bbsmg(inp)[0, 0].detach().cpu().numpy().astype(np.float32)
 
         return pred
@@ -194,6 +241,7 @@ class FusionRenderer:
             raise ValueError(f"Unsupported B-BSMG input_dim: {self.input_dim}")
 
         inp = _to_device_tensor(inp_list, self.device)
+        inp = normalize_bbsmg_inputs(inp, self.input_normalization)
         pred = self.bbsmg(inp)[0, 0].detach().cpu().numpy().astype(np.float32)
 
         return pred
