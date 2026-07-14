@@ -53,6 +53,18 @@ def cmd_build(args):
 def cmd_train(args):
     ensure_exists(args.npz_path, "Training NPZ")
     cmd = [sys.executable, "tools/train_bbsmg.py", "--config", args.config, "--npz_path", args.npz_path, "--val_ratio", str(args.val_ratio)]
+    if getattr(args, "resume", None):
+        ensure_exists(args.resume, "Resume checkpoint")
+        cmd += ["--resume", args.resume]
+    if getattr(args, "epochs", None) is not None:
+        cmd += ["--epochs", str(args.epochs)]
+    if getattr(args, "output_dir", None):
+        cmd += ["--output_dir", args.output_dir]
+    cmd += [
+        "--lr_factor", str(getattr(args, "lr_factor", 0.5)),
+        "--lr_patience", str(getattr(args, "lr_patience", 3)),
+        "--min_lr", str(getattr(args, "min_lr", 1e-6)),
+    ]
     run(cmd, args.log_file)
 
 
@@ -123,6 +135,12 @@ def build_parser():
     p3.add_argument("--config", type=str, default="configs/default.yaml")
     p3.add_argument("--npz_path", type=str, required=True)
     p3.add_argument("--val_ratio", type=float, default=0.1)
+    p3.add_argument("--resume", type=str, default=None)
+    p3.add_argument("--epochs", type=int, default=None)
+    p3.add_argument("--output_dir", type=str, default=None)
+    p3.add_argument("--lr_factor", type=float, default=0.5)
+    p3.add_argument("--lr_patience", type=int, default=3)
+    p3.add_argument("--min_lr", type=float, default=1e-6)
     p3.add_argument("--log_dir", type=str, default="outputs/logs")
     p3.set_defaults(func=cmd_train)
 

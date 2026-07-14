@@ -1,5 +1,6 @@
 # 中文注释：本文件命令行工具：训练 B-BSMG 笔触生成网络并保存检查点。
 import argparse
+import csv
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 import random
@@ -386,50 +387,37 @@ class CompositeStrokeLoss(nn.Module):
         self.structure = LocalStructureLoss()
         self.ink = InkMeanLoss()
 
-    def forward(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    def compute_components(self, preds: torch.Tensor, targets: torch.Tensor) -> Dict[str, torch.Tensor]:
         preds = preds.clamp(1e-6, 1.0 - 1e-6)
         targets = targets.clamp(0.0, 1.0)
 
-        loss_mse = self.mse(preds, targets)
-        loss_ssim = self.ssim(preds, targets)
-        loss_dice = self.dice(preds, targets)
-        loss_cldice = self.cldice(preds, targets)
-        loss_edge = self.edge(preds, targets)
-        loss_structure = self.structure(preds, targets)
-        loss_ink = self.ink(preds, targets)
-        if torch.isnan(loss_mse):
-            print("NaN in mse")
+        components = {
+            "weighted_mse": self.mse(preds, targets),
+            "ssim_loss": self.ssim(preds, targets),
+            "dice_loss": self.dice(preds, targets),
+            "cldice_loss": self.cldice(preds, targets),
+            "edge_loss": self.edge(preds, targets),
+            "structure_loss": self.structure(preds, targets),
+            "ink_loss": self.ink(preds, targets),
+        }
+        for name, value in components.items():
+            if not torch.isfinite(value):
+                print(f"Non-finite validation component: {name}")
+        return components
 
-        if torch.isnan(loss_ssim):
-            print("NaN in ssim")
-
-        if torch.isnan(loss_dice):
-            print("NaN in dice")
-
-        if torch.isnan(loss_cldice):
-            print("NaN in cldice")
-
-        if torch.isnan(loss_edge):
-            print("NaN in edge")
-
-        if torch.isnan(loss_structure):
-            print("NaN in structure")
-
-        if torch.isnan(loss_ink):
-            print("NaN in ink")
-
-
-        total = (
-            self.mse_weight * loss_mse
-            + self.ssim_weight * loss_ssim
-            + self.dice_weight * loss_dice
-            + self.cldice_weight * loss_cldice
-            + self.edge_weight * loss_edge
-            + self.structure_weight * loss_structure
-            + self.ink_weight * loss_ink
+    def combine_components(self, components: Dict[str, torch.Tensor]) -> torch.Tensor:
+        return (
+            self.mse_weight * components["weighted_mse"]
+            + self.ssim_weight * components["ssim_loss"]
+            + self.dice_weight * components["dice_loss"]
+            + self.cldice_weight * components["cldice_loss"]
+            + self.edge_weight * components["edge_loss"]
+            + self.structure_weight * components["structure_loss"]
+            + self.ink_weight * components["ink_loss"]
         )
 
-        return total
+    def forward(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        return self.combine_components(self.compute_components(preds, targets))
 
 # 中文注释：整理 B-BSMG 样本 batch 为模型输入和目标张量。
 def collate_bbsmg_batch(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
@@ -510,33 +498,98 @@ def train_one_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim
 
 # 中文注释：在验证集上评估模型平均损失。
 @torch.no_grad()
-def validate(model: nn.Module, loader: Optional[DataLoader], criterion: nn.Module, device: torch.device) -> Optional[float]:
+def validate_detailed(model: nn.Module, loader: Optional[DataLoader], criterion: CompositeStrokeLoss, device: torch.device) -> Optional[Dict[str, float]]:
     if loader is None:
         return None
     model.eval()
-    running = 0.0
+    running: Dict[str, float] = {}
     count = 0
     for batch in loader:
         inputs = batch["inputs"].to(device)
-        targets = batch["targets"].to(device)
-        preds = model(inputs)
-        loss = criterion(preds, targets)
-        running += float(loss.item()) * inputs.shape[0]
-        count += inputs.shape[0]
-    return running / max(count, 1)
+        targets = batch["targets"].to(device).clamp(0.0, 1.0)
+        preds = model(inputs).clamp(0.0, 1.0)
+        components = criterion.compute_components(preds, targets)
+        total = criterion.combine_components(components)
+
+        pred_binary = preds >= 0.5
+        target_binary = targets >= 0.5
+        intersection = (pred_binary & target_binary).sum(dim=(1, 2, 3)).float()
+        union = (pred_binary | target_binary).sum(dim=(1, 2, 3)).float()
+        iou = ((intersection + 1e-6) / (union + 1e-6)).mean()
+
+        values = {name: float(value.item()) for name, value in components.items()}
+        values.update({
+            "composite_loss": float(total.item()),
+            "plain_mse": float(F.mse_loss(preds, targets).item()),
+            "mae": float(F.l1_loss(preds, targets).item()),
+            "ssim_score": 1.0 - values["ssim_loss"],
+            "dice_score": 1.0 - values["dice_loss"],
+            "iou_at_0.5": float(iou.item()),
+        })
+        batch_size = inputs.shape[0]
+        for name, value in values.items():
+            running[name] = running.get(name, 0.0) + value * batch_size
+        count += batch_size
+    return {name: value / max(count, 1) for name, value in running.items()}
+
+
+def append_metrics_csv(path: Path, epoch: int, train_loss: float, lr: float, val_metrics: Optional[Dict[str, float]]) -> None:
+    row: Dict[str, Any] = {
+        "epoch": epoch,
+        "learning_rate": lr,
+        "train_loss": train_loss,
+    }
+    if val_metrics is not None:
+        row.update({f"val_{name}": value for name, value in val_metrics.items()})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not path.exists()
+    with open(path, "a", encoding="utf-8-sig", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=list(row.keys()))
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
 
 
 # 中文注释：保存模型、优化器状态和配置到检查点文件。
-def save_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, epoch: int, train_loss: float, val_loss: Optional[float], ckpt_path: str, input_normalization: Optional[Dict[str, Any]] = None) -> None:
+def save_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, scheduler, epoch: int, train_loss: float, val_metrics: Optional[Dict[str, float]], best_val: Optional[float], ckpt_path: str, input_normalization: Optional[Dict[str, Any]] = None) -> None:
     Path(ckpt_path).parent.mkdir(parents=True, exist_ok=True)
+    val_loss = val_metrics.get("composite_loss") if val_metrics is not None else None
     torch.save({
         "epoch": epoch,
         "model_state": model.state_dict(),
         "optimizer_state": optimizer.state_dict(),
+        "scheduler_state": scheduler.state_dict() if scheduler is not None else None,
         "train_loss": train_loss,
         "val_loss": val_loss,
+        "val_metrics": val_metrics,
+        "best_val": best_val,
         "input_normalization": input_normalization,
     }, ckpt_path)
+
+
+def load_resume_checkpoint(path: str, model: nn.Module, optimizer: torch.optim.Optimizer, scheduler, device: torch.device, input_normalization: Dict[str, Any], output_dir: Path):
+    checkpoint = torch.load(path, map_location=device)
+    model.load_state_dict(checkpoint["model_state"])
+    optimizer.load_state_dict(checkpoint["optimizer_state"])
+    if scheduler is not None and checkpoint.get("scheduler_state") is not None:
+        scheduler.load_state_dict(checkpoint["scheduler_state"])
+
+    recorded = checkpoint.get("input_normalization")
+    if recorded is not None and not np.allclose(
+        np.asarray(recorded["scales"], dtype=np.float64),
+        np.asarray(input_normalization["scales"], dtype=np.float64),
+    ):
+        raise ValueError("Resume checkpoint normalization does not match the current NPZ")
+
+    best_val = checkpoint.get("best_val")
+    if best_val is None:
+        best_path = output_dir / "bbsmg_best.pt"
+        if best_path.exists():
+            best_checkpoint = torch.load(best_path, map_location="cpu")
+            best_val = best_checkpoint.get("best_val", best_checkpoint.get("val_loss"))
+        else:
+            best_val = checkpoint.get("val_loss")
+    return int(checkpoint.get("epoch", 0)) + 1, best_val
 
 
 # 中文注释：解析命令行参数，准备日志文件并分派到对应子命令。
@@ -546,6 +599,8 @@ def main(args):
         cfg.train.epochs = args.epochs
     if args.output_dir is not None:
         cfg.train.output_dir = args.output_dir
+    elif args.resume is not None:
+        cfg.train.output_dir = str(Path(args.resume).parent)
     ensure_dirs(cfg)
     set_seed(cfg.train.seed)
 
@@ -584,24 +639,75 @@ def main(args):
         pos_weight=4.0,
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train.lr, weight_decay=cfg.train.weight_decay)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=args.lr_factor,
+        patience=args.lr_patience,
+        min_lr=args.min_lr,
+    )
 
     best_val = None
-    for epoch in range(1, cfg.train.epochs + 1):
+    start_epoch = 1
+    output_dir = Path(cfg.train.output_dir)
+    if args.resume is not None:
+        start_epoch, best_val = load_resume_checkpoint(
+            args.resume,
+            model,
+            optimizer,
+            scheduler,
+            device,
+            input_normalization,
+            output_dir,
+        )
+        print(
+            f"[RESUME] checkpoint={args.resume}, start_epoch={start_epoch}, "
+            f"target_epochs={cfg.train.epochs}, best_val={best_val}"
+        )
+
+    if start_epoch > cfg.train.epochs:
+        print(
+            f"[DONE] Checkpoint already reached epoch {start_epoch - 1}; "
+            f"requested total epochs={cfg.train.epochs}."
+        )
+        return
+
+    metrics_path = output_dir / "training_metrics.csv"
+    for epoch in range(start_epoch, cfg.train.epochs + 1):
         train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device)
-        val_loss = validate(model, val_loader, criterion, device)
-        msg = f"[Epoch {epoch:03d}] train_loss={train_loss:.6f}"
+        val_metrics = validate_detailed(model, val_loader, criterion, device)
+        val_loss = val_metrics.get("composite_loss") if val_metrics is not None else None
+        monitor_loss = val_loss if val_loss is not None else train_loss
+        scheduler.step(monitor_loss)
+        current_lr = float(optimizer.param_groups[0]["lr"])
+
+        msg = f"[Epoch {epoch:03d}] train_loss={train_loss:.6f}, lr={current_lr:.8g}"
         if val_loss is not None:
             msg += f", val_loss={val_loss:.6f}"
         print(msg)
+        if val_metrics is not None:
+            print(
+                "[VAL COMPONENTS] "
+                + ", ".join(
+                    f"{name}={value:.6f}"
+                    for name, value in val_metrics.items()
+                )
+            )
+
+        append_metrics_csv(metrics_path, epoch, train_loss, current_lr, val_metrics)
+
+        is_best = val_loss is not None and (best_val is None or val_loss < best_val)
+        if is_best:
+            best_val = val_loss
 
         if epoch % cfg.train.save_interval == 0:
-            save_checkpoint(model, optimizer, epoch, train_loss, val_loss, str(Path(cfg.train.output_dir) / f"bbsmg_epoch_{epoch:03d}.pt"), input_normalization)
+            save_checkpoint(model, optimizer, scheduler, epoch, train_loss, val_metrics, best_val, str(output_dir / f"bbsmg_epoch_{epoch:03d}.pt"), input_normalization)
 
-        if val_loss is not None and (best_val is None or val_loss < best_val):
-            best_val = val_loss
-            save_checkpoint(model, optimizer, epoch, train_loss, val_loss, str(Path(cfg.train.output_dir) / "bbsmg_best.pt"), input_normalization)
+        if is_best:
+            save_checkpoint(model, optimizer, scheduler, epoch, train_loss, val_metrics, best_val, str(output_dir / "bbsmg_best.pt"), input_normalization)
 
-    save_checkpoint(model, optimizer, cfg.train.epochs, train_loss, val_loss, str(Path(cfg.train.output_dir) / "bbsmg_last.pt"), input_normalization)
+        # Always refresh last checkpoint so interrupted runs can continue.
+        save_checkpoint(model, optimizer, scheduler, epoch, train_loss, val_metrics, best_val, str(output_dir / "bbsmg_last.pt"), input_normalization)
 
 
 # 中文注释：作为脚本直接运行时，从这里进入命令行流程或示例测试。
@@ -612,5 +718,9 @@ if __name__ == "__main__":
     parser.add_argument("--val_ratio", type=float, default=0.1, help="Validation split ratio")
     parser.add_argument("--epochs", type=int, default=None, help="Override the configured number of epochs")
     parser.add_argument("--output_dir", type=str, default=None, help="Override the configured checkpoint directory")
+    parser.add_argument("--resume", type=str, default=None, help="Resume model, optimizer, scheduler and epoch from a checkpoint")
+    parser.add_argument("--lr_factor", type=float, default=0.5, help="Learning-rate decay factor")
+    parser.add_argument("--lr_patience", type=int, default=3, help="Validation plateaus before reducing learning rate")
+    parser.add_argument("--min_lr", type=float, default=1e-6, help="Minimum learning rate")
     args = parser.parse_args()
     main(args)
