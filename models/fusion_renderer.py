@@ -117,9 +117,8 @@ class FusionRenderer:
             )
         scales = np.ones((self.input_dim,), dtype=np.float32)
         scales[0] = max(float(np.nanmax(inputs[:, 0])), 1.0)
-        if self.input_dim > 4:
-            scales[3] = float(self.image_size)
-            scales[4] = float(self.image_size)
+        if self.input_dim > 3:
+            scales[3:] = float(self.image_size)
         self.set_input_normalization({
             "version": 1,
             "input_dim": self.input_dim,

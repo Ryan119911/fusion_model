@@ -501,6 +501,12 @@ def main(args):
     targets_arr = np.asarray(targets, dtype=np.float32)
     metas_arr = np.asarray(metas, dtype=object)
 
+    if inputs_arr.shape[1] != cfg.bbsmg.input_dim:
+        raise ValueError(
+            f"Generated input dimension {inputs_arr.shape[1]} does not match "
+            f"config bbsmg.input_dim={cfg.bbsmg.input_dim}."
+        )
+
     out_path = Path(output_npz)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 

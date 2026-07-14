@@ -43,9 +43,10 @@ class BBSMGTrainDataset(Dataset):
         h_max = max(float(np.nanmax(self.inputs[:, 0])), 1.0)
         scales = np.ones((self.inputs.shape[1],), dtype=np.float32)
         scales[0] = h_max
-        if self.inputs.shape[1] > 4:
-            scales[3] = float(coordinate_scale)
-            scales[4] = float(coordinate_scale)
+        # Features after h/alpha/beta are all canvas-space geometry:
+        # x0, y0, x1, y1, dx, dy, length (or x0/y0 in legacy 5D data).
+        if self.inputs.shape[1] > 3:
+            scales[3:] = float(coordinate_scale)
         self.input_normalization = {
             "version": 1,
             "input_dim": int(self.inputs.shape[1]),
@@ -541,6 +542,10 @@ def save_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, epoch: i
 # 中文注释：解析命令行参数，准备日志文件并分派到对应子命令。
 def main(args):
     cfg = load_config(args.config)
+    if args.epochs is not None:
+        cfg.train.epochs = args.epochs
+    if args.output_dir is not None:
+        cfg.train.output_dir = args.output_dir
     ensure_dirs(cfg)
     set_seed(cfg.train.seed)
 
@@ -552,6 +557,12 @@ def main(args):
         val_ratio=args.val_ratio,
         coordinate_scale=cfg.bbsmg.image_size,
     )
+    if input_normalization["input_dim"] != cfg.bbsmg.input_dim:
+        raise ValueError(
+            f"NPZ input dimension {input_normalization['input_dim']} does not "
+            f"match config bbsmg.input_dim={cfg.bbsmg.input_dim}. "
+            "Rebuild the NPZ or use configs/legacy_5d.yaml for an old model."
+        )
 
     model = build_bbsmg(
         input_dim=cfg.bbsmg.input_dim,
@@ -599,5 +610,7 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default=None, help="Path to yaml config")
     parser.add_argument("--npz_path", type=str, required=True, help="Training dataset npz with keys: inputs, targets")
     parser.add_argument("--val_ratio", type=float, default=0.1, help="Validation split ratio")
+    parser.add_argument("--epochs", type=int, default=None, help="Override the configured number of epochs")
+    parser.add_argument("--output_dir", type=str, default=None, help="Override the configured checkpoint directory")
     args = parser.parse_args()
     main(args)

@@ -34,7 +34,7 @@ train:
 
 # 中文注释：B-BSMG 笔触生成网络结构配置。
 bbsmg:
-  input_dim: 5
+  input_dim: 10
   latent_dim: 128
   base_channels: 64
   out_channels: 1
