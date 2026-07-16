@@ -1,192 +1,208 @@
-# 中文注释：本文件读取并整理轨迹 CSV，生成训练/推理所需的序列张量。
 import csv
+import math
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Callable
+from typing import Any, Callable, Dict, List, Optional
 
 import torch
 from torch.utils.data import Dataset
 
-from utils.types import PointState, TrajectoryPoint, CharacterTrajectory, build_character_trajectory
+from models.geometry import resample_character_trajectory
+from utils.types import (
+    CharacterTrajectory,
+    PointState,
+    TrajectoryPoint,
+    build_character_trajectory,
+)
 
 
-# 中文注释：安全地把 CSV 字段转换为整数。
 def _to_int(value: Any, default: int = 0) -> int:
-    if value is None or value == "":
-        return default
-    return int(value)
+    return default if value in (None, "") else int(float(value))
 
 
-# 中文注释：安全地把 CSV 字段转换为浮点数。
 def _to_float(value: Any, default: float = 0.0) -> float:
-    if value is None or value == "":
-        return default
-    return float(value)
+    return default if value in (None, "") else float(value)
 
 
-# 中文注释：解析轨迹点状态字段，兼容数字和字符串写法。
 def parse_state(value: Any) -> PointState:
     if isinstance(value, PointState):
         return value
     if isinstance(value, str):
         text = value.strip().lower()
-        name_map = {
+        names = {
             "down": PointState.DOWN,
             "move": PointState.MOVE,
             "up": PointState.UP,
             "transition": PointState.TRANSITION,
-            "落笔": PointState.DOWN,
-            "行笔": PointState.MOVE,
-            "提笔": PointState.UP,
-            "提笔移动": PointState.TRANSITION,
         }
-        if text in name_map:
-            return name_map[text]
+        if text in names:
+            return names[text]
     return PointState.from_value(int(value))
 
 
-# 中文注释：把 CSV 一行转换为 TrajectoryPoint。
-def row_to_point(row: Dict[str, Any]) -> TrajectoryPoint:
+def row_to_point(
+    row: Dict[str, Any],
+    timestamp_column: Optional[str] = None,
+) -> TrajectoryPoint:
+    timestamp = None
+    if timestamp_column and row.get(timestamp_column) not in (None, ""):
+        timestamp = float(row[timestamp_column])
     return TrajectoryPoint(
-        stroke_id=_to_int(row.get("stroke_id"), 0),
-        point_id=_to_int(row.get("point_id"), 0),
-        x=_to_float(row.get("x"), 0.0),
-        y=_to_float(row.get("y"), 0.0),
-        z=_to_float(row.get("z"), 0.0),
-        alpha=_to_float(row.get("alpha"), 0.0),
-        beta=_to_float(row.get("beta"), 0.0),
-        gamma=_to_float(row.get("gamma"), 0.0),
+        stroke_id=_to_int(row.get("stroke_id")),
+        point_id=_to_int(row.get("point_id")),
+        x=_to_float(row.get("x")),
+        y=_to_float(row.get("y")),
+        z=_to_float(row.get("z")),
+        alpha=_to_float(row.get("alpha")),
+        beta=_to_float(row.get("beta")),
+        gamma=_to_float(row.get("gamma")),
         state=parse_state(row.get("state", 1)),
+        timestamp=timestamp,
     )
 
 
-# 中文注释：根据 CSV 行提取样本分组键。
 def _sample_key(row: Dict[str, Any]) -> str:
-    for key in ["sample_id", "character", "char_id", "file_stem"]:
-        if key in row and row[key] not in (None, ""):
+    for key in ("sample_id", "character", "char_id", "file_stem"):
+        if row.get(key) not in (None, ""):
             return str(row[key])
     return "default_sample"
 
 
-# 中文注释：读取轨迹 CSV 并按样本聚合为字符轨迹。
-def load_trajectory_csv(csv_path: str) -> List[CharacterTrajectory]:
+def _validate_sample(sample: CharacterTrajectory) -> None:
+    points = sample.all_points()
+    if not points:
+        raise ValueError(f"Trajectory sample {sample.meta.get('sample_id')} is empty")
+    for point in points:
+        values = (point.x, point.y, point.z, point.alpha, point.beta, point.gamma)
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError(
+                f"Non-finite trajectory value in sample={sample.meta.get('sample_id')}, "
+                f"stroke={point.stroke_id}, point={point.point_id}"
+            )
+        if int(point.state) not in (0, 1, 2, 3):
+            raise ValueError(f"Unsupported point state: {point.state}")
+
+
+def load_trajectory_csv(
+    csv_path: str,
+    timestamp_column: Optional[str] = None,
+    validate: bool = True,
+    points_per_stroke: Optional[int] = None,
+) -> List[CharacterTrajectory]:
     path = Path(csv_path)
     if not path.exists():
         raise FileNotFoundError(f"Trajectory CSV not found: {csv_path}")
 
     grouped_rows: Dict[str, List[Dict[str, Any]]] = {}
-    with open(path, "r", encoding="utf-8-sig", newline="") as f:
-        reader = csv.DictReader(f)
+    with open(path, "r", encoding="utf-8-sig", newline="") as file:
+        reader = csv.DictReader(file)
+        required = {"stroke_id", "point_id", "x", "y", "z", "state"}
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"Trajectory CSV is missing columns: {sorted(missing)}")
         for row in reader:
             grouped_rows.setdefault(_sample_key(row), []).append(row)
 
     samples: List[CharacterTrajectory] = []
     for sample_id, rows in grouped_rows.items():
-        points = [row_to_point(r) for r in rows]
-        character = None
-        if len(rows) > 0 and rows[0].get("character"):
-            character = str(rows[0]["character"])         
-            meta = {"sample_id": sample_id}
-        samples.append(build_character_trajectory(points, character=character, meta=meta))
+        first = rows[0]
+        metadata = {
+            key: value
+            for key, value in first.items()
+            if key not in {
+                "stroke_id", "point_id", "x", "y", "z",
+                "alpha", "beta", "gamma", "state",
+            }
+        }
+        metadata["sample_id"] = sample_id
+        sample = build_character_trajectory(
+            [row_to_point(row, timestamp_column) for row in rows],
+            character=str(first["character"]) if first.get("character") else None,
+            meta=metadata,
+        )
+        if validate:
+            _validate_sample(sample)
+        if points_per_stroke is not None:
+            sample = resample_character_trajectory(sample, points_per_stroke)
+        samples.append(sample)
     return samples
 
 
-# 中文注释：把字符轨迹转换为特征张量和笔画编号张量。
 def trajectory_to_tensor(sample: CharacterTrajectory) -> Dict[str, torch.Tensor]:
     points = sample.all_points()
-    xyz = []
-    angles = []
-    states = []
-    stroke_ids = []
-    point_ids = []
-    for p in points:
-        xyz.append([p.x, p.y, p.z])
-        angles.append([p.alpha, p.beta, p.gamma])
-        states.append(int(p.state))
-        stroke_ids.append(p.stroke_id)
-        point_ids.append(p.point_id)
-
+    timestamps = [
+        float(point.timestamp) if point.timestamp is not None else float("nan")
+        for point in points
+    ]
     return {
-        "xyz": torch.tensor(xyz, dtype=torch.float32),
-        "angles": torch.tensor(angles, dtype=torch.float32),
-        "states": torch.tensor(states, dtype=torch.long),
-        "stroke_ids": torch.tensor(stroke_ids, dtype=torch.long),
-        "point_ids": torch.tensor(point_ids, dtype=torch.long),
+        "xyz": torch.tensor([[p.x, p.y, p.z] for p in points], dtype=torch.float32),
+        "angles": torch.tensor(
+            [[p.alpha, p.beta, p.gamma] for p in points], dtype=torch.float32
+        ),
+        "states": torch.tensor([int(p.state) for p in points], dtype=torch.long),
+        "stroke_ids": torch.tensor([p.stroke_id for p in points], dtype=torch.long),
+        "point_ids": torch.tensor([p.point_id for p in points], dtype=torch.long),
+        "timestamps": torch.tensor(timestamps, dtype=torch.float64),
     }
 
 
-# 中文注释：PyTorch 数据集封装字符轨迹样本。
 class TrajectoryDataset(Dataset):
-    # 中文注释：初始化对象并保存后续处理所需的配置和成员变量。
-    def __init__(self, csv_path: str, transform: Optional[Callable[[CharacterTrajectory], Any]] = None):
-        self.csv_path = csv_path
-        self.samples = load_trajectory_csv(csv_path)
+    def __init__(
+        self,
+        csv_path: str,
+        transform: Optional[Callable[[CharacterTrajectory], Any]] = None,
+        timestamp_column: Optional[str] = None,
+        validate: bool = True,
+        points_per_stroke: Optional[int] = None,
+    ):
+        self.samples = load_trajectory_csv(
+            csv_path,
+            timestamp_column=timestamp_column,
+            validate=validate,
+            points_per_stroke=points_per_stroke,
+        )
         self.transform = transform
 
-    # 中文注释：返回数据集或容器中的样本数量。
     def __len__(self) -> int:
         return len(self.samples)
 
-    # 中文注释：按索引读取并返回单个样本。
     def __getitem__(self, index: int):
         sample = self.samples[index]
-        if self.transform is not None:
-            return self.transform(sample)
-        return sample
+        return self.transform(sample) if self.transform is not None else sample
 
 
-# 中文注释：把变长二维序列补齐到同一长度。
-def pad_sequence_2d(sequences: List[torch.Tensor], pad_value: float = 0.0) -> torch.Tensor:
-    max_len = max(seq.shape[0] for seq in sequences)
-    feat_dim = sequences[0].shape[1]
-    out = torch.full((len(sequences), max_len, feat_dim), pad_value, dtype=sequences[0].dtype)
-    for i, seq in enumerate(sequences):
-        out[i, : seq.shape[0]] = seq
-    return out
+def _pad_2d(sequences: List[torch.Tensor], value: float = 0.0) -> torch.Tensor:
+    max_len = max(sequence.shape[0] for sequence in sequences)
+    output = torch.full(
+        (len(sequences), max_len, sequences[0].shape[1]),
+        value,
+        dtype=sequences[0].dtype,
+    )
+    for index, sequence in enumerate(sequences):
+        output[index, : sequence.shape[0]] = sequence
+    return output
 
 
-# 中文注释：把变长一维序列补齐到同一长度。
-def pad_sequence_1d(sequences: List[torch.Tensor], pad_value: int = -1) -> torch.Tensor:
-    max_len = max(seq.shape[0] for seq in sequences)
-    out = torch.full((len(sequences), max_len), pad_value, dtype=sequences[0].dtype)
-    for i, seq in enumerate(sequences):
-        out[i, : seq.shape[0]] = seq
-    return out
+def _pad_1d(sequences: List[torch.Tensor], value: float) -> torch.Tensor:
+    max_len = max(sequence.shape[0] for sequence in sequences)
+    output = torch.full(
+        (len(sequences), max_len), value, dtype=sequences[0].dtype
+    )
+    for index, sequence in enumerate(sequences):
+        output[index, : sequence.shape[0]] = sequence
+    return output
 
 
-# 中文注释：整理一个 batch 的变长轨迹样本和掩码。
 def collate_trajectory_batch(batch: List[CharacterTrajectory]) -> Dict[str, Any]:
-    tensor_batch = [trajectory_to_tensor(sample) for sample in batch]
-    xyz_list = [item["xyz"] for item in tensor_batch]
-    angles_list = [item["angles"] for item in tensor_batch]
-    states_list = [item["states"] for item in tensor_batch]
-    stroke_ids_list = [item["stroke_ids"] for item in tensor_batch]
-    point_ids_list = [item["point_ids"] for item in tensor_batch]
-    lengths = torch.tensor([x.shape[0] for x in xyz_list], dtype=torch.long)
-
+    tensors = [trajectory_to_tensor(sample) for sample in batch]
     return {
-        "xyz": pad_sequence_2d(xyz_list, pad_value=0.0),
-        "angles": pad_sequence_2d(angles_list, pad_value=0.0),
-        "states": pad_sequence_1d(states_list, pad_value=-1),
-        "stroke_ids": pad_sequence_1d(stroke_ids_list, pad_value=-1),
-        "point_ids": pad_sequence_1d(point_ids_list, pad_value=-1),
-        "lengths": lengths,
+        "xyz": _pad_2d([item["xyz"] for item in tensors]),
+        "angles": _pad_2d([item["angles"] for item in tensors]),
+        "states": _pad_1d([item["states"] for item in tensors], -1),
+        "stroke_ids": _pad_1d([item["stroke_ids"] for item in tensors], -1),
+        "point_ids": _pad_1d([item["point_ids"] for item in tensors], -1),
+        "timestamps": _pad_1d([item["timestamps"] for item in tensors], float("nan")),
+        "lengths": torch.tensor(
+            [item["xyz"].shape[0] for item in tensors], dtype=torch.long
+        ),
         "raw": batch,
     }
-
-
-# 中文注释：作为脚本直接运行时，从这里进入命令行流程或示例测试。
-if __name__ == "__main__":
-    # 简单自检
-    example_path = "data/raw/trajectories.csv"
-    if Path(example_path).exists():
-        dataset = TrajectoryDataset(example_path)
-        print(f"Loaded trajectory samples: {len(dataset)}")
-        if len(dataset) > 0:
-            sample = dataset[0]
-            print(f"Character: {sample.character}, strokes: {len(sample.strokes)}, points: {len(sample.all_points())}")
-
-# 使用说明：该模块默认读取一个包含表头的 CSV 文件，至少支持字段 stroke_id、point_id、x、y、z、alpha、beta、gamma、state；
-# 如果 CSV 里还包含 character、sample_id、char_id 或 file_stem，则会优先用这些字段把整字样本分组。state 既支持数字编码（0/1/2/3），也支持中英文名称（如 down、move、落笔、提笔移动）。
-# 其中 load_trajectory_csv() 用于把 CSV 解析为 CharacterTrajectory 列表；
-# TrajectoryDataset 提供 PyTorch Dataset 接口；
-# collate_trajectory_batch() 会自动把不同长度的整字轨迹补齐成批量张量，方便后续训练、拟合和优化模块直接调用。

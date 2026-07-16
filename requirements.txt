@@ -1,0 +1,7 @@
+numpy
+scipy
+pillow
+pyyaml
+matplotlib
+h5py
+pytest

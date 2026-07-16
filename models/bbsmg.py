@@ -115,7 +115,7 @@ class BBSMG(nn.Module):
 
 
 # 中文注释：根据配置对象创建 B-BSMG 模型。
-def build_bbsmg(input_dim: int = 5, latent_dim: int = 256, base_channels: int = 64, out_channels: int = 1, image_size: int = 128, use_tanh: bool = False) -> BBSMG:
+def build_bbsmg(input_dim: int = 10, latent_dim: int = 256, base_channels: int = 64, out_channels: int = 1, image_size: int = 128, use_tanh: bool = False) -> BBSMG:
     return BBSMG(input_dim=input_dim, latent_dim=latent_dim, base_channels=base_channels, out_channels=out_channels, image_size=image_size, use_tanh=use_tanh)
 
 

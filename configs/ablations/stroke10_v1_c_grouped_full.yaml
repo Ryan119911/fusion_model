@@ -1,0 +1,4 @@
+train:
+  output_dir: outputs/ablations/stroke10_v1_c_grouped_full
+  split_strategy: group
+  split_manifest: outputs/ablations/grouped_split_manifest.json

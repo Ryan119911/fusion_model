@@ -3,7 +3,9 @@ data/
 outputs/
 np/
 __pycache__/
+.pytest_cache/
 *.pyc
+*.tmp
 *.pth
 *.h5
 *.ckpt

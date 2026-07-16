@@ -1,0 +1,18 @@
+name: ddpm
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - mkl
+  - numpy
+  - scipy
+  - pillow
+  - pyyaml
+  - matplotlib
+  - h5py
+  - pytest
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu118
+      - torch==2.7.1

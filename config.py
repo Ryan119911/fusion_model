@@ -1,11 +1,10 @@
-# 中文注释：本文件集中定义项目配置结构，负责从 YAML 读取参数并创建必要目录。
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
+
 import yaml
 
 
-# 中文注释：数据路径、画布尺寸和书体筛选等数据相关配置。
 @dataclass
 class DataConfig:
     root_dir: str = "data"
@@ -14,50 +13,77 @@ class DataConfig:
     cache_dir: str = "data/cache"
     trajectory_csv: str = "data/raw/trajectories.csv"
     json_dir: str = "data/raw/json_files"
-    # 主数据表：列为 img_path / text / author / chirography / location
     data_csv: str = "data/raw/data.csv"
     dictionary_txt: str = "data/raw/makemeahanzi/dictionary.txt"
     graphics_txt: str = "data/raw/makemeahanzi/graphics.txt"
-    image_dir: str = "data/raw/images"           # img_path 相对此目录解析
-    image_ext: str = ".jpg"                      # 由 .png 改为 .jpg
-    chirography_filter: Optional[str] = "楷"               # 书体筛选（楷/行/草/隶/篆…）
-    z_min: float = 0.15
-    z_max: float = 1.0
-    points_per_stroke: int = 16
+    image_dir: str = "data/raw/images"
+    image_ext: str = ".jpg"
+    chirography_filter: Optional[str] = None
+    z_min: float = 0.0
+    z_max: float = 4.0
+    points_per_stroke: int = 128
     canvas_size: int = 128
     svg_canvas_size: int = 1024
-    # 旧的 label_dir / json_ext 已删除：标注改由 data_csv 提供
+    timestamp_column: Optional[str] = None
+    validate_trajectories: bool = True
 
 
-# 中文注释：训练过程的随机种子、设备、批大小、学习率和输出目录配置。
+@dataclass
+class LossConfig:
+    weighted_mse: float = 1.0
+    ssim: float = 0.3
+    dice: float = 0.3
+    cldice: float = 0.05
+    edge: float = 0.1
+    structure: float = 0.05
+    ink: float = 0.1
+    positive_weight: float = 4.0
+    cldice_iterations: int = 10
+
+
 @dataclass
 class TrainConfig:
     seed: int = 42
     device: str = "cuda"
-    batch_size: int = 64  #临时改小
+    batch_size: int = 16
     num_workers: int = 4
-    lr: float = 1e-4
+    lr: float = 3e-4
     weight_decay: float = 1e-6
-    epochs: int = 100  #临时改小 100
+    epochs: int = 30
     log_interval: int = 20
-    save_interval: int = 5  #临时改小 5
-    output_dir: str = "outputs"
+    save_interval: int = 10
+    output_dir: str = "outputs/bbsmg"
+    amp: bool = True
+    amp_dtype: str = "float16"
+    pin_memory: bool = True
+    persistent_workers: bool = True
+    target_cache_dir: Optional[str] = "data/cache/npz_arrays"
+    split_strategy: str = "group"
+    split_group_key: str = "sample_id"
+    val_ratio: float = 0.1
+    split_manifest: Optional[str] = None
+    lr_factor: float = 0.5
+    lr_patience: int = 3
+    min_lr: float = 1e-6
+    gradient_clip_norm: float = 1.0
+    loss: LossConfig = field(default_factory=LossConfig)
 
 
-# 中文注释：B-BSMG 网络结构相关配置。
 @dataclass
 class BBSMGConfig:
     input_dim: int = 10
-    latent_dim: int = 256
+    feature_schema: str = "stroke10_v1"
+    latent_dim: int = 128
     base_channels: int = 64
     out_channels: int = 1
     image_size: int = 128
     use_tanh: bool = False
 
 
-# 中文注释：动态笔刷模型的多项式阶数和物理近似参数配置。
 @dataclass
 class DynamicBrushConfig:
+    mode: str = "disabled"
+    calibration_path: Optional[str] = None
     kw: float = 0.02
     kd: float = 0.02
     dt: float = 0.01
@@ -67,19 +93,23 @@ class DynamicBrushConfig:
     snap_clip_min: float = 0.0
 
 
-# 中文注释：轨迹优化器的阶数、阻尼、采样数和正则权重配置。
 @dataclass
 class OptimConfig:
     cheb_order_min: int = 3
     cheb_order_max: int = 4
     lm_damping: float = 5e-2
     lm_max_steps: int = 20
+    jacobian_epsilon: float = 1e-5
     render_samples_per_stroke: int = 128
+    optimize_angles: bool = False
+    xy_margin_ratio: float = 0.03
+    z_margin: float = 0.25
+    angle_margin_radians: float = 0.35
+    xyz_reg_weight: float = 1e-4
     z_reg_weight: float = 1e-2
     angle_reg_weight: float = 1e-2
 
 
-# 中文注释：项目总配置，组合数据、训练、模型和优化配置。
 @dataclass
 class FusionBrushConfig:
     data: DataConfig = field(default_factory=DataConfig)
@@ -89,41 +119,71 @@ class FusionBrushConfig:
     optim: OptimConfig = field(default_factory=OptimConfig)
 
 
-# 中文注释：返回一份默认配置对象，作为未提供 YAML 时的基准。
 def get_default_config() -> FusionBrushConfig:
     return FusionBrushConfig()
 
 
-# 中文注释：将字典中的配置项递归写入 dataclass，保留未覆盖的默认值。
-def _update_dataclass(instance, updates: Dict[str, Any]):
+def _update_dataclass(instance: Any, updates: Dict[str, Any], prefix: str = "") -> Any:
+    if not isinstance(updates, dict):
+        raise TypeError(f"Configuration section '{prefix or '<root>'}' must be a mapping")
+    fields = getattr(instance, "__dataclass_fields__", {})
     for key, value in updates.items():
-        if not hasattr(instance, key):
-            continue
+        path = f"{prefix}.{key}" if prefix else key
+        if key not in fields:
+            raise KeyError(f"Unknown configuration key: {path}")
         current = getattr(instance, key)
-        if hasattr(current, "__dataclass_fields__") and isinstance(value, dict):
-            _update_dataclass(current, value)
+        if hasattr(current, "__dataclass_fields__"):
+            _update_dataclass(current, value, path)
         else:
             setattr(instance, key, value)
     return instance
 
 
-# 中文注释：读取 YAML 配置文件并合并到默认配置。
+def _validate_config(cfg: FusionBrushConfig) -> None:
+    from utils.feature_schema import get_feature_schema
+
+    schema = get_feature_schema(cfg.bbsmg.feature_schema)
+    if schema.input_dim != cfg.bbsmg.input_dim:
+        raise ValueError(
+            f"bbsmg.feature_schema={schema.name} requires input_dim={schema.input_dim}"
+        )
+    if cfg.dynamic_brush.mode not in {"disabled", "heuristic", "calibrated"}:
+        raise ValueError("dynamic_brush.mode must be disabled, heuristic, or calibrated")
+    if cfg.dynamic_brush.mode == "calibrated" and not cfg.dynamic_brush.calibration_path:
+        raise ValueError("dynamic_brush.calibration_path is required in calibrated mode")
+    if cfg.train.split_strategy not in {"group", "random"}:
+        raise ValueError("train.split_strategy must be group or random")
+    if cfg.train.amp_dtype not in {"float16", "bfloat16"}:
+        raise ValueError("train.amp_dtype must be float16 or bfloat16")
+    if not 0.0 <= cfg.train.val_ratio < 1.0:
+        raise ValueError("train.val_ratio must be in [0, 1)")
+    if cfg.train.save_interval < 1:
+        raise ValueError("train.save_interval must be >= 1")
+    if cfg.train.batch_size < 1 or cfg.train.num_workers < 0:
+        raise ValueError("train.batch_size must be >= 1 and num_workers must be >= 0")
+    if not 0.0 < cfg.train.lr or not 0.0 < cfg.train.min_lr:
+        raise ValueError("Learning rates must be positive")
+
+
 def load_config(path: Optional[str] = None) -> FusionBrushConfig:
     cfg = get_default_config()
-    if path is None:
-        return cfg
-    path_obj = Path(path)
-    if not path_obj.exists():
-        raise FileNotFoundError(f"Config file not found: {path}")
-    with open(path_obj, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    return _update_dataclass(cfg, data)
+    if path is not None:
+        path_obj = Path(path)
+        if not path_obj.exists():
+            raise FileNotFoundError(f"Config file not found: {path}")
+        with open(path_obj, "r", encoding="utf-8") as file:
+            data = yaml.safe_load(file) or {}
+        _update_dataclass(cfg, data)
+    _validate_config(cfg)
+    return cfg
 
 
-# 中文注释：确保数据缓存、处理结果和训练输出目录存在。
 def ensure_dirs(cfg: FusionBrushConfig) -> None:
-    Path(cfg.data.root_dir).mkdir(parents=True, exist_ok=True)
-    Path(cfg.data.raw_dir).mkdir(parents=True, exist_ok=True)
-    Path(cfg.data.processed_dir).mkdir(parents=True, exist_ok=True)
-    Path(cfg.data.cache_dir).mkdir(parents=True, exist_ok=True)
-    Path(cfg.train.output_dir).mkdir(parents=True, exist_ok=True)
+    for path in (
+        cfg.data.root_dir,
+        cfg.data.raw_dir,
+        cfg.data.processed_dir,
+        cfg.data.cache_dir,
+        cfg.train.output_dir,
+    ):
+        Path(path).mkdir(parents=True, exist_ok=True)

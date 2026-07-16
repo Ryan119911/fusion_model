@@ -1,0 +1,12 @@
+train:
+  output_dir: outputs/ablations/stroke10_v1_a_random_legacy_loss
+  split_strategy: random
+  loss:
+    weighted_mse: 1.0
+    ssim: 0.5
+    dice: 0.5
+    cldice: 0.3
+    edge: 0.2
+    structure: 0.2
+    ink: 0.1
+    positive_weight: 4.0

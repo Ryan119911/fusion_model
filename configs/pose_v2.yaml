@@ -1,0 +1,9 @@
+train:
+  output_dir: outputs/bbsmg_pose_v2
+
+bbsmg:
+  input_dim: 10
+  feature_schema: stroke10_pose_v2
+
+dynamic_brush:
+  mode: disabled

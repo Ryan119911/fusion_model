@@ -37,6 +37,7 @@ class TrajectoryPoint:
     beta: float
     gamma: float
     state: PointState
+    timestamp: Optional[float] = None
 
     # 中文注释：将点的位置和姿态转换为固定顺序元组。
     def as_tuple(self) -> Tuple[float, float, float, float, float, float]:
@@ -54,6 +55,7 @@ class TrajectoryPoint:
             "beta": self.beta,
             "gamma": self.gamma,
             "state": int(self.state),
+            "timestamp": self.timestamp,
         }
 
 # 中文注释：表示同一笔画内的全部轨迹点。

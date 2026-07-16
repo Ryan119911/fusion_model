@@ -1,61 +1,87 @@
-# 中文注释：数据路径、原始资源位置以及画布尺寸配置。
 data:
   root_dir: data
   raw_dir: data/raw
   processed_dir: data/processed
   cache_dir: data/cache
-
   trajectory_csv: data/raw/trajectories.csv
-
   dictionary_txt: data/raw/makemeahanzi/dictionary.txt
   graphics_txt: data/raw/makemeahanzi/graphics.txt
-
   image_dir: data/raw/images
   json_dir: data/raw/json_files
   image_ext: .jpg
-
   data_csv: data/raw/data.csv
-  chirography_filter: 楷
-
+  chirography_filter: null
   canvas_size: 128
   svg_canvas_size: 1024
+  points_per_stroke: 128
+  timestamp_column: null
+  validate_trajectories: true
 
-# 中文注释：训练超参数与运行设备配置。
 train:
-  output_dir: outputs
-  batch_size: 32
-  epochs: 20
+  output_dir: outputs/bbsmg_10d_grouped
+  batch_size: 16
+  epochs: 30
   lr: 0.0003
   weight_decay: 0.000001
-  num_workers: 0
+  num_workers: 4
   save_interval: 10
   seed: 42
   device: cuda
+  amp: true
+  amp_dtype: float16
+  pin_memory: true
+  persistent_workers: true
+  target_cache_dir: data/cache/npz_arrays
+  split_strategy: group
+  split_group_key: sample_id
+  val_ratio: 0.1
+  split_manifest: null
+  lr_factor: 0.5
+  lr_patience: 3
+  min_lr: 0.000001
+  gradient_clip_norm: 1.0
+  loss:
+    weighted_mse: 1.0
+    ssim: 0.3
+    dice: 0.3
+    cldice: 0.05
+    edge: 0.1
+    structure: 0.05
+    ink: 0.1
+    positive_weight: 4.0
+    cldice_iterations: 10
 
-# 中文注释：B-BSMG 笔触生成网络结构配置。
 bbsmg:
   input_dim: 10
+  feature_schema: stroke10_v1
   latent_dim: 128
   base_channels: 64
   out_channels: 1
   image_size: 128
   use_tanh: false
 
-# 中文注释：动态笔刷标定和物理近似参数配置。
 dynamic_brush:
-  width_poly_degree: 3
-  drag_poly_degree: 3
+  mode: disabled
+  calibration_path: null
+  kw: 0.02
+  kd: 0.02
+  dt: 0.01
+  width_poly_degree: 2
+  drag_poly_degree: 2
   offset_poly_degree: 3
-  inertia_w: 0.65
-  inertia_d: 0.65
-  friction_limit: 0.85
+  snap_clip_min: 0.0
 
-# 中文注释：轨迹优化过程中的阶数、阻尼和正则权重配置。
 optim:
   cheb_order_min: 3
   cheb_order_max: 4
   lm_damping: 0.05
   lm_max_steps: 20
+  jacobian_epsilon: 0.00001
   render_samples_per_stroke: 128
+  optimize_angles: false
+  xy_margin_ratio: 0.03
+  z_margin: 0.25
+  angle_margin_radians: 0.35
+  xyz_reg_weight: 0.0001
   z_reg_weight: 0.01
   angle_reg_weight: 0.01
