@@ -96,8 +96,10 @@ class BBSMGTrainDataset(Dataset):
                 pass
         return {
             "inputs": torch.from_numpy(self.inputs[index]),
+            # targets.npy is intentionally read with mmap_mode="r"; copy one
+            # sample so PyTorch never receives a tensor backed by read-only memory.
             "targets": torch.from_numpy(
-                self.targets[index].astype(np.float32, copy=False)
+                np.array(self.targets[index], dtype=np.float32, copy=True)
             ),
             "meta": metadata if isinstance(metadata, dict) else {},
             "index": index,
@@ -216,28 +218,59 @@ def _autocast_context(device: torch.device, enabled: bool, dtype: torch.dtype):
     return torch.autocast(device_type=device.type, dtype=dtype)
 
 
+def _compute_loss_fp32(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    criterion: CompositeStrokeLoss,
+) -> torch.Tensor:
+    """Keep numerically sensitive image losses out of the FP16 autocast path."""
+    with torch.autocast(device_type=predictions.device.type, enabled=False):
+        return criterion(predictions.float(), targets.float())
+
+
+def create_grad_scaler(
+    device: torch.device,
+    enabled: bool,
+    init_scale: float,
+    growth_interval: int,
+    backoff_factor: float,
+) -> Any:
+    kwargs = {
+        "enabled": enabled,
+        "init_scale": init_scale,
+        "growth_interval": growth_interval,
+        "backoff_factor": backoff_factor,
+    }
+    try:
+        return torch.amp.GradScaler(device.type, **kwargs)
+    except (AttributeError, TypeError):
+        return torch.cuda.amp.GradScaler(**kwargs)
+
+
 def train_one_epoch(
     model: nn.Module,
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     criterion: CompositeStrokeLoss,
     device: torch.device,
-    scaler: torch.cuda.amp.GradScaler,
+    scaler: Any,
     amp_enabled: bool,
     amp_dtype: torch.dtype,
     gradient_clip_norm: float,
     log_interval: int,
+    max_consecutive_nonfinite_steps: int,
 ) -> float:
     model.train()
     total_loss = 0.0
     total_count = 0
+    consecutive_nonfinite_steps = 0
     for step, batch in enumerate(loader, start=1):
         inputs = batch["inputs"].to(device, non_blocking=True)
         targets = batch["targets"].to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
         with _autocast_context(device, amp_enabled, amp_dtype):
             predictions = model(inputs)
-            loss = criterion(predictions, targets)
+        loss = _compute_loss_fp32(predictions, targets, criterion)
         if not torch.isfinite(loss):
             raise RuntimeError(f"Non-finite training loss at step {step}")
         scaler.scale(loss).backward()
@@ -246,9 +279,30 @@ def train_one_epoch(
             model.parameters(), gradient_clip_norm
         )
         if not torch.isfinite(gradient_norm):
-            raise RuntimeError(f"Non-finite gradient norm at step {step}")
+            if not amp_enabled:
+                raise RuntimeError(f"Non-finite gradient norm at step {step}")
+            consecutive_nonfinite_steps += 1
+            scale_before = float(scaler.get_scale())
+            optimizer.zero_grad(set_to_none=True)
+            scaler.update()
+            if (
+                consecutive_nonfinite_steps <= 3
+                or consecutive_nonfinite_steps % 5 == 0
+            ):
+                print(
+                    f"[AMP] skipped step={step} for non-finite gradients; "
+                    f"scale={scale_before:.6g}->{float(scaler.get_scale()):.6g}"
+                )
+            if consecutive_nonfinite_steps >= max_consecutive_nonfinite_steps:
+                raise RuntimeError(
+                    "AMP gradients remained non-finite for "
+                    f"{consecutive_nonfinite_steps} consecutive steps. "
+                    "Set train.amp: false to diagnose full-precision training."
+                )
+            continue
         scaler.step(optimizer)
         scaler.update()
+        consecutive_nonfinite_steps = 0
         batch_size = inputs.shape[0]
         total_loss += float(loss.detach()) * batch_size
         total_count += batch_size
@@ -278,9 +332,10 @@ def validate_detailed(
         inputs = batch["inputs"].to(device, non_blocking=True)
         targets = batch["targets"].to(device, non_blocking=True).clamp(0.0, 1.0)
         with _autocast_context(device, amp_enabled, amp_dtype):
-            predictions = model(inputs).clamp(0.0, 1.0)
-            components = criterion.compute_components(predictions, targets)
-            total = criterion.combine_components(components)
+            predictions = model(inputs)
+        predictions = predictions.float().clamp(0.0, 1.0)
+        components = criterion.compute_components(predictions, targets.float())
+        total = criterion.combine_components(components)
         pred_binary = predictions >= 0.5
         target_binary = targets >= 0.5
         intersection = (pred_binary & target_binary).sum((1, 2, 3)).float()
@@ -340,7 +395,7 @@ def save_checkpoint(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     scheduler: Any,
-    scaler: torch.cuda.amp.GradScaler,
+    scaler: Any,
     epoch: int,
     train_loss: float,
     val_metrics: Optional[Dict[str, float]],
@@ -392,7 +447,7 @@ def load_resume_checkpoint(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     scheduler: Any,
-    scaler: torch.cuda.amp.GradScaler,
+    scaler: Any,
     device: torch.device,
     dataset: BBSMGTrainDataset,
 ) -> Tuple[int, Optional[float]]:
@@ -495,7 +550,13 @@ def main(args: argparse.Namespace) -> None:
         patience=cfg.train.lr_patience,
         min_lr=cfg.train.min_lr,
     )
-    scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
+    scaler = create_grad_scaler(
+        device,
+        amp_enabled,
+        cfg.train.amp_init_scale,
+        cfg.train.amp_growth_interval,
+        cfg.train.amp_backoff_factor,
+    )
 
     resolved_config = asdict(cfg)
     with open(output_dir / "resolved_config.json", "w", encoding="utf-8") as file:
@@ -523,7 +584,7 @@ def main(args: argparse.Namespace) -> None:
         train_loss = train_one_epoch(
             model, train_loader, optimizer, criterion, device, scaler,
             amp_enabled, amp_dtype, cfg.train.gradient_clip_norm,
-            cfg.train.log_interval,
+            cfg.train.log_interval, cfg.train.amp_max_consecutive_nonfinite_steps,
         )
         val_metrics = validate_detailed(
             model, val_loader, criterion, device, amp_enabled, amp_dtype

@@ -55,6 +55,10 @@ class TrainConfig:
     output_dir: str = "outputs/bbsmg"
     amp: bool = True
     amp_dtype: str = "float16"
+    amp_init_scale: float = 1024.0
+    amp_growth_interval: int = 2000
+    amp_backoff_factor: float = 0.5
+    amp_max_consecutive_nonfinite_steps: int = 16
     pin_memory: bool = True
     persistent_workers: bool = True
     target_cache_dir: Optional[str] = "data/cache/npz_arrays"
@@ -155,6 +159,16 @@ def _validate_config(cfg: FusionBrushConfig) -> None:
         raise ValueError("train.split_strategy must be group or random")
     if cfg.train.amp_dtype not in {"float16", "bfloat16"}:
         raise ValueError("train.amp_dtype must be float16 or bfloat16")
+    if cfg.train.amp_init_scale <= 0.0:
+        raise ValueError("train.amp_init_scale must be positive")
+    if cfg.train.amp_growth_interval < 1:
+        raise ValueError("train.amp_growth_interval must be >= 1")
+    if not 0.0 < cfg.train.amp_backoff_factor < 1.0:
+        raise ValueError("train.amp_backoff_factor must be in (0, 1)")
+    if cfg.train.amp_max_consecutive_nonfinite_steps < 1:
+        raise ValueError(
+            "train.amp_max_consecutive_nonfinite_steps must be >= 1"
+        )
     if not 0.0 <= cfg.train.val_ratio < 1.0:
         raise ValueError("train.val_ratio must be in [0, 1)")
     if cfg.train.save_interval < 1:

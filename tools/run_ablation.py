@@ -7,8 +7,14 @@ from pathlib import Path
 def run(command, log_path: Path):
     print("[RUN]", " ".join(command))
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(log_path, "w", encoding="utf-8") as log:
-        subprocess.run(command, check=True, stdout=log, stderr=subprocess.STDOUT)
+    try:
+        with open(log_path, "w", encoding="utf-8") as log:
+            subprocess.run(command, check=True, stdout=log, stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        print(f"[FAILED] Child process output from {log_path}:")
+        print("\n".join(lines[-80:]))
+        raise
 
 
 def main(args):
