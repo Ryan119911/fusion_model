@@ -18,6 +18,7 @@ def main() -> None:
         "build": "build_pseudo_pairs",
         "train": "train_bbsmg",
         "evaluate": "evaluate_bbsmg",
+        "render-character": "render_character_comparison",
         "optimize": "optimize_trajectory",
         "fit-dynamic": "fit_dynamic_model",
         "audit": "audit_npz",

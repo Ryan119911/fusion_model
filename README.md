@@ -85,3 +85,21 @@ python tools/summarize_experiments.py
 python -m unittest discover -s tests -v
 python -m compileall -q .
 ```
+
+## Character-level inference comparison
+
+This command renders the complete `武_fake_sim` trajectory directly with B-BSMG and compares it with the target image on one 128x128 canvas. It does not read or stitch per-stroke images from `outputs/eval_10d_full`.
+
+```bash
+python -u main.py render-character \
+  --config configs/default.yaml \
+  --trajectory_csv data/raw/trajectories.csv \
+  --character 武 \
+  --sample_id 武_fake_sim \
+  --target_image data/raw/targets/wu_kaishu_target.png \
+  --checkpoint outputs/bbsmg_10d_full/bbsmg_best.pt \
+  --normalization_npz data/processed/bbsmg_train_10d.npz \
+  --output_dir outputs/character_comparisons
+```
+
+The output directory contains target, prediction, absolute difference, and `target | prediction | absolute difference` images, plus a JSON report with MAE, MSE, Dice, and IoU. Omit `--normalization_npz` when the checkpoint already stores input normalization.
