@@ -1,6 +1,7 @@
 train:
   output_dir: outputs/ablations/stroke10_v1_d_no_topology
   split_strategy: group
+  character_loss_weight: 0.0
   split_manifest: outputs/ablations/grouped_split_manifest.json
   loss:
     cldice: 0.0

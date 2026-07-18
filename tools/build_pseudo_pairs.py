@@ -14,10 +14,19 @@ from datasets.makehanzi_dataset import MakeHanziDataset
 from datasets.trajectory_dataset import load_trajectory_csv
 from models.dynamic_brush import build_dynamic_brush
 from models.geometry import compute_heading, normalize_trajectory_xy
+from utils.character_groups import (
+    validate_character_target_mapping,
+    validate_group_consistency,
+)
 from utils.feature_schema import build_stroke_features, get_feature_schema
+from utils.image_preprocessing import (
+    DEFAULT_CANVAS_PADDING,
+    letterbox_character_image,
+    normalize_image_polarity,
+)
 
 
-NORM_PADDING = 4
+NORM_PADDING = DEFAULT_CANVAS_PADDING
 
 
 def rasterize_polyline(
@@ -44,13 +53,7 @@ def rasterize_stroke_mask(
 
 
 def normalize_target_polarity(target: np.ndarray) -> np.ndarray:
-    target = np.asarray(target, dtype=np.float32)
-    if target.max(initial=0.0) > 1.0:
-        target = target / 255.0
-    target = np.clip(target, 0.0, 1.0)
-    if float(target.mean()) > 0.5:
-        target = 1.0 - target
-    return target
+    return normalize_image_polarity(target)
 
 
 def letterbox_char_to_canvas(
@@ -58,26 +61,12 @@ def letterbox_char_to_canvas(
     canvas_size: int = 128,
     padding: int = NORM_PADDING,
 ) -> np.ndarray:
-    array = image_tensor.detach().cpu().numpy()
-    if array.ndim == 3:
-        array = array[0] if array.shape[0] == 1 else array.mean(axis=0)
-    height, width = array.shape
-    available = max(canvas_size - 2 * padding, 1)
-    scale = min(available / max(width, 1), available / max(height, 1))
-    new_size = (
-        max(1, int(round(width * scale))),
-        max(1, int(round(height * scale))),
+    canvas, _ = letterbox_character_image(
+        image_tensor,
+        canvas_size=canvas_size,
+        padding=padding,
+        crop_foreground=True,
     )
-    resized = Image.fromarray(
-        np.clip(array * 255.0, 0, 255).astype(np.uint8)
-    ).resize(new_size, Image.Resampling.BILINEAR)
-    offset_x = padding + (available - new_size[0]) // 2
-    offset_y = padding + (available - new_size[1]) // 2
-    canvas = np.zeros((canvas_size, canvas_size), dtype=np.float32)
-    canvas[
-        offset_y:offset_y + new_size[1],
-        offset_x:offset_x + new_size[0],
-    ] = np.asarray(resized, dtype=np.float32) / 255.0
     return canvas
 
 
@@ -158,6 +147,8 @@ def main(args: argparse.Namespace) -> None:
 
     inputs: List[List[float]] = []
     targets: List[np.ndarray] = []
+    character_targets: List[np.ndarray] = []
+    character_target_indices: List[int] = []
     metadata: List[Dict[str, Any]] = []
     image_counters: Dict[str, int] = {}
     canvas_size = cfg.data.canvas_size
@@ -174,6 +165,38 @@ def main(args: argparse.Namespace) -> None:
         if makehanzi_sample and makehanzi_sample.get("graphics"):
             medians = makehanzi_sample["graphics"].medians or []
 
+        used_real_image = False
+        source: Dict[str, Any] = {}
+        canvas = None
+        canvas_transform = None
+        candidates = image_index.get(sample.character, [])
+        if image_dataset is not None and candidates:
+            candidate_index = image_counters.get(sample.character, 0) % len(candidates)
+            image_counters[sample.character] = candidate_index + 1
+            item = candidates[candidate_index]
+            image_sample = image_dataset._build_sample(item)
+            canvas, canvas_transform = letterbox_character_image(
+                image_sample["image"],
+                canvas_size=canvas_size,
+                padding=NORM_PADDING,
+                crop_foreground=True,
+            )
+            used_real_image = True
+            source = _source_metadata(item)
+
+        if canvas is None:
+            character_canvas = np.zeros((canvas_size, canvas_size), dtype=np.float32)
+            for normalized in normalized_strokes:
+                character_canvas = np.maximum(
+                    character_canvas,
+                    rasterize_polyline(normalized, canvas_size, width=5),
+                )
+        else:
+            character_canvas = canvas
+        character_target_index = len(character_targets)
+        character_targets.append(normalize_target_polarity(character_canvas))
+        samples_before = len(inputs)
+
         for stroke_order, (stroke, normalized) in enumerate(
             zip(strokes, normalized_strokes)
         ):
@@ -186,25 +209,14 @@ def main(args: argparse.Namespace) -> None:
                 schema.name, points[0], states[0], normalized
             )
 
-            used_real_image = False
-            source: Dict[str, Any] = {}
-            candidates = image_index.get(sample.character, [])
-            if image_dataset is not None and candidates:
-                candidate_index = image_counters.get(sample.character, 0) % len(candidates)
-                image_counters[sample.character] = candidate_index + 1
-                item = candidates[candidate_index]
-                image_sample = image_dataset._build_sample(item)
-                canvas = letterbox_char_to_canvas(
-                    image_sample["image"], canvas_size, NORM_PADDING
-                )
+            if canvas is not None:
                 target = stroke_target_from_canvas(canvas, normalized, canvas_size)
-                used_real_image = True
-                source = _source_metadata(item)
             else:
                 target = rasterize_polyline(normalized, canvas_size, width=5)
 
             inputs.append(feature)
             targets.append(normalize_target_polarity(target))
+            character_target_indices.append(character_target_index)
             metadata.append(
                 {
                     "character": sample.character,
@@ -215,16 +227,38 @@ def main(args: argparse.Namespace) -> None:
                     "num_strokes_in_traj": len(strokes),
                     "num_medians_in_makehanzi": len(medians),
                     "used_real_image": used_real_image,
+                    "character_target_index": character_target_index,
+                    "canvas_transform": canvas_transform,
                     "feature_schema": schema.name,
                     "dynamic_brush_mode": cfg.dynamic_brush.mode,
                     **source,
                 }
             )
+        if len(inputs) == samples_before:
+            character_targets.pop()
 
     if not inputs:
         raise RuntimeError("No pseudo pairs were generated")
+    consistency_errors = validate_group_consistency(metadata)
+    if consistency_errors:
+        preview = "\n".join(consistency_errors[:20])
+        raise RuntimeError(
+            f"Generated inconsistent character groups ({len(consistency_errors)}):\n{preview}"
+        )
+    mapping_errors = validate_character_target_mapping(
+        metadata,
+        character_target_indices,
+        len(character_targets),
+    )
+    if mapping_errors:
+        preview = "\n".join(mapping_errors[:20])
+        raise RuntimeError(
+            f"Generated invalid character target mapping ({len(mapping_errors)}):\n{preview}"
+        )
     input_array = np.asarray(inputs, dtype=np.float32)
     target_array = np.asarray(targets, dtype=np.float32)
+    character_target_array = np.asarray(character_targets, dtype=np.float32)
+    character_target_index_array = np.asarray(character_target_indices, dtype=np.int64)
     metadata_array = np.asarray(metadata, dtype=object)
     output = Path(args.output_npz)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -232,6 +266,8 @@ def main(args: argparse.Namespace) -> None:
         output,
         inputs=input_array,
         targets=target_array,
+        character_targets=character_target_array,
+        character_target_indices=character_target_index_array,
         meta=metadata_array,
         feature_schema=np.asarray(schema.name),
         feature_fields=np.asarray(schema.fields),
@@ -240,6 +276,7 @@ def main(args: argparse.Namespace) -> None:
     real_count = sum(bool(item["used_real_image"]) for item in metadata)
     print(f"[DONE] output={output}")
     print(f"[DONE] inputs={input_array.shape}, targets={target_array.shape}")
+    print(f"[DONE] character_targets={character_target_array.shape}")
     print(f"[DONE] real={real_count}, synthetic={len(metadata) - real_count}")
     print(f"[DONE] schema={schema.name}, dynamic_brush={cfg.dynamic_brush.mode}")
 

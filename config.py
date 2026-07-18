@@ -70,6 +70,7 @@ class TrainConfig:
     lr_patience: int = 3
     min_lr: float = 1e-6
     gradient_clip_norm: float = 1.0
+    character_loss_weight: float = 0.0
     loss: LossConfig = field(default_factory=LossConfig)
 
 
@@ -175,6 +176,10 @@ def _validate_config(cfg: FusionBrushConfig) -> None:
         raise ValueError("train.save_interval must be >= 1")
     if cfg.train.batch_size < 1 or cfg.train.num_workers < 0:
         raise ValueError("train.batch_size must be >= 1 and num_workers must be >= 0")
+    if cfg.train.character_loss_weight < 0.0:
+        raise ValueError("train.character_loss_weight must be non-negative")
+    if cfg.train.character_loss_weight > 0.0 and cfg.train.split_strategy != "group":
+        raise ValueError("Character-level loss requires train.split_strategy=group")
     if not 0.0 < cfg.train.lr or not 0.0 < cfg.train.min_lr:
         raise ValueError("Learning rates must be positive")
 

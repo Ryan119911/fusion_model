@@ -1,4 +1,5 @@
 train:
   output_dir: outputs/ablations/stroke10_v1_c_grouped_full
   split_strategy: group
+  character_loss_weight: 0.0
   split_manifest: outputs/ablations/grouped_split_manifest.json

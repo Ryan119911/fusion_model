@@ -20,6 +20,12 @@ from torch.utils.data import DataLoader, Dataset, Subset
 
 from config import ensure_dirs, load_config
 from models.bbsmg import build_bbsmg
+from utils.character_groups import (
+    CharacterBatchSampler,
+    fuse_character_tensors,
+    validate_character_target_mapping,
+    validate_group_consistency,
+)
 from utils.feature_schema import (
     checkpoint_schema,
     get_feature_schema,
@@ -51,7 +57,17 @@ class BBSMGTrainDataset(Dataset):
             raise FileNotFoundError(f"Training NPZ not found: {npz_path}")
         data = np.load(self.path, allow_pickle=True)
         raw_inputs = np.asarray(data["inputs"])
-        self.targets = _load_targets(self.path, data, target_cache_dir)
+        self.targets = _load_npz_array(self.path, data, "targets", target_cache_dir)
+        self.character_targets = (
+            _load_npz_array(self.path, data, "character_targets", target_cache_dir)
+            if "character_targets" in data.files
+            else None
+        )
+        self.character_target_indices = (
+            np.asarray(data["character_target_indices"], dtype=np.int64)
+            if "character_target_indices" in data.files
+            else None
+        )
         self.meta = np.asarray(data["meta"], dtype=object) if "meta" in data.files else None
         if raw_inputs.ndim != 2:
             raise ValueError(f"inputs must have shape [N,D], got {raw_inputs.shape}")
@@ -59,6 +75,42 @@ class BBSMGTrainDataset(Dataset):
             raise ValueError("inputs and targets contain different sample counts")
         if self.meta is not None and len(self.meta) != len(raw_inputs):
             raise ValueError("meta length does not match inputs")
+        if (self.character_targets is None) != (self.character_target_indices is None):
+            raise ValueError(
+                "character_targets and character_target_indices must either both exist or "
+                "both be absent"
+            )
+        if self.character_target_indices is not None:
+            if len(self.character_target_indices) != len(raw_inputs):
+                raise ValueError("character_target_indices length does not match inputs")
+            if (
+                self.character_target_indices.min(initial=0) < 0
+                or self.character_target_indices.max(initial=-1) >= len(self.character_targets)
+            ):
+                raise ValueError("character_target_indices contain an out-of-range index")
+            if self.character_targets.ndim == 3:
+                self.character_targets = self.character_targets[:, None, :, :]
+            if self.character_targets.ndim != 4 or self.character_targets.shape[1] != 1:
+                raise ValueError(
+                    "character_targets must have shape [N,1,H,W] or [N,H,W], "
+                    f"got {self.character_targets.shape}"
+                )
+            if self.meta is not None:
+                consistency_errors = validate_group_consistency(self.meta)
+                if consistency_errors:
+                    raise ValueError(
+                        "Inconsistent character groups: "
+                        + "; ".join(consistency_errors[:5])
+                    )
+                mapping_errors = validate_character_target_mapping(
+                    self.meta,
+                    self.character_target_indices,
+                    len(self.character_targets),
+                )
+                if mapping_errors:
+                    raise ValueError(
+                        "Invalid character target mapping: " + "; ".join(mapping_errors[:5])
+                    )
         if self.targets.ndim == 3:
             self.targets = self.targets[:, None, :, :]
         if self.targets.ndim != 4 or self.targets.shape[1] != 1:
@@ -94,7 +146,7 @@ class BBSMGTrainDataset(Dataset):
                 metadata = metadata.item()
             except ValueError:
                 pass
-        return {
+        result = {
             "inputs": torch.from_numpy(self.inputs[index]),
             # targets.npy is intentionally read with mmap_mode="r"; copy one
             # sample so PyTorch never receives a tensor backed by read-only memory.
@@ -104,6 +156,42 @@ class BBSMGTrainDataset(Dataset):
             "meta": metadata if isinstance(metadata, dict) else {},
             "index": index,
         }
+        if self.character_targets is not None and self.character_target_indices is not None:
+            character_target = self.character_targets[self.character_target_indices[index]]
+            if character_target.ndim == 2:
+                character_target = character_target[None, :, :]
+            result["character_target"] = torch.from_numpy(
+                np.array(character_target, dtype=np.float32, copy=True)
+            )
+        return result
+
+
+def _load_npz_array(
+    npz_path: Path,
+    npz: Any,
+    array_name: str,
+    target_cache_dir: Optional[str],
+) -> np.ndarray:
+    if not target_cache_dir:
+        return np.asarray(npz[array_name])
+    cache_root = Path(target_cache_dir)
+    fingerprint = f"{npz_path.stem}-{npz_path.stat().st_size}-{npz_path.stat().st_mtime_ns}"
+    cache_dir = cache_root / fingerprint
+    target_path = cache_dir / f"{array_name}.npy"
+    if not target_path.exists():
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        temporary = target_path.with_suffix(".npy.tmp")
+        print(f"[CACHE] Extracting {array_name}.npy to {target_path}")
+        with zipfile.ZipFile(npz_path) as archive:
+            member = f"{array_name}.npy"
+            try:
+                source = archive.open(member)
+            except KeyError as error:
+                raise ValueError(f"{npz_path} does not contain {member}") from error
+            with source, open(temporary, "wb") as destination:
+                shutil.copyfileobj(source, destination, length=16 * 1024 * 1024)
+        temporary.replace(target_path)
+    return np.load(target_path, mmap_mode="r", allow_pickle=False)
 
 
 def _load_targets(
@@ -111,34 +199,21 @@ def _load_targets(
     npz: Any,
     target_cache_dir: Optional[str],
 ) -> np.ndarray:
-    if not target_cache_dir:
-        return np.asarray(npz["targets"])
-    cache_root = Path(target_cache_dir)
-    fingerprint = f"{npz_path.stem}-{npz_path.stat().st_size}-{npz_path.stat().st_mtime_ns}"
-    cache_dir = cache_root / fingerprint
-    target_path = cache_dir / "targets.npy"
-    if not target_path.exists():
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        temporary = target_path.with_suffix(".npy.tmp")
-        print(f"[CACHE] Extracting targets.npy to {target_path}")
-        with zipfile.ZipFile(npz_path) as archive:
-            try:
-                source = archive.open("targets.npy")
-            except KeyError as error:
-                raise ValueError(f"{npz_path} does not contain targets.npy") from error
-            with source, open(temporary, "wb") as destination:
-                shutil.copyfileobj(source, destination, length=16 * 1024 * 1024)
-        temporary.replace(target_path)
-    return np.load(target_path, mmap_mode="r", allow_pickle=False)
+    return _load_npz_array(npz_path, npz, "targets", target_cache_dir)
 
 
 def collate_bbsmg_batch(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
-    return {
+    result = {
         "inputs": torch.stack([item["inputs"] for item in batch]),
         "targets": torch.stack([item["targets"] for item in batch]),
         "meta": [item["meta"] for item in batch],
         "indices": torch.tensor([item["index"] for item in batch], dtype=torch.long),
     }
+    if all("character_target" in item for item in batch):
+        result["character_targets"] = torch.stack(
+            [item["character_target"] for item in batch]
+        )
+    return result
 
 
 def _loader(
@@ -149,7 +224,30 @@ def _loader(
     shuffle: bool,
     pin_memory: bool,
     persistent_workers: bool,
+    group_batches: bool = False,
+    metadata: Optional[Sequence[Any]] = None,
+    group_key: str = "sample_id",
+    seed: int = 42,
 ) -> DataLoader:
+    if group_batches:
+        if metadata is None:
+            raise ValueError("Character-grouped batches require dataset metadata")
+        sampler = CharacterBatchSampler(
+            metadata,
+            indices,
+            max_batch_size=batch_size,
+            group_key=group_key,
+            shuffle=shuffle,
+            seed=seed,
+        )
+        return DataLoader(
+            dataset,
+            batch_sampler=sampler,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers and num_workers > 0,
+            collate_fn=collate_bbsmg_batch,
+        )
     return DataLoader(
         Subset(dataset, list(indices)),
         batch_size=batch_size,
@@ -175,6 +273,7 @@ def build_dataloaders(
     pin_memory: bool = True,
     persistent_workers: bool = True,
     target_cache_dir: Optional[str] = "data/cache/npz_arrays",
+    character_loss_weight: float = 0.0,
 ) -> Tuple[DataLoader, Optional[DataLoader], BBSMGTrainDataset, Dict[str, Any]]:
     dataset = BBSMGTrainDataset(
         npz_path,
@@ -197,14 +296,21 @@ def build_dataloaders(
             save_manifest(split_manifest_path, manifest)
     train_indices = manifest["train_indices"]
     val_indices = manifest["val_indices"]
+    if character_loss_weight > 0.0 and dataset.character_targets is None:
+        raise ValueError(
+            "Character-level loss requires an NPZ rebuilt with character_targets. "
+            "Run tools/build_pseudo_pairs.py again and do not resume an old checkpoint."
+        )
     train_loader = _loader(
         dataset, train_indices, batch_size, num_workers, True,
         pin_memory, persistent_workers,
+        character_loss_weight > 0.0, dataset.meta, split_group_key, seed,
     )
     val_loader = (
         _loader(
             dataset, val_indices, batch_size, num_workers, False,
             pin_memory, persistent_workers,
+            character_loss_weight > 0.0, dataset.meta, split_group_key, seed,
         )
         if val_indices
         else None
@@ -222,10 +328,32 @@ def _compute_loss_fp32(
     predictions: torch.Tensor,
     targets: torch.Tensor,
     criterion: CompositeStrokeLoss,
-) -> torch.Tensor:
+    metadata: Optional[Sequence[Any]] = None,
+    character_targets: Optional[torch.Tensor] = None,
+    character_loss_weight: float = 0.0,
+    group_key: str = "sample_id",
+) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
     """Keep numerically sensitive image losses out of the FP16 autocast path."""
     with torch.autocast(device_type=predictions.device.type, enabled=False):
-        return criterion(predictions.float(), targets.float())
+        stroke_loss = criterion(predictions.float(), targets.float())
+        character_loss = None
+        total_loss = stroke_loss
+        if character_loss_weight > 0.0:
+            if metadata is None:
+                raise ValueError("Character-level loss requires batch metadata")
+            character_predictions, prediction_keys = fuse_character_tensors(
+                predictions.float(), metadata, group_key
+            )
+            if character_targets is None:
+                raise ValueError("Character-level loss requires full character targets")
+            fused_character_targets, target_keys = fuse_character_tensors(
+                character_targets.float(), metadata, group_key
+            )
+            if prediction_keys != target_keys:
+                raise RuntimeError("Prediction and target character groups differ")
+            character_loss = criterion(character_predictions, fused_character_targets)
+            total_loss = stroke_loss + character_loss_weight * character_loss
+        return total_loss, stroke_loss, character_loss
 
 
 def create_grad_scaler(
@@ -259,6 +387,8 @@ def train_one_epoch(
     gradient_clip_norm: float,
     log_interval: int,
     max_consecutive_nonfinite_steps: int,
+    character_loss_weight: float = 0.0,
+    group_key: str = "sample_id",
 ) -> float:
     model.train()
     total_loss = 0.0
@@ -270,7 +400,16 @@ def train_one_epoch(
         optimizer.zero_grad(set_to_none=True)
         with _autocast_context(device, amp_enabled, amp_dtype):
             predictions = model(inputs)
-        loss = _compute_loss_fp32(predictions, targets, criterion)
+        loss, _, _ = _compute_loss_fp32(
+            predictions,
+            targets,
+            criterion,
+            batch["meta"],
+            batch.get("character_targets", None).to(device, non_blocking=True)
+            if batch.get("character_targets") is not None else None,
+            character_loss_weight,
+            group_key,
+        )
         if not torch.isfinite(loss):
             raise RuntimeError(f"Non-finite training loss at step {step}")
         scaler.scale(loss).backward()
@@ -322,12 +461,16 @@ def validate_detailed(
     device: torch.device,
     amp_enabled: bool = False,
     amp_dtype: torch.dtype = torch.float16,
+    character_loss_weight: float = 0.0,
+    group_key: str = "sample_id",
 ) -> Optional[Dict[str, float]]:
     if loader is None:
         return None
     model.eval()
     totals: Dict[str, float] = {}
     count = 0
+    character_totals: Dict[str, float] = {}
+    character_count = 0
     for batch in loader:
         inputs = batch["inputs"].to(device, non_blocking=True)
         targets = batch["targets"].to(device, non_blocking=True).clamp(0.0, 1.0)
@@ -353,11 +496,65 @@ def validate_detailed(
                 ),
             }
         )
+        if character_loss_weight > 0.0:
+            character_predictions, character_keys = fuse_character_tensors(
+                predictions, batch["meta"], group_key
+            )
+            full_targets = batch.get("character_targets")
+            if full_targets is None:
+                raise ValueError("Character validation requires full character targets")
+            character_targets, target_keys = fuse_character_tensors(
+                full_targets.to(device, non_blocking=True).float(), batch["meta"], group_key
+            )
+            if character_keys != target_keys:
+                raise RuntimeError("Prediction and target character groups differ")
+            character_components = criterion.compute_components(
+                character_predictions, character_targets
+            )
+            character_values = {
+                name: float(value) for name, value in character_components.items()
+            }
+            character_values["composite_loss"] = float(
+                criterion.combine_components(character_components)
+            )
+            character_binary = character_predictions >= 0.5
+            character_target_binary = character_targets >= 0.5
+            character_intersection = (
+                character_binary & character_target_binary
+            ).sum((1, 2, 3)).float()
+            character_union = (
+                character_binary | character_target_binary
+            ).sum((1, 2, 3)).float()
+            character_values.update({
+                "plain_mse": float(F.mse_loss(character_predictions, character_targets)),
+                "mae": float(F.l1_loss(character_predictions, character_targets)),
+                "ssim_score": 1.0 - character_values["ssim_loss"],
+                "dice_score": 1.0 - character_values["dice_loss"],
+                "iou_at_0.5": float((
+                    (character_intersection + 1e-6) / (character_union + 1e-6)
+                ).mean()),
+            })
+            group_count = len(character_keys)
+            for name, value in character_values.items():
+                character_totals[name] = character_totals.get(name, 0.0) + value * group_count
+            character_count += group_count
         batch_size = inputs.shape[0]
         for name, value in values.items():
             totals[name] = totals.get(name, 0.0) + value * batch_size
         count += batch_size
-    return {name: value / max(count, 1) for name, value in totals.items()}
+    result = {name: value / max(count, 1) for name, value in totals.items()}
+    if character_count:
+        result.update({
+            f"character_{name}": value / character_count
+            for name, value in character_totals.items()
+        })
+        result["objective_loss"] = (
+            result["composite_loss"]
+            + character_loss_weight * result["character_composite_loss"]
+        )
+    else:
+        result["objective_loss"] = result["composite_loss"]
+    return result
 
 
 def append_metrics_csv(
@@ -450,6 +647,7 @@ def load_resume_checkpoint(
     scaler: Any,
     device: torch.device,
     dataset: BBSMGTrainDataset,
+    character_loss_weight: float = 0.0,
 ) -> Tuple[int, Optional[float]]:
     checkpoint = load_torch_checkpoint(path, map_location=device)
     model.load_state_dict(_load_model_state(checkpoint))
@@ -472,6 +670,17 @@ def load_resume_checkpoint(
         actual = np.asarray(recorded["scales"])
         if expected.shape != actual.shape or not np.allclose(expected, actual):
             raise ValueError("Resume checkpoint normalization does not match the current NPZ")
+    checkpoint_config = checkpoint.get("config", {})
+    previous_character_weight = (
+        checkpoint_config.get("train", {}).get("character_loss_weight", 0.0)
+        if isinstance(checkpoint_config, dict)
+        else 0.0
+    )
+    if character_loss_weight > 0.0 and previous_character_weight <= 0.0:
+        raise ValueError(
+            "This checkpoint was trained without character-level supervision. "
+            "Start a new output directory and train the rebuilt consistent NPZ from scratch."
+        )
     best_val = checkpoint.get("best_val", checkpoint.get("val_loss"))
     return int(checkpoint.get("epoch", 0)) + 1, best_val
 
@@ -492,6 +701,12 @@ def main(args: argparse.Namespace) -> None:
         cfg.train.output_dir = args.output_dir
     elif args.resume:
         cfg.train.output_dir = str(Path(args.resume).parent)
+    if args.character_loss_weight is not None:
+        cfg.train.character_loss_weight = args.character_loss_weight
+    if cfg.train.character_loss_weight < 0.0:
+        raise ValueError("character_loss_weight must be non-negative")
+    if cfg.train.character_loss_weight > 0.0 and cfg.train.split_strategy != "group":
+        raise ValueError("Character-level loss requires train.split_strategy=group")
     ensure_dirs(cfg)
     set_seed(cfg.train.seed)
 
@@ -524,6 +739,7 @@ def main(args: argparse.Namespace) -> None:
         cfg.train.pin_memory and device.type == "cuda",
         cfg.train.persistent_workers,
         cfg.train.target_cache_dir,
+        cfg.train.character_loss_weight,
     )
     if dataset.inputs.shape[1] != cfg.bbsmg.input_dim:
         raise ValueError(
@@ -566,11 +782,22 @@ def main(args: argparse.Namespace) -> None:
         f"val={len(manifest['val_indices'])}, schema={dataset.feature_schema}"
     )
     print(f"[RUNTIME] device={device}, amp={amp_enabled}, amp_dtype={cfg.train.amp_dtype}")
+    print(
+        f"[OBJECTIVE] stroke_composite + {cfg.train.character_loss_weight:g} "
+        "* character_composite"
+    )
 
     start_epoch, best_val = 1, None
     if args.resume:
         start_epoch, best_val = load_resume_checkpoint(
-            args.resume, model, optimizer, scheduler, scaler, device, dataset
+            args.resume,
+            model,
+            optimizer,
+            scheduler,
+            scaler,
+            device,
+            dataset,
+            cfg.train.character_loss_weight,
         )
         print(
             f"[RESUME] checkpoint={args.resume}, start_epoch={start_epoch}, "
@@ -581,16 +808,20 @@ def main(args: argparse.Namespace) -> None:
         return
 
     for epoch in range(start_epoch, cfg.train.epochs + 1):
+        if hasattr(train_loader.batch_sampler, "set_epoch"):
+            train_loader.batch_sampler.set_epoch(epoch)
         train_loss = train_one_epoch(
             model, train_loader, optimizer, criterion, device, scaler,
             amp_enabled, amp_dtype, cfg.train.gradient_clip_norm,
             cfg.train.log_interval, cfg.train.amp_max_consecutive_nonfinite_steps,
+            cfg.train.character_loss_weight, cfg.train.split_group_key,
         )
         val_metrics = validate_detailed(
-            model, val_loader, criterion, device, amp_enabled, amp_dtype
+            model, val_loader, criterion, device, amp_enabled, amp_dtype,
+            cfg.train.character_loss_weight, cfg.train.split_group_key,
         )
         monitor = (
-            val_metrics["composite_loss"] if val_metrics is not None else train_loss
+            val_metrics["objective_loss"] if val_metrics is not None else train_loss
         )
         scheduler.step(monitor)
         learning_rate = float(optimizer.param_groups[0]["lr"])
@@ -630,4 +861,5 @@ if __name__ == "__main__":
     parser.add_argument("--lr_factor", type=float)
     parser.add_argument("--lr_patience", type=int)
     parser.add_argument("--min_lr", type=float)
+    parser.add_argument("--character_loss_weight", type=float)
     main(parser.parse_args())

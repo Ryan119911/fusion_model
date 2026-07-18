@@ -2,13 +2,13 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
-from PIL import Image
 
 from models.fusion_renderer import FusionRenderer
 from models.geometry import resample_stroke, trajectory_bounds
 from optim.chebyshev import fit_nodes_from_sequence, parameterize_1d
 from optim.lm import LMResult, lm_solve
 from utils.feature_schema import STROKE10_POSE_V2
+from utils.image_preprocessing import DEFAULT_CANVAS_PADDING, load_character_image
 from utils.types import CharacterTrajectory, StrokeTrajectory, TrajectoryPoint
 
 
@@ -26,14 +26,7 @@ class TrajectoryOptimizationResult:
 
 
 def load_target_image(path: str, image_size: int = 128) -> np.ndarray:
-    with Image.open(path) as image:
-        gray = image.convert("L").resize(
-            (image_size, image_size), Image.Resampling.BILINEAR
-        )
-    array = np.asarray(gray, dtype=np.float32) / 255.0
-    if float(array.mean()) > 0.5:
-        array = 1.0 - array
-    return np.clip(array, 0.0, 1.0)
+    return load_character_image(path, image_size, DEFAULT_CANVAS_PADDING)
 
 
 def _stroke_arrays(stroke: StrokeTrajectory) -> Tuple[np.ndarray, np.ndarray]:

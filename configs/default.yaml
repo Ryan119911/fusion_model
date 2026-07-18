@@ -44,6 +44,7 @@ train:
   lr_patience: 3
   min_lr: 0.000001
   gradient_clip_norm: 1.0
+  character_loss_weight: 0.25
   loss:
     weighted_mse: 1.0
     ssim: 0.3

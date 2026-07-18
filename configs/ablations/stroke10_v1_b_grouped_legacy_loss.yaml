@@ -1,6 +1,7 @@
 train:
   output_dir: outputs/ablations/stroke10_v1_b_grouped_legacy_loss
   split_strategy: group
+  character_loss_weight: 0.0
   split_manifest: outputs/ablations/grouped_split_manifest.json
   loss:
     weighted_mse: 1.0

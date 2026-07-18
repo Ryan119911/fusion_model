@@ -1,6 +1,7 @@
 train:
   output_dir: outputs/ablations/stroke10_v1_a_random_legacy_loss
   split_strategy: random
+  character_loss_weight: 0.0
   loss:
     weighted_mse: 1.0
     ssim: 0.5
