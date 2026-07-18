@@ -153,6 +153,68 @@ Jacobian，建议先放 3 到 5 个样本试运行，再扩展到完整集合。
 输出根目录还包含 `sample_metrics.csv`、`summary.json` 和自动生成的中文 `analysis.md`。
 同步整个目录回来即可继续做跨样本和真实/合成目标分析。
 
+### 4.1 “武”字比较结果
+
+当前同步结果位于 `outputs/trajectory_comparison_c`，样本为 `武_fake_sim`，共 8 笔。
+
+| 指标 | 优化前 | 优化后 | 判断 |
+|---|---:|---:|---|
+| 优化器目标 | 0.854353 | 0.827349 | 下降，更新被接受 |
+| MSE | 0.161582 | 0.142408 | 下降 11.87% |
+| Foreground MAE | 0.795822 | 0.768389 | 略有改善但仍很高 |
+| Dice | 0.035117 | 0.083979 | 提高，但绝对值仍低 |
+| IoU@0.5 | 0.017377 | 0.044287 | 最终仅约 4.43% 重合 |
+| SSIM | 0.044123 | 0.051986 | 略有提高但仍很低 |
+| Ink delta | -0.028952 | -0.038913 | 优化后缺墨更明显 |
+
+`lm_success=false`、`lm_steps=20` 表示 LM 在最大 20 步内未满足收敛停止条件；它不等于本次更新
+完全无效，因为优化器评分确实下降并接受了更新。但最终 IoU 只有 0.0443，差异图中缺失墨迹占主导，
+所以当前结果不能称为成功拟合，也不建议直接在真实机器人上执行 `generated_trajectory.csv`。
+
+生成轨迹相对输入轨迹的 XYZ RMSE 为 8.2045，X/Y/Z MAE 分别为 8.0329、5.3244、1.5189。
+这些值只描述 LM 对输入参考轨迹的改变量，不是相对独立机器人真值的误差。角度变化为 0 是因为
+`stroke10_v1` 不消费 `alpha/beta/gamma`。
+
+图像显示生成笔画集中在目标左侧和中下部。目标楷书图与轨迹虽然都是“武”，但可能并非同一几何
+样本或同一书写风格；另外，简单尝试旋转目标后 90 度方向优于原方向，但重合仍很低。这提示可能同时
+存在坐标方向问题、样本配准/风格不一致和合成到真实域差异，不能只通过增加 LM 步数解决。
+
+### 4.2 坐标方向诊断
+
+运行独立诊断工具检查 8 种二维坐标约定。它不加载 checkpoint、不重新训练，也不修改原轨迹：
+
+```bash
+python -u tools/diagnose_trajectory_alignment.py \
+  --config configs/ablations/stroke10_v1_c_grouped_full.yaml \
+  --trajectory_csv data/raw/trajectories.csv \
+  --manifest configs/trajectory_comparison_manifest.csv \
+  --sample_id 武_fake_sim \
+  --output_dir outputs/trajectory_alignment_wu
+```
+
+工具会为 `identity`、水平/垂直翻转、90/180/270 度旋转和两种转置分别搜索统一尺度与 x/y
+平移，并按对称 Chamfer 距离排序。颜色约定为蓝色目标独有、红色轨迹独有、绿色重合。
+
+| 文件 | 内容 |
+|---|---|
+| `coordinate_diagnostics.csv` | 全部样本、8 种方向的排名和数值指标 |
+| `coordinate_diagnostics.json` | 完整参数、结果和样本信息 |
+| `coordinate_diagnostics.png` | 8 种方向叠加总览，绿色边框标出第一名 |
+| `best_alignment.png` | 最佳全局坐标变换的叠加图 |
+| `alignment_metrics.json` | 单样本最佳方向、identity 排名和全部候选指标 |
+| `aligned_trajectory_pixels.csv` | 最佳变换后用于检查的图像像素坐标，不是机器人执行轨迹 |
+
+判断时优先看 `symmetric_chamfer_px`，越低越好；Dice/IoU 会受诊断线宽影响，只作为辅助指标。
+若非 `identity` 方向显著胜出，先修正轨迹到画布的坐标约定。若八种方向都很差，则优先检查目标图
+是否与轨迹来自同一个书写样本，并处理真实图域差异。该工具只检查全局二维几何，不能证明模型域适配
+成功，也不能把像素距离解释为机器人轨迹误差。
+
+本机使用同步回来的 `generated_trajectory.csv` 做输出链路验证时，`identity` 排名第一，对称 Chamfer
+为 1.277 px，诊断线宽下的 IoU 为 0.354，搜索得到尺度 0.671、x/y 偏移 `+4/0` px。这个结果说明
+优化后轨迹的二维骨架并不支持“必须旋转 90 度”的结论，同时也提示轨迹归一化尺度可能需要检查。
+但它使用的是 LM 优化后的轨迹，正式定位必须对 Ubuntu 上 `data/raw/trajectories.csv` 中的原始
+`武_fake_sim` 再运行一次。
+
 ## 5. 下一轮建议实验
 
 | 优先级 | 实验 | 自变量 | 建议设置 | 目的 |
