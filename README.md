@@ -72,7 +72,26 @@ python -u tools/run_ablation.py \
 python tools/summarize_experiments.py
 ```
 
-同步回 `outputs/ablations`、训练日志和 `summary.csv` 即可继续分析。
+同步回 `outputs/ablations` 和训练日志即可继续分析。汇总脚本会生成 `summary.csv`、
+`subgroup_summary.csv` 和中文 `analysis.md`。
+
+四组实验的变量表、当前结果分析和下一轮实验建议见
+`docs/ablation_and_trajectory_analysis.md`。
+
+批量生成优化轨迹与真实目标的差异图：
+
+```bash
+python -u tools/compare_trajectories.py \
+  --config configs/ablations/stroke10_v1_c_grouped_full.yaml \
+  --trajectory_csv data/raw/trajectories.csv \
+  --manifest configs/trajectory_comparison_manifest.csv \
+  --bbsmg_ckpt outputs/ablations/stroke10_v1_c_grouped_full/bbsmg_best.pt \
+  --normalization_npz data/processed/bbsmg_train_10d.npz \
+  --output_dir outputs/trajectory_comparison_c
+```
+
+manifest 格式参考 `configs/trajectory_comparison_manifest.example.csv`。输出包含逐样本对比图、
+彩色差异图、优化轨迹 CSV、指标 CSV/JSON 和自动生成的中文分析报告。
 
 ## 姿态模型与轨迹优化
 
