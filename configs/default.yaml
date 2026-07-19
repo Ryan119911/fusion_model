@@ -41,6 +41,20 @@ bbsmg:
   image_size: 128
   use_tanh: false
 
+# Direct whole-character model. It consumes all stroke features together and
+# emits one complete character image; it does not composite per-stroke images.
+character_generator:
+  input_dim: 10
+  latent_dim: 128
+  base_channels: 64
+  out_channels: 1
+  image_size: 128
+  max_strokes: 64
+  transformer_layers: 2
+  attention_heads: 4
+  dropout: 0.1
+  use_tanh: false
+
 # 中文注释：动态笔刷标定和物理近似参数配置。
 dynamic_brush:
   width_poly_degree: 3

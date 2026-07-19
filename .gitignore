@@ -13,5 +13,7 @@ __pycache__/
 *.log
 *.png
 *.jpg
+!assets/targets/*.png
+!assets/targets/*.jpg
 *.mp4
 download/

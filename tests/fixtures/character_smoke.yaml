@@ -1,0 +1,27 @@
+data:
+  trajectory_csv: tests/fixtures/character_smoke.csv
+  image_dir: tests/fixtures/missing_images
+  json_dir: tests/fixtures/missing_json
+
+train:
+  output_dir: outputs/character_smoke
+  batch_size: 2
+  epochs: 1
+  lr: 0.0003
+  weight_decay: 0.000001
+  num_workers: 0
+  save_interval: 1
+  seed: 42
+  device: cpu
+
+character_generator:
+  input_dim: 10
+  latent_dim: 32
+  base_channels: 8
+  out_channels: 1
+  image_size: 32
+  max_strokes: 4
+  transformer_layers: 1
+  attention_heads: 4
+  dropout: 0.0
+  use_tanh: false

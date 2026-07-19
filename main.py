@@ -68,6 +68,98 @@ def cmd_train(args):
     run(cmd, args.log_file)
 
 
+def cmd_build_character(args):
+    cmd = [
+        sys.executable,
+        "tools/build_character_pairs.py",
+        "--config", args.config,
+        "--output_npz", args.output_npz,
+    ]
+    if args.trajectory_csv:
+        cmd += ["--trajectory_csv", args.trajectory_csv]
+    if args.character:
+        cmd += ["--character", args.character]
+    if args.target_character:
+        cmd += ["--target_character", args.target_character]
+    if args.target_image:
+        ensure_exists(args.target_image, "Whole-character target image")
+        cmd += ["--target_image", args.target_image]
+    if args.chirography:
+        cmd += ["--chirography", args.chirography]
+    if args.require_real_target:
+        cmd += ["--require_real_target"]
+    run(cmd, args.log_file)
+
+
+def cmd_train_character(args):
+    ensure_exists(args.npz_path, "Whole-character training NPZ")
+    cmd = [
+        sys.executable,
+        "tools/train_character.py",
+        "--config", args.config,
+        "--npz_path", args.npz_path,
+        "--val_ratio", str(args.val_ratio),
+        "--lr_factor", str(args.lr_factor),
+        "--lr_patience", str(args.lr_patience),
+        "--min_lr", str(args.min_lr),
+    ]
+    if args.output_dir:
+        cmd += ["--output_dir", args.output_dir]
+    if args.epochs is not None:
+        cmd += ["--epochs", str(args.epochs)]
+    if args.batch_size is not None:
+        cmd += ["--batch_size", str(args.batch_size)]
+    if args.resume:
+        ensure_exists(args.resume, "Whole-character resume checkpoint")
+        cmd += ["--resume", args.resume]
+    if args.init_stroke_checkpoint:
+        ensure_exists(args.init_stroke_checkpoint, "Stroke initialization checkpoint")
+        cmd += ["--init_stroke_checkpoint", args.init_stroke_checkpoint]
+    if args.init_character_checkpoint:
+        ensure_exists(args.init_character_checkpoint, "Character initialization checkpoint")
+        cmd += ["--init_character_checkpoint", args.init_character_checkpoint]
+    run(cmd, args.log_file)
+
+
+def cmd_evaluate_character(args):
+    ensure_exists(args.npz_path, "Whole-character evaluation NPZ")
+    ensure_exists(args.checkpoint, "Whole-character checkpoint")
+    cmd = [
+        sys.executable,
+        "tools/evaluate_character.py",
+        "--config", args.config,
+        "--npz_path", args.npz_path,
+        "--checkpoint", args.checkpoint,
+        "--output_dir", args.output_dir,
+        "--split", args.split,
+        "--num_images", str(args.num_images),
+    ]
+    if args.character:
+        cmd += ["--character", args.character]
+    run(cmd, args.log_file)
+
+
+def cmd_predict_character(args):
+    ensure_exists(args.checkpoint, "Whole-character checkpoint")
+    if args.trajectory_csv:
+        ensure_exists(args.trajectory_csv, "Trajectory CSV")
+    if args.target_image:
+        ensure_exists(args.target_image, "Whole-character target image")
+    cmd = [
+        sys.executable,
+        "tools/predict_character.py",
+        "--config", args.config,
+        "--checkpoint", args.checkpoint,
+        "--index", str(args.index),
+        "--output_dir", args.output_dir,
+    ]
+    for name in ("trajectory_csv", "character", "sample_id", "target_image", "output_stem"):
+        value = getattr(args, name)
+        if value is not None:
+            cmd += ["--" + name, str(value)]
+    run(cmd, args.log_file)
+
+
 # 中文注释：组织并执行轨迹优化命令。
 def cmd_optimize(args):
     ensure_exists(args.target_image, "Target image")
@@ -186,6 +278,58 @@ def build_parser():
     p5.add_argument("--use_6d", action="store_true", help="Enable 6D optimization if optimize script supports it")
     p5.add_argument("--log_dir", type=str, default="outputs/logs")
     p5.set_defaults(func=cmd_all)
+
+    p6 = subparsers.add_parser("build-character", help="Build direct whole-character pairs")
+    p6.add_argument("--config", default="configs/default.yaml")
+    p6.add_argument("--trajectory_csv", default=None)
+    p6.add_argument("--output_npz", default="data/processed/character_train.npz")
+    p6.add_argument("--character", default=None)
+    p6.add_argument("--target_character", default=None)
+    p6.add_argument("--target_image", default=None)
+    p6.add_argument("--chirography", default=None)
+    p6.add_argument("--require_real_target", action="store_true")
+    p6.add_argument("--log_dir", default="outputs/logs")
+    p6.set_defaults(func=cmd_build_character)
+
+    p7 = subparsers.add_parser("train-character", help="Train the direct whole-character model")
+    p7.add_argument("--config", default="configs/default.yaml")
+    p7.add_argument("--npz_path", required=True)
+    p7.add_argument("--output_dir", default=None)
+    p7.add_argument("--epochs", type=int, default=None)
+    p7.add_argument("--batch_size", type=int, default=None)
+    p7.add_argument("--val_ratio", type=float, default=0.1)
+    p7.add_argument("--resume", default=None)
+    p7.add_argument("--init_stroke_checkpoint", default=None)
+    p7.add_argument("--init_character_checkpoint", default=None)
+    p7.add_argument("--lr_factor", type=float, default=0.5)
+    p7.add_argument("--lr_patience", type=int, default=3)
+    p7.add_argument("--min_lr", type=float, default=1e-6)
+    p7.add_argument("--log_dir", default="outputs/logs")
+    p7.set_defaults(func=cmd_train_character)
+
+    p8 = subparsers.add_parser("evaluate-character", help="Evaluate complete-character images")
+    p8.add_argument("--config", default="configs/default.yaml")
+    p8.add_argument("--npz_path", required=True)
+    p8.add_argument("--checkpoint", required=True)
+    p8.add_argument("--output_dir", default="outputs/eval_character")
+    p8.add_argument("--split", choices=("val", "train", "all"), default="val")
+    p8.add_argument("--character", default=None)
+    p8.add_argument("--num_images", type=int, default=20)
+    p8.add_argument("--log_dir", default="outputs/logs")
+    p8.set_defaults(func=cmd_evaluate_character)
+
+    p9 = subparsers.add_parser("predict-character", help="Predict one complete character directly")
+    p9.add_argument("--config", default="configs/default.yaml")
+    p9.add_argument("--trajectory_csv", default=None)
+    p9.add_argument("--checkpoint", required=True)
+    p9.add_argument("--character", default=None)
+    p9.add_argument("--sample_id", default=None)
+    p9.add_argument("--index", type=int, default=0)
+    p9.add_argument("--target_image", default=None)
+    p9.add_argument("--output_dir", default="outputs/predict_character")
+    p9.add_argument("--output_stem", default=None)
+    p9.add_argument("--log_dir", default="outputs/logs")
+    p9.set_defaults(func=cmd_predict_character)
 
     return parser
 

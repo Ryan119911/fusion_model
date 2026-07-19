@@ -1,0 +1,17 @@
+character,sample_id,stroke_id,point_id,x,y,z,alpha,beta,gamma,state
+武,wu_smoke,0,0,0,0,1,0,0,0,0
+武,wu_smoke,0,1,10,0,1,0,0,0,2
+武,wu_smoke,1,0,5,-5,1,0,0,0,0
+武,wu_smoke,1,1,5,5,1,0,0,0,2
+永,yong_smoke,0,0,0,0,1,0,0,0,0
+永,yong_smoke,0,1,8,8,1,0,0,0,2
+永,yong_smoke,1,0,8,0,1,0,0,0,0
+永,yong_smoke,1,1,0,8,1,0,0,0,2
+大,da_smoke,0,0,0,8,1,0,0,0,0
+大,da_smoke,0,1,5,0,1,0,0,0,2
+大,da_smoke,1,0,5,0,1,0,0,0,0
+大,da_smoke,1,1,10,8,1,0,0,0,2
+十,shi_smoke,0,0,0,5,1,0,0,0,0
+十,shi_smoke,0,1,10,5,1,0,0,0,2
+十,shi_smoke,1,0,5,0,1,0,0,0,0
+十,shi_smoke,1,1,5,10,1,0,0,0,2

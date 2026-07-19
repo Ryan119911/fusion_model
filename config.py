@@ -55,6 +55,20 @@ class BBSMGConfig:
     use_tanh: bool = False
 
 
+@dataclass
+class CharacterGeneratorConfig:
+    input_dim: int = 10
+    latent_dim: int = 128
+    base_channels: int = 64
+    out_channels: int = 1
+    image_size: int = 128
+    max_strokes: int = 64
+    transformer_layers: int = 2
+    attention_heads: int = 4
+    dropout: float = 0.1
+    use_tanh: bool = False
+
+
 # 中文注释：动态笔刷模型的多项式阶数和物理近似参数配置。
 @dataclass
 class DynamicBrushConfig:
@@ -85,6 +99,7 @@ class FusionBrushConfig:
     data: DataConfig = field(default_factory=DataConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
     bbsmg: BBSMGConfig = field(default_factory=BBSMGConfig)
+    character_generator: CharacterGeneratorConfig = field(default_factory=CharacterGeneratorConfig)
     dynamic_brush: DynamicBrushConfig = field(default_factory=DynamicBrushConfig)
     optim: OptimConfig = field(default_factory=OptimConfig)
 
