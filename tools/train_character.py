@@ -24,21 +24,75 @@ from models.character_generator import build_character_generator
 from tools.train_bbsmg import CompositeStrokeLoss, set_seed
 
 
-def build_loss(device: torch.device) -> CompositeStrokeLoss:
-    return CompositeStrokeLoss(
+class CharacterCompositeLoss(CompositeStrokeLoss):
+    """Whole-character loss with explicit anti-haze and trajectory terms."""
+
+    def __init__(
+        self,
+        *args,
+        bce_weight: float = 0.5,
+        background_weight: float = 1.5,
+        trajectory_weight: float = 0.1,
+        bce_pos_weight: float = 3.0,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.bce_weight = float(bce_weight)
+        self.background_weight = float(background_weight)
+        self.trajectory_weight = float(trajectory_weight)
+        self.bce_pos_weight = float(bce_pos_weight)
+
+    def compute_components(self, preds, targets, inputs=None):
+        components = super().compute_components(preds, targets)
+        preds = preds.clamp(1e-6, 1.0 - 1e-6)
+        targets = targets.clamp(0.0, 1.0)
+        pixel_weights = 1.0 + self.bce_pos_weight * targets
+        components["weighted_bce"] = (
+            F.binary_cross_entropy(preds, targets, reduction="none") * pixel_weights
+        ).mean()
+
+        background = 1.0 - targets
+        components["background_loss"] = (
+            (preds.square() * background).sum() / background.sum().clamp_min(1.0)
+        )
+        if inputs is None:
+            raise ValueError("Whole-character loss requires trajectory input maps")
+        centerline = inputs[:, 0:1].clamp(0.0, 1.0)
+        target_neighborhood = F.max_pool2d(targets, kernel_size=9, stride=1, padding=4)
+        guided_centerline = centerline * target_neighborhood
+        components["trajectory_loss"] = (
+            ((1.0 - preds) * guided_centerline).sum()
+            / guided_centerline.sum().clamp_min(1.0)
+        )
+        return components
+
+    def combine_components(self, components):
+        return (
+            super().combine_components(components)
+            + self.bce_weight * components["weighted_bce"]
+            + self.background_weight * components["background_loss"]
+            + self.trajectory_weight * components["trajectory_loss"]
+        )
+
+    def forward(self, preds, targets, inputs=None):
+        return self.combine_components(self.compute_components(preds, targets, inputs))
+
+
+def build_loss(device: torch.device) -> CharacterCompositeLoss:
+    return CharacterCompositeLoss(
         mse_weight=1.0,
         ssim_weight=0.3,
         dice_weight=0.3,
         cldice_weight=0.05,
         edge_weight=0.1,
         structure_weight=0.05,
-        ink_weight=0.1,
+        ink_weight=1.0,
         pos_weight=4.0,
     ).to(device)
 
 
-def compute_batch_metrics(predictions, targets, criterion) -> Dict[str, float]:
-    components = criterion.compute_components(predictions, targets)
+def compute_batch_metrics(predictions, targets, inputs, criterion) -> Dict[str, float]:
+    components = criterion.compute_components(predictions, targets, inputs)
     total = criterion.combine_components(components)
     pred_binary = predictions >= 0.5
     target_binary = targets >= 0.5
@@ -52,6 +106,25 @@ def compute_batch_metrics(predictions, targets, criterion) -> Dict[str, float]:
         "ssim_score": 1.0 - values["ssim_loss"],
         "dice_score": 1.0 - values["dice_loss"],
         "iou_at_0.5": float(((intersection + 1e-6) / (union + 1e-6)).mean().item()),
+        "background_mean": float(
+            ((predictions * (1.0 - targets)).sum() / (1.0 - targets).sum().clamp_min(1.0)).item()
+        ),
+        "trajectory_ink_mean": float(
+            ((predictions * inputs[:, 0:1]).sum() / inputs[:, 0:1].sum().clamp_min(1.0)).item()
+        ),
+        "trajectory_target_mean": float(
+            ((targets * inputs[:, 0:1]).sum() / inputs[:, 0:1].sum().clamp_min(1.0)).item()
+        ),
+        "trajectory_prediction_coverage": float(
+            (((predictions >= 0.5).float() * (inputs[:, 0:1] >= 0.5).float()).sum()
+             / (inputs[:, 0:1] >= 0.5).sum().clamp_min(1.0)).item()
+        ),
+        "trajectory_target_coverage": float(
+            (((targets >= 0.5).float() * (inputs[:, 0:1] >= 0.5).float()).sum()
+             / (inputs[:, 0:1] >= 0.5).sum().clamp_min(1.0)).item()
+        ),
+        "target_ink": float(targets.mean().item()),
+        "prediction_ink": float(predictions.mean().item()),
     })
     return values
 
@@ -65,7 +138,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device) -> float:
         targets = batch["targets"].to(device).clamp(0.0, 1.0)
         optimizer.zero_grad(set_to_none=True)
         predictions = model(inputs)
-        loss = criterion(predictions, targets)
+        loss = criterion(predictions, targets, inputs)
         if not torch.isfinite(loss):
             raise RuntimeError("Non-finite whole-character loss")
         loss.backward()
@@ -89,7 +162,7 @@ def validate(model, loader, criterion, device) -> Optional[Dict[str, float]]:
         inputs = batch["inputs"].to(device)
         targets = batch["targets"].to(device).clamp(0.0, 1.0)
         predictions = model(inputs).clamp(0.0, 1.0)
-        values = compute_batch_metrics(predictions, targets, criterion)
+        values = compute_batch_metrics(predictions, targets, inputs, criterion)
         batch_size = inputs.shape[0]
         for name, value in values.items():
             totals[name] = totals.get(name, 0.0) + value * batch_size
@@ -108,12 +181,14 @@ def save_checkpoint(
     best_val: float,
     model_config: Dict[str, Any],
     channel_names,
+    trajectory_padding,
+    trajectory_width,
     train_indices,
     val_indices,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({
-        "format": "character_unet_v2",
+        "format": "character_unet_v3",
         "data_format": CHARACTER_DATA_FORMAT,
         "epoch": epoch,
         "model_state": model.state_dict(),
@@ -125,6 +200,8 @@ def save_checkpoint(
         "best_val": best_val,
         "model_config": model_config,
         "channel_names": list(channel_names),
+        "trajectory_padding": int(trajectory_padding),
+        "trajectory_width": int(trajectory_width),
         "train_indices": list(train_indices),
         "val_indices": list(val_indices),
     }, path)
@@ -138,6 +215,31 @@ def append_metrics(path: Path, row: Dict[str, Any]) -> None:
         if write_header:
             writer.writeheader()
         writer.writerow(row)
+
+
+def migrate_v2_model_state(model, checkpoint) -> None:
+    """Warm-start the six-channel v3 model from a five-channel v2 U-Net."""
+    state = dict(checkpoint["model_state"])
+    key = "input_block.block.0.weight"
+    old_weight = state.get(key)
+    new_weight = model.state_dict()[key]
+    if old_weight is None or old_weight.shape[1] != 5 or new_weight.shape[1] != 6:
+        raise ValueError("Cannot migrate this character_unet_v2 input layer to v3")
+    expanded = new_weight.clone()
+    expanded[:, 0] = old_weight[:, 0]
+    expanded[:, 1] = old_weight[:, 0]
+    expanded[:, 2:] = old_weight[:, 1:]
+    state[key] = expanded
+    # The v2 prediction head encoded the blurred solution we are replacing.
+    # Keep its feature extractor, but restart the final head from the v3 prior.
+    state["output_layer.weight"] = torch.zeros_like(
+        model.state_dict()["output_layer.weight"]
+    )
+    if "output_layer.bias" in state:
+        state["output_layer.bias"] = torch.zeros_like(
+            model.state_dict()["output_layer.bias"]
+        )
+    model.load_state_dict(state, strict=True)
 
 
 def main(args) -> None:
@@ -160,21 +262,37 @@ def main(args) -> None:
         if args.init_character_checkpoint
         else None
     )
-    for checkpoint, label in (
-        (resume_checkpoint, "--resume"),
-        (character_init_checkpoint, "--init_character_checkpoint"),
-    ):
-        if checkpoint is not None and checkpoint.get("format") != "character_unet_v2":
-            raise ValueError(
-                f"{label} requires a character_unet_v2 checkpoint. Transformer-era "
-                "character checkpoints and stroke B-BSMG checkpoints are incompatible."
-            )
+    if resume_checkpoint is not None and resume_checkpoint.get("format") != "character_unet_v3":
+        raise ValueError("--resume requires a character_unet_v3 checkpoint")
+    if character_init_checkpoint is not None and character_init_checkpoint.get("format") not in {
+        "character_unet_v2",
+        "character_unet_v3",
+    }:
+        raise ValueError(
+            "--init_character_checkpoint requires a character_unet_v2/v3 checkpoint; "
+            "Transformer-era and stroke B-BSMG checkpoints are incompatible."
+        )
 
     dataset = CharacterTrainDataset(args.npz_path)
     model_config = asdict(cfg.character_generator)
     if resume_checkpoint and resume_checkpoint.get("model_config"):
         model_config = dict(resume_checkpoint["model_config"])
-    elif character_init_checkpoint and character_init_checkpoint.get("model_config"):
+    elif (
+        character_init_checkpoint
+        and character_init_checkpoint.get("format") == "character_unet_v2"
+        and character_init_checkpoint.get("model_config")
+    ):
+        model_config = dict(character_init_checkpoint["model_config"])
+        model_config.update({
+            "input_channels": len(dataset.channel_names),
+            "prior_strength": cfg.character_generator.prior_strength,
+            "prior_channel": cfg.character_generator.prior_channel,
+        })
+    elif (
+        character_init_checkpoint
+        and character_init_checkpoint.get("format") == "character_unet_v3"
+        and character_init_checkpoint.get("model_config")
+    ):
         model_config = dict(character_init_checkpoint["model_config"])
     if dataset.inputs.shape[1] != int(model_config["input_channels"]):
         raise ValueError("NPZ channels do not match character_generator.input_channels")
@@ -229,7 +347,11 @@ def main(args) -> None:
 
     model = build_character_generator(model_config).to(device)
     if character_init_checkpoint is not None:
-        model.load_state_dict(character_init_checkpoint["model_state"])
+        if character_init_checkpoint.get("format") == "character_unet_v2":
+            migrate_v2_model_state(model, character_init_checkpoint)
+            print("[INIT] Migrated five-channel character_unet_v2 weights to v3")
+        else:
+            model.load_state_dict(character_init_checkpoint["model_state"])
         print(f"[INIT] Loaded U-Net character model from {args.init_character_checkpoint}")
     criterion = build_loss(device)
     optimizer = torch.optim.Adam(
@@ -305,6 +427,8 @@ def main(args) -> None:
             best_val,
             model_config,
             dataset.channel_names,
+            dataset.trajectory_padding,
+            dataset.trajectory_width,
             train_indices,
             val_indices,
         )

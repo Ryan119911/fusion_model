@@ -19,6 +19,7 @@ data:
 
   canvas_size: 128
   svg_canvas_size: 1024
+  character_trajectory_padding: 16
 
 # 中文注释：训练超参数与运行设备配置。
 train:
@@ -41,16 +42,18 @@ bbsmg:
   image_size: 128
   use_tanh: false
 
-# Direct whole-character U-Net. The five aligned spatial channels are:
-# centerline, pressure, stroke order, direction cosine, direction sine.
+# Direct whole-character U-Net. The six aligned spatial channels are:
+# centerline, proximity, pressure, stroke order, direction cosine, direction sine.
 character_generator:
-  input_channels: 5
+  input_channels: 6
   base_channels: 32
   out_channels: 1
   image_size: 128
   depth: 4
   dropout: 0.1
   use_tanh: false
+  prior_strength: 1.5
+  prior_channel: 1
 
 # 中文注释：动态笔刷标定和物理近似参数配置。
 dynamic_brush:

@@ -26,6 +26,7 @@ class DataConfig:
     points_per_stroke: int = 16
     canvas_size: int = 128
     svg_canvas_size: int = 1024
+    character_trajectory_padding: int = 16
     # 旧的 label_dir / json_ext 已删除：标注改由 data_csv 提供
 
 
@@ -57,13 +58,15 @@ class BBSMGConfig:
 
 @dataclass
 class CharacterGeneratorConfig:
-    input_channels: int = 5
+    input_channels: int = 6
     base_channels: int = 32
     out_channels: int = 1
     image_size: int = 128
     depth: int = 4
     dropout: float = 0.1
     use_tanh: bool = False
+    prior_strength: float = 1.5
+    prior_channel: int = 1
 
 
 # 中文注释：动态笔刷模型的多项式阶数和物理近似参数配置。

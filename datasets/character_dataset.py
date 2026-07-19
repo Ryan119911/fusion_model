@@ -8,7 +8,7 @@ from torch.utils.data import Dataset
 from utils.character_features import SPATIAL_CHANNEL_NAMES
 
 
-CHARACTER_DATA_FORMAT = "character_spatial_v2"
+CHARACTER_DATA_FORMAT = "character_spatial_v3"
 
 
 class CharacterTrainDataset(Dataset):
@@ -46,6 +46,16 @@ class CharacterTrainDataset(Dataset):
             tuple(str(value) for value in data["channel_names"].tolist())
             if "channel_names" in data.files
             else tuple(SPATIAL_CHANNEL_NAMES)
+        )
+        self.trajectory_padding = int(
+            np.asarray(data["trajectory_padding"]).item()
+            if "trajectory_padding" in data.files
+            else 16
+        )
+        self.trajectory_width = int(
+            np.asarray(data["trajectory_width"]).item()
+            if "trajectory_width" in data.files
+            else 3
         )
 
         if self.inputs.ndim != 4:

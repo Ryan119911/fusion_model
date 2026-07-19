@@ -2,6 +2,7 @@ data:
   trajectory_csv: tests/fixtures/character_smoke.csv
   image_dir: tests/fixtures/missing_images
   json_dir: tests/fixtures/missing_json
+  character_trajectory_padding: 4
 
 train:
   output_dir: outputs/character_smoke
@@ -15,10 +16,12 @@ train:
   device: cpu
 
 character_generator:
-  input_channels: 5
+  input_channels: 6
   base_channels: 8
   out_channels: 1
   image_size: 32
   depth: 3
   dropout: 0.0
   use_tanh: false
+  prior_strength: 1.5
+  prior_channel: 1

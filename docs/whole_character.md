@@ -8,15 +8,16 @@
 
 ```text
 完整轨迹
-  → 5×128×128 空间条件图
+  → 6×128×128 空间条件图
   → 纯 U-Net（GroupNorm + 多尺度跳跃连接）
   → 1×128×128 完整字图
 ```
 
-五个输入通道依次为：
+六个输入通道依次为：
 
 ```text
 centerline      完整字中心线
+proximity       中心线的连续邻域（抑制平均灰雾）
 pressure        归一化压力
 stroke_order    笔顺
 direction_cos   局部轨迹方向余弦
@@ -24,17 +25,20 @@ direction_sin   局部轨迹方向正弦
 ```
 
 U-Net 直接处理完整空间结构，不会逐笔生成后叠加，也不包含 Transformer。
+输出端以 `proximity` 形成轨迹先验，最终卷积头从零初始化；整字损失额外约束加权 BCE、背景灰雾、总墨量和轨迹覆盖，避免重新退化成大面积灰色平均图。
 
 ## 重要兼容说明
 
-必须重新构建整字 NPZ，并从头训练：
+必须重新构建整字 NPZ。旧 U-Net 权重可以迁移，但不能原样续训：
 
 ```text
 旧 character_sequence_v1 NPZ：不兼容
 旧 character_generator_v1 checkpoint：不兼容
+旧 character_spatial_v2 NPZ：不兼容，必须重建
+旧 character_unet_v2 checkpoint：只能通过 --init_character_checkpoint 迁移
 单笔 bbsmg_best.pt：不兼容
-新 NPZ：character_spatial_v2
-新 checkpoint：character_unet_v2
+新 NPZ：character_spatial_v3
+新 checkpoint：character_unet_v3
 ```
 
 程序会主动拒绝旧文件，避免静默加载错误模型。
@@ -62,33 +66,37 @@ assets/targets/wu_kaishu_target.png
 python -u tools/build_character_pairs.py \
   --config configs/default.yaml \
   --trajectory_csv data/raw/trajectories.csv \
-  --output_npz data/processed/character_unet_5ch.npz \
+  --output_npz data/processed/character_unet_6ch.npz \
   --chirography 楷 \
   --target_character 武 \
   --target_image assets/targets/wu_kaishu_target.png \
   --require_real_target \
+  --trajectory_padding 16 \
   --trajectory_width 3
 ```
 
 正确输出必须类似：
 
 ```text
-inputs shape: (字符数, 5, 128, 128)
+inputs shape: (字符数, 6, 128, 128)
 targets shape: (字符数, 1, 128, 128)
-channels: centerline, pressure, stroke_order, direction_cos, direction_sin
+channels: centerline, proximity, pressure, stroke_order, direction_cos, direction_sin
+trajectory/target coverage: mean=...
 ```
 
 如果 `--require_real_target` 导致字符样本过少，可以去掉它，让没有真实楷书目标的字符使用完整轨迹栅格目标。
+`trajectory/target coverage` 越高表示中心线与目标墨迹越一致；低于约 0.6 时，即使 loss 下降也容易生成模糊平均图。
 
-## 3. 从头训练 U-Net
+## 3. 迁移旧 U-Net 并训练 v3
 
 GTX 1660 6GB 建议先使用 `batch_size=4`：
 
 ```bash
 python -u tools/train_character.py \
   --config configs/default.yaml \
-  --npz_path data/processed/character_unet_5ch.npz \
-  --output_dir outputs/character_unet \
+  --npz_path data/processed/character_unet_6ch.npz \
+  --init_character_checkpoint outputs/character_unet/character_best.pt \
+  --output_dir outputs/character_unet_v3 \
   --epochs 50 \
   --batch_size 4 \
   --val_ratio 0.1 \
@@ -97,15 +105,15 @@ python -u tools/train_character.py \
   --min_lr 0.000001
 ```
 
-如果显存足够可将 batch size 增加到 8。不要对旧 Transformer checkpoint 使用 `--resume` 或 `--init_character_checkpoint`。
+如果显存足够可将 batch size 增加到 8。上述 `--init_character_checkpoint` 会自动把旧 v2 的五通道首层扩展为六通道；如果不想迁移旧权重，删除该参数即可从头训练。旧 v2 不能使用 `--resume`，Transformer checkpoint 两种方式都不能使用。
 
 ## 4. 验证整字效果
 
 ```bash
 python -u tools/evaluate_character.py \
   --config configs/default.yaml \
-  --npz_path data/processed/character_unet_5ch.npz \
-  --checkpoint outputs/character_unet/character_best.pt \
+  --npz_path data/processed/character_unet_6ch.npz \
+  --checkpoint outputs/character_unet_v3/character_best.pt \
   --output_dir outputs/eval_character_unet \
   --split val \
   --num_images 20
@@ -118,9 +126,12 @@ dice_score
 iou_at_0.5
 ssim_score
 plain_mse
+prediction_ink / target_ink
+background_mean
+trajectory_prediction_coverage / trajectory_target_coverage
 ```
 
-每张 `character_*_comparison.png` 从左到右为目标、预测、绝对差异。
+每张 `character_*_comparison.png` 从左到右为轨迹、目标、预测、绝对差异。
 
 ## 5. 生成“武”字对比图
 
@@ -128,11 +139,12 @@ plain_mse
 python -u tools/predict_character.py \
   --config configs/default.yaml \
   --trajectory_csv data/raw/trajectories.csv \
-  --checkpoint outputs/character_unet/character_best.pt \
+  --checkpoint outputs/character_unet_v3/character_best.pt \
   --character 武 \
   --target_image assets/targets/wu_kaishu_target.png \
   --output_dir outputs/wu_unet \
   --output_stem wu_kaishu \
+  --trajectory_padding 16 \
   --trajectory_width 3
 ```
 
@@ -141,6 +153,7 @@ python -u tools/predict_character.py \
 ```text
 outputs/wu_unet/wu_kaishu_target.png
 outputs/wu_unet/wu_kaishu_trajectory.png
+outputs/wu_unet/wu_kaishu_proximity.png
 outputs/wu_unet/wu_kaishu_prediction.png
 outputs/wu_unet/wu_kaishu_diff.png
 outputs/wu_unet/wu_kaishu_comparison.png
@@ -159,6 +172,7 @@ python -u tools/build_character_pairs.py \
   --character 武 \
   --target_character 武 \
   --target_image assets/targets/wu_kaishu_target.png \
+  --trajectory_padding 16 \
   --trajectory_width 3
 ```
 
@@ -168,7 +182,7 @@ python -u tools/build_character_pairs.py \
 python -u tools/train_character.py \
   --config configs/default.yaml \
   --npz_path data/processed/wu_unet_finetune.npz \
-  --init_character_checkpoint outputs/character_unet/character_best.pt \
+  --init_character_checkpoint outputs/character_unet_v3/character_best.pt \
   --output_dir outputs/wu_unet_finetune \
   --epochs 200 \
   --batch_size 1 \
@@ -191,8 +205,8 @@ outputs/wu_unet_finetune/character_best.pt
 ```bash
 python -u tools/train_character.py \
   --config configs/default.yaml \
-  --npz_path data/processed/character_unet_5ch.npz \
-  --resume outputs/character_unet/character_last.pt \
+  --npz_path data/processed/character_unet_6ch.npz \
+  --resume outputs/character_unet_v3/character_last.pt \
   --epochs 80 \
   --batch_size 4 \
   --lr_factor 0.5 \

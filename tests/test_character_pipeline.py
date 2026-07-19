@@ -4,6 +4,7 @@ import numpy as np
 import torch
 
 from models.character_generator import CharacterUNet
+from tools.train_character import migrate_v2_model_state
 from utils.character_features import SPATIAL_CHANNEL_NAMES, extract_character_spatial_maps
 from utils.image_preprocessing import letterbox_character_image
 from utils.types import (
@@ -50,20 +51,49 @@ class CharacterPipelineTest(unittest.TestCase):
         self.assertEqual(len(normalized_strokes), 2)
         self.assertGreater(float(inputs[0].sum()), 0.0)
         self.assertGreater(float(inputs[1].sum()), 0.0)
+        self.assertGreater(float(inputs[1].sum()), float(inputs[0].sum()))
         self.assertTrue(np.isfinite(inputs).all())
 
     def test_unet_emits_one_complete_image_without_transformer(self):
         model = CharacterUNet(
+            input_channels=6,
+            base_channels=8,
+            image_size=32,
+            depth=3,
+            dropout=0.0,
+        )
+        output = model(torch.randn(2, 6, 32, 32))
+        self.assertEqual(tuple(output.shape), (2, 1, 32, 32))
+        self.assertTrue(torch.isfinite(output).all())
+        self.assertFalse(any(isinstance(module, torch.nn.Transformer) for module in model.modules()))
+
+    def test_v2_checkpoint_migration_expands_input_and_resets_blurry_head(self):
+        old_model = CharacterUNet(
             input_channels=5,
             base_channels=8,
             image_size=32,
             depth=3,
             dropout=0.0,
         )
-        output = model(torch.randn(2, 5, 32, 32))
-        self.assertEqual(tuple(output.shape), (2, 1, 32, 32))
-        self.assertTrue(torch.isfinite(output).all())
-        self.assertFalse(any(isinstance(module, torch.nn.Transformer) for module in model.modules()))
+        with torch.no_grad():
+            old_model.output_layer.weight.fill_(1.0)
+            old_model.output_layer.bias.fill_(1.0)
+        old_state = old_model.state_dict()
+        new_model = CharacterUNet(
+            input_channels=6,
+            base_channels=8,
+            image_size=32,
+            depth=3,
+            dropout=0.0,
+        )
+        migrate_v2_model_state(new_model, {"model_state": old_state})
+        new_state = new_model.state_dict()
+        self.assertTrue(torch.equal(
+            new_state["input_block.block.0.weight"][:, 1],
+            old_state["input_block.block.0.weight"][:, 0],
+        ))
+        self.assertEqual(float(new_state["output_layer.weight"].abs().sum()), 0.0)
+        self.assertEqual(float(new_state["output_layer.bias"].abs().sum()), 0.0)
 
     def test_image_preprocessing_uses_ink_positive_polarity(self):
         image = np.full((20, 30), 255, dtype=np.uint8)

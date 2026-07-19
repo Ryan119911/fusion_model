@@ -59,9 +59,9 @@ def main(args) -> None:
         cfg.train.device if torch.cuda.is_available() or cfg.train.device == "cpu" else "cpu"
     )
     checkpoint = torch.load(args.checkpoint, map_location=device)
-    if checkpoint.get("format") != "character_unet_v2":
+    if checkpoint.get("format") != "character_unet_v3":
         raise ValueError(
-            "Expected a character_unet_v2 checkpoint. Transformer-era character "
+            "Expected a character_unet_v3 checkpoint. Transformer-era character "
             "checkpoints and stroke-level B-BSMG checkpoints are incompatible."
         )
     model_config = checkpoint["model_config"]
@@ -81,8 +81,16 @@ def main(args) -> None:
     spatial_maps, _ = extract_character_spatial_maps(
         sample,
         canvas_size=int(model_config["image_size"]),
-        padding=4,
-        line_width=args.trajectory_width,
+        padding=(
+            int(args.trajectory_padding)
+            if args.trajectory_padding is not None
+            else int(checkpoint.get("trajectory_padding", cfg.data.character_trajectory_padding))
+        ),
+        line_width=(
+            int(args.trajectory_width)
+            if args.trajectory_width is not None
+            else int(checkpoint.get("trajectory_width", 3))
+        ),
     )
     inputs = torch.from_numpy(spatial_maps[None, ...]).to(device)
     with torch.no_grad():
@@ -93,6 +101,7 @@ def main(args) -> None:
     character = sample.character or args.character or "character"
     stem = args.output_stem or f"{character}_whole_character"
     save_gray(spatial_maps[0], output_dir / f"{stem}_trajectory.png")
+    save_gray(spatial_maps[1], output_dir / f"{stem}_proximity.png")
     save_gray(prediction, output_dir / f"{stem}_prediction.png")
 
     report = {
@@ -101,7 +110,19 @@ def main(args) -> None:
         "num_strokes": len(sample.sorted_strokes()),
         "input_channels": list(SPATIAL_CHANNEL_NAMES),
         "checkpoint": str(args.checkpoint),
+        "checkpoint_epoch": checkpoint.get("epoch"),
+        "checkpoint_val_metrics": checkpoint.get("val_metrics"),
         "trajectory_csv": str(args.trajectory_csv or cfg.data.trajectory_csv),
+        "trajectory_padding": int(
+            args.trajectory_padding
+            if args.trajectory_padding is not None
+            else checkpoint.get("trajectory_padding", cfg.data.character_trajectory_padding)
+        ),
+        "trajectory_width": int(
+            args.trajectory_width
+            if args.trajectory_width is not None
+            else checkpoint.get("trajectory_width", 3)
+        ),
         "trajectory_preview": str(output_dir / f"{stem}_trajectory.png"),
     }
     if args.target_image:
@@ -117,11 +138,20 @@ def main(args) -> None:
             np.concatenate([target, prediction, difference], axis=1),
             output_dir / f"{stem}_comparison.png",
         )
+        centerline = spatial_maps[0] > 0.5
+        target_binary = target >= 0.5
+        prediction_binary = prediction >= 0.5
         report.update({
             "target_image": str(args.target_image),
             "target_transform": target_transform,
             "panel_order": ["target", "prediction", "absolute_difference"],
-            "metrics": image_metrics(prediction, target),
+            "metrics": {
+                **image_metrics(prediction, target),
+                "trajectory_target_coverage": float(target_binary[centerline].mean()),
+                "trajectory_prediction_coverage": float(prediction_binary[centerline].mean()),
+                "trajectory_target_mean": float(target[centerline].mean()),
+                "trajectory_prediction_mean": float(prediction[centerline].mean()),
+            },
         })
 
     with open(output_dir / f"{stem}_metrics.json", "w", encoding="utf-8") as file:
@@ -149,5 +179,6 @@ if __name__ == "__main__":
     parser.add_argument("--target_image", default=None)
     parser.add_argument("--output_dir", default="outputs/predict_character")
     parser.add_argument("--output_stem", default=None)
-    parser.add_argument("--trajectory_width", type=int, default=3)
+    parser.add_argument("--trajectory_width", type=int, default=None)
+    parser.add_argument("--trajectory_padding", type=int, default=None)
     main(parser.parse_args())

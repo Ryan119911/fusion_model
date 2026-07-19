@@ -67,13 +67,15 @@ class CharacterUNet(nn.Module):
 
     def __init__(
         self,
-        input_channels: int = 5,
+        input_channels: int = 6,
         base_channels: int = 32,
         out_channels: int = 1,
         image_size: int = 128,
         depth: int = 4,
         dropout: float = 0.1,
         use_tanh: bool = False,
+        prior_strength: float = 1.5,
+        prior_channel: int = 1,
     ):
         super().__init__()
         if input_channels < 1:
@@ -82,9 +84,16 @@ class CharacterUNet(nn.Module):
             raise ValueError("depth must be positive")
         if image_size % (2 ** depth) != 0:
             raise ValueError("image_size must be divisible by 2 ** depth")
+        if prior_channel < 0 or prior_channel >= input_channels:
+            raise ValueError("prior_channel must index an input trajectory channel")
+        if prior_strength < 0:
+            raise ValueError("prior_strength must be non-negative")
 
         self.input_channels = input_channels
         self.image_size = image_size
+        self.use_tanh = use_tanh
+        self.prior_strength = float(prior_strength)
+        self.prior_channel = int(prior_channel)
         widths = [base_channels * (2 ** level) for level in range(depth + 1)]
         self.input_block = ConvBlock(input_channels, widths[0])
         self.down_blocks = nn.ModuleList(
@@ -98,7 +107,6 @@ class CharacterUNet(nn.Module):
             ]
         )
         self.output_layer = nn.Conv2d(widths[0], out_channels, kernel_size=1)
-        self.output_activation = nn.Tanh() if use_tanh else nn.Sigmoid()
         self._initialize_weights()
 
     def _initialize_weights(self) -> None:
@@ -107,6 +115,11 @@ class CharacterUNet(nn.Module):
                 nn.init.kaiming_normal_(module.weight, nonlinearity="relu")
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
+        # Begin with the explicit trajectory prior instead of a random gray
+        # field. Gradients still train this head normally from the first step.
+        nn.init.zeros_(self.output_layer.weight)
+        if self.output_layer.bias is not None:
+            nn.init.zeros_(self.output_layer.bias)
 
     def forward(self, trajectory_maps: torch.Tensor) -> torch.Tensor:
         if trajectory_maps.ndim != 4:
@@ -126,7 +139,20 @@ class CharacterUNet(nn.Module):
         features = self.bottleneck_dropout(features)
         for up, skip in zip(self.up_blocks, reversed(skips[:-1])):
             features = up(features, skip)
-        return self.output_activation(self.output_layer(features))
+        logits = self.output_layer(features)
+        if self.use_tanh:
+            return torch.tanh(logits)
+
+        # A U-Net trained on sparse centerlines can minimize pixel losses by
+        # predicting a dataset-average gray cloud.  The proximity map supplies
+        # a dense, explicitly spatial logit prior: background starts negative,
+        # while pixels near the requested trajectory start positive.  The
+        # learned logits remain free to widen, taper and reshape every stroke.
+        proximity = trajectory_maps[
+            :, self.prior_channel : self.prior_channel + 1
+        ].clamp(0.0, 1.0)
+        logits = logits + self.prior_strength * (6.0 * proximity - 3.0)
+        return torch.sigmoid(logits)
 
 
 def build_character_generator(

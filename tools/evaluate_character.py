@@ -40,10 +40,10 @@ def main(args) -> None:
         cfg.train.device if torch.cuda.is_available() or cfg.train.device == "cpu" else "cpu"
     )
     checkpoint = torch.load(args.checkpoint, map_location=device)
-    if checkpoint.get("format") != "character_unet_v2":
+    if checkpoint.get("format") != "character_unet_v3":
         raise ValueError(
             "This is not a U-Net whole-character checkpoint. Rebuild the spatial NPZ "
-            "and train a new character_unet_v2 model."
+            "and train a new character_unet_v3 model."
         )
     model_config = checkpoint.get("model_config")
     if not model_config:
@@ -55,6 +55,10 @@ def main(args) -> None:
     dataset = CharacterTrainDataset(args.npz_path)
     if tuple(checkpoint.get("channel_names", ())) != tuple(dataset.channel_names):
         raise ValueError("Checkpoint and NPZ spatial channel schemas differ")
+    if int(checkpoint.get("trajectory_padding", -1)) != dataset.trajectory_padding:
+        raise ValueError("Checkpoint and NPZ trajectory padding differ")
+    if int(checkpoint.get("trajectory_width", -1)) != dataset.trajectory_width:
+        raise ValueError("Checkpoint and NPZ trajectory width differ")
     if args.split == "val":
         indices: List[int] = list(checkpoint.get("val_indices", []))
         if not indices:
@@ -92,7 +96,7 @@ def main(args) -> None:
             inputs = batch["inputs"].to(device)
             targets = batch["targets"].to(device).clamp(0.0, 1.0)
             predictions = model(inputs).clamp(0.0, 1.0)
-            values = compute_batch_metrics(predictions, targets, criterion)
+            values = compute_batch_metrics(predictions, targets, inputs, criterion)
 
             zeros = torch.zeros_like(targets)
             zero_binary = zeros.bool()
@@ -113,6 +117,7 @@ def main(args) -> None:
 
             pred_np = predictions.cpu().numpy()
             target_np = targets.cpu().numpy()
+            input_np = inputs.cpu().numpy()
             for item_index in range(batch_size):
                 if saved >= args.num_images:
                     break
@@ -122,11 +127,15 @@ def main(args) -> None:
                 target = target_np[item_index, 0]
                 prediction = pred_np[item_index, 0]
                 difference = np.abs(target - prediction)
+                trajectory = input_np[item_index, 0]
+                proximity = input_np[item_index, 1]
                 save_gray(target, output_dir / f"{stem}_target.png")
                 save_gray(prediction, output_dir / f"{stem}_prediction.png")
                 save_gray(difference, output_dir / f"{stem}_diff.png")
+                save_gray(trajectory, output_dir / f"{stem}_trajectory.png")
+                save_gray(proximity, output_dir / f"{stem}_proximity.png")
                 save_gray(
-                    np.concatenate([target, prediction, difference], axis=1),
+                    np.concatenate([trajectory, target, prediction, difference], axis=1),
                     output_dir / f"{stem}_comparison.png",
                 )
                 saved += 1
@@ -138,7 +147,11 @@ def main(args) -> None:
         "split": args.split,
         "character": args.character,
         "samples": count,
-        "panel_order": ["target", "prediction", "absolute_difference"],
+        "checkpoint_epoch": checkpoint.get("epoch"),
+        "checkpoint_val_metrics": checkpoint.get("val_metrics"),
+        "trajectory_padding": checkpoint.get("trajectory_padding"),
+        "trajectory_width": checkpoint.get("trajectory_width"),
+        "panel_order": ["trajectory", "target", "prediction", "absolute_difference"],
         "metrics": metrics,
     }
     with open(output_dir / "metrics.json", "w", encoding="utf-8") as file:

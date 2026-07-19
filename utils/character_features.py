@@ -2,7 +2,7 @@ import math
 from typing import List, Tuple
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 from models.geometry import normalize_trajectory_xy
 from utils.types import CharacterTrajectory
@@ -10,6 +10,7 @@ from utils.types import CharacterTrajectory
 
 SPATIAL_CHANNEL_NAMES = (
     "centerline",
+    "proximity",
     "pressure",
     "stroke_order",
     "direction_cos",
@@ -30,10 +31,10 @@ def _draw_point(draw: ImageDraw.ImageDraw, point, value: float, width: int) -> N
 def extract_character_spatial_maps(
     sample: CharacterTrajectory,
     canvas_size: int = 128,
-    padding: int = 4,
+    padding: int = 16,
     line_width: int = 3,
 ) -> Tuple[np.ndarray, List[List[Tuple[float, float]]]]:
-    """Rasterize the complete trajectory into five aligned U-Net input maps."""
+    """Rasterize the complete trajectory into six aligned U-Net input maps."""
     strokes = sample.sorted_strokes()
     if not strokes:
         raise ValueError("Character trajectory contains no strokes")
@@ -94,9 +95,19 @@ def extract_character_spatial_maps(
             cos_draw.line(segment, fill=float(cos_value), width=line_width)
             sin_draw.line(segment, fill=float(sin_value), width=line_width)
 
+    centerline_array = np.asarray(centerline, dtype=np.float32) / 255.0
+    proximity_image = centerline.filter(
+        ImageFilter.GaussianBlur(radius=max(2.0, float(line_width) * 1.5))
+    )
+    proximity = np.asarray(proximity_image, dtype=np.float32) / 255.0
+    proximity_max = float(proximity.max())
+    if proximity_max > 1e-6:
+        proximity = proximity / proximity_max
+
     maps = np.stack(
         [
-            np.asarray(centerline, dtype=np.float32) / 255.0,
+            centerline_array,
+            proximity,
             np.asarray(pressure, dtype=np.float32),
             np.asarray(stroke_order, dtype=np.float32),
             np.asarray(direction_cos, dtype=np.float32),
