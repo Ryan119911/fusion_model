@@ -57,14 +57,11 @@ class BBSMGConfig:
 
 @dataclass
 class CharacterGeneratorConfig:
-    input_dim: int = 10
-    latent_dim: int = 128
-    base_channels: int = 64
+    input_channels: int = 5
+    base_channels: int = 32
     out_channels: int = 1
     image_size: int = 128
-    max_strokes: int = 64
-    transformer_layers: int = 2
-    attention_heads: int = 4
+    depth: int = 4
     dropout: float = 0.1
     use_tanh: bool = False
 

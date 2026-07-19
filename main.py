@@ -88,6 +88,7 @@ def cmd_build_character(args):
         cmd += ["--chirography", args.chirography]
     if args.require_real_target:
         cmd += ["--require_real_target"]
+    cmd += ["--trajectory_width", str(args.trajectory_width)]
     run(cmd, args.log_file)
 
 
@@ -112,9 +113,6 @@ def cmd_train_character(args):
     if args.resume:
         ensure_exists(args.resume, "Whole-character resume checkpoint")
         cmd += ["--resume", args.resume]
-    if args.init_stroke_checkpoint:
-        ensure_exists(args.init_stroke_checkpoint, "Stroke initialization checkpoint")
-        cmd += ["--init_stroke_checkpoint", args.init_stroke_checkpoint]
     if args.init_character_checkpoint:
         ensure_exists(args.init_character_checkpoint, "Character initialization checkpoint")
         cmd += ["--init_character_checkpoint", args.init_character_checkpoint]
@@ -152,6 +150,7 @@ def cmd_predict_character(args):
         "--checkpoint", args.checkpoint,
         "--index", str(args.index),
         "--output_dir", args.output_dir,
+        "--trajectory_width", str(args.trajectory_width),
     ]
     for name in ("trajectory_csv", "character", "sample_id", "target_image", "output_stem"):
         value = getattr(args, name)
@@ -288,10 +287,11 @@ def build_parser():
     p6.add_argument("--target_image", default=None)
     p6.add_argument("--chirography", default=None)
     p6.add_argument("--require_real_target", action="store_true")
+    p6.add_argument("--trajectory_width", type=int, default=3)
     p6.add_argument("--log_dir", default="outputs/logs")
     p6.set_defaults(func=cmd_build_character)
 
-    p7 = subparsers.add_parser("train-character", help="Train the direct whole-character model")
+    p7 = subparsers.add_parser("train-character", help="Train the spatial whole-character U-Net")
     p7.add_argument("--config", default="configs/default.yaml")
     p7.add_argument("--npz_path", required=True)
     p7.add_argument("--output_dir", default=None)
@@ -299,7 +299,6 @@ def build_parser():
     p7.add_argument("--batch_size", type=int, default=None)
     p7.add_argument("--val_ratio", type=float, default=0.1)
     p7.add_argument("--resume", default=None)
-    p7.add_argument("--init_stroke_checkpoint", default=None)
     p7.add_argument("--init_character_checkpoint", default=None)
     p7.add_argument("--lr_factor", type=float, default=0.5)
     p7.add_argument("--lr_patience", type=int, default=3)
@@ -318,7 +317,7 @@ def build_parser():
     p8.add_argument("--log_dir", default="outputs/logs")
     p8.set_defaults(func=cmd_evaluate_character)
 
-    p9 = subparsers.add_parser("predict-character", help="Predict one complete character directly")
+    p9 = subparsers.add_parser("predict-character", help="Predict one complete character with U-Net")
     p9.add_argument("--config", default="configs/default.yaml")
     p9.add_argument("--trajectory_csv", default=None)
     p9.add_argument("--checkpoint", required=True)
@@ -328,6 +327,7 @@ def build_parser():
     p9.add_argument("--target_image", default=None)
     p9.add_argument("--output_dir", default="outputs/predict_character")
     p9.add_argument("--output_stem", default=None)
+    p9.add_argument("--trajectory_width", type=int, default=3)
     p9.add_argument("--log_dir", default="outputs/logs")
     p9.set_defaults(func=cmd_predict_character)
 

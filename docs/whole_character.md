@@ -1,155 +1,175 @@
-# 整字模型（以“武”为例）
+# 纯 U-Net 整字模型（以“武”为例）
 
-## 1. Ubuntu 22.04 更新仓库
+## 模型变化
 
-远端 `main` 的历史已按要求恢复到 `014c0f1` 后重新开发。如果 Ubuntu 上已有旧的 `main`，先确认 `git status` 没有未提交内容，再同步：
+旧整字模型将每笔压缩成 10D token，随后使用 Transformer 和全局池化。这会丢失弯曲、转折、斜钩和精确空间位置，容易生成平均灰图。
+
+当前版本改为：
+
+```text
+完整轨迹
+  → 5×128×128 空间条件图
+  → 纯 U-Net（GroupNorm + 多尺度跳跃连接）
+  → 1×128×128 完整字图
+```
+
+五个输入通道依次为：
+
+```text
+centerline      完整字中心线
+pressure        归一化压力
+stroke_order    笔顺
+direction_cos   局部轨迹方向余弦
+direction_sin   局部轨迹方向正弦
+```
+
+U-Net 直接处理完整空间结构，不会逐笔生成后叠加，也不包含 Transformer。
+
+## 重要兼容说明
+
+必须重新构建整字 NPZ，并从头训练：
+
+```text
+旧 character_sequence_v1 NPZ：不兼容
+旧 character_generator_v1 checkpoint：不兼容
+单笔 bbsmg_best.pt：不兼容
+新 NPZ：character_spatial_v2
+新 checkpoint：character_unet_v2
+```
+
+程序会主动拒绝旧文件，避免静默加载错误模型。
+
+## 1. Ubuntu 更新代码
 
 ```bash
 cd ~/coppeliasim/machine_learning/model
-git status
-git fetch origin
 git switch main
-git reset --hard origin/main
+git pull origin main
 conda activate ddpm
 ```
 
-原来的实验代码完整保存在远端 `style` 分支。
-
-## 2. 放置“武”字目标图
-
-把目标图复制为：
+目标图已经位于：
 
 ```text
 assets/targets/wu_kaishu_target.png
 ```
 
-图像可以是白底黑字或黑底白字。程序会自动统一为黑底白墨、裁掉空白边、等比缩放并留 4 像素边距。
+## 2. 重新构建 U-Net 整字数据
 
-## 3. 构建整字数据
-
-推荐使用全部楷书整字训练，并用指定图片覆盖“武”的监督目标：
+不要覆盖旧 NPZ，使用新的文件名：
 
 ```bash
 python -u tools/build_character_pairs.py \
   --config configs/default.yaml \
   --trajectory_csv data/raw/trajectories.csv \
-  --output_npz data/processed/character_train_10d.npz \
+  --output_npz data/processed/character_unet_5ch.npz \
   --chirography 楷 \
   --target_character 武 \
   --target_image assets/targets/wu_kaishu_target.png \
-  --require_real_target
+  --require_real_target \
+  --trajectory_width 3
 ```
 
-成功时输入应为：
+正确输出必须类似：
 
 ```text
-[字符样本数, 64, 10]
+inputs shape: (字符数, 5, 128, 128)
+targets shape: (字符数, 1, 128, 128)
+channels: centerline, pressure, stroke_order, direction_cos, direction_sin
 ```
 
-而不是旧数据的 `[笔画样本数, 10]`。`64` 是补齐后的最大笔画数，`stroke_masks` 会标记每个字实际有几笔。
+如果 `--require_real_target` 导致字符样本过少，可以去掉它，让没有真实楷书目标的字符使用完整轨迹栅格目标。
 
-如果 `--require_real_target` 后样本数太少，可去掉该参数，缺少真实楷书图的字符会使用完整轨迹栅格图作为整字监督。
+## 3. 从头训练 U-Net
 
-## 4. 从头训练整字模型
-
-推荐先从头训练 50 epoch：
+GTX 1660 6GB 建议先使用 `batch_size=4`：
 
 ```bash
 python -u tools/train_character.py \
   --config configs/default.yaml \
-  --npz_path data/processed/character_train_10d.npz \
-  --output_dir outputs/character_10d \
+  --npz_path data/processed/character_unet_5ch.npz \
+  --output_dir outputs/character_unet \
   --epochs 50 \
-  --batch_size 16 \
+  --batch_size 4 \
   --val_ratio 0.1 \
   --lr_factor 0.5 \
   --lr_patience 3 \
   --min_lr 0.000001
 ```
 
-也可以用已经训练好的单笔模型做参数初始化，但不能使用 `--resume`：
+如果显存足够可将 batch size 增加到 8。不要对旧 Transformer checkpoint 使用 `--resume` 或 `--init_character_checkpoint`。
 
-```bash
-python -u tools/train_character.py \
-  --config configs/default.yaml \
-  --npz_path data/processed/character_train_10d.npz \
-  --output_dir outputs/character_10d_from_strokes \
-  --init_stroke_checkpoint outputs/bbsmg_10d_full/bbsmg_best.pt \
-  --epochs 50 \
-  --batch_size 16 \
-  --val_ratio 0.1 \
-  --lr_factor 0.5 \
-  --lr_patience 3 \
-  --min_lr 0.000001
-```
-
-`--init_stroke_checkpoint` 只迁移兼容的编码器/解码器参数；新 Transformer 仍从头学习。旧的 `bbsmg_last.pt` 不能作为整字训练的 `--resume`。
-
-## 5. 评估整字验证集
+## 4. 验证整字效果
 
 ```bash
 python -u tools/evaluate_character.py \
   --config configs/default.yaml \
-  --npz_path data/processed/character_train_10d.npz \
-  --checkpoint outputs/character_10d/character_best.pt \
-  --output_dir outputs/eval_character_10d \
+  --npz_path data/processed/character_unet_5ch.npz \
+  --checkpoint outputs/character_unet/character_best.pt \
+  --output_dir outputs/eval_character_unet \
   --split val \
   --num_images 20
 ```
 
-关注 `dice_score`、`iou_at_0.5`、`ssim_score`、`plain_mse`，并查看：
+重点查看：
 
 ```text
-outputs/eval_character_10d/character_*_comparison.png
+dice_score
+iou_at_0.5
+ssim_score
+plain_mse
 ```
 
-每张对比图从左到右固定为：目标图、整字预测图、绝对差异图。
+每张 `character_*_comparison.png` 从左到右为目标、预测、绝对差异。
 
-## 6. 生成“武”字对比图
+## 5. 生成“武”字对比图
 
 ```bash
 python -u tools/predict_character.py \
   --config configs/default.yaml \
   --trajectory_csv data/raw/trajectories.csv \
-  --checkpoint outputs/character_10d/character_best.pt \
+  --checkpoint outputs/character_unet/character_best.pt \
   --character 武 \
   --target_image assets/targets/wu_kaishu_target.png \
-  --output_dir outputs/wu_whole_character \
-  --output_stem wu_kaishu
+  --output_dir outputs/wu_unet \
+  --output_stem wu_kaishu \
+  --trajectory_width 3
 ```
 
 结果：
 
 ```text
-outputs/wu_whole_character/wu_kaishu_target.png
-outputs/wu_whole_character/wu_kaishu_prediction.png
-outputs/wu_whole_character/wu_kaishu_diff.png
-outputs/wu_whole_character/wu_kaishu_comparison.png
-outputs/wu_whole_character/wu_kaishu_metrics.json
+outputs/wu_unet/wu_kaishu_target.png
+outputs/wu_unet/wu_kaishu_trajectory.png
+outputs/wu_unet/wu_kaishu_prediction.png
+outputs/wu_unet/wu_kaishu_diff.png
+outputs/wu_unet/wu_kaishu_comparison.png
+outputs/wu_unet/wu_kaishu_metrics.json
 ```
 
-如果轨迹 CSV 中有多个“武”，可加 `--sample_id 武_fake_sim` 精确选择，或使用 `--index 0`、`--index 1`。
+## 6. 只针对“武”微调
 
-如果通用整字模型已经能生成完整结构，但“武”与指定目标仍有明显字形差异，可以再做只针对“武”的微调。先构建单字 NPZ：
+先建立单字空间数据：
 
 ```bash
 python -u tools/build_character_pairs.py \
   --config configs/default.yaml \
   --trajectory_csv data/raw/trajectories.csv \
-  --output_npz data/processed/wu_character_finetune.npz \
+  --output_npz data/processed/wu_unet_finetune.npz \
   --character 武 \
   --target_character 武 \
-  --target_image assets/targets/wu_kaishu_target.png
+  --target_image assets/targets/wu_kaishu_target.png \
+  --trajectory_width 3
 ```
 
-再从通用整字权重开始微调。这里必须使用 `--init_character_checkpoint`，不能用 `--resume`，因为训练数据和划分已经改变：
+从通用 U-Net 开始微调：
 
 ```bash
 python -u tools/train_character.py \
   --config configs/default.yaml \
-  --npz_path data/processed/wu_character_finetune.npz \
-  --init_character_checkpoint outputs/character_10d/character_best.pt \
-  --output_dir outputs/character_wu_finetune \
+  --npz_path data/processed/wu_unet_finetune.npz \
+  --init_character_checkpoint outputs/character_unet/character_best.pt \
+  --output_dir outputs/wu_unet_finetune \
   --epochs 200 \
   --batch_size 1 \
   --val_ratio 0 \
@@ -158,26 +178,26 @@ python -u tools/train_character.py \
   --min_lr 0.000001
 ```
 
-微调后，把预测命令中的 checkpoint 改为：
+微调后使用：
 
 ```text
-outputs/character_wu_finetune/character_best.pt
+outputs/wu_unet_finetune/character_best.pt
 ```
 
-## 7. 继续增加 epoch
+## 7. 继续训练
 
-下面表示从已有 checkpoint 继续训练到总计 80 epoch：
+只有新 U-Net checkpoint 才能继续：
 
 ```bash
 python -u tools/train_character.py \
   --config configs/default.yaml \
-  --npz_path data/processed/character_train_10d.npz \
-  --resume outputs/character_10d/character_last.pt \
+  --npz_path data/processed/character_unet_5ch.npz \
+  --resume outputs/character_unet/character_last.pt \
   --epochs 80 \
-  --batch_size 16 \
+  --batch_size 4 \
   --lr_factor 0.5 \
   --lr_patience 3 \
   --min_lr 0.000001
 ```
 
-这里的 `80` 是总 epoch 数，不是额外训练 80 个 epoch。
+`--epochs 80` 表示训练到总计 80 epoch。

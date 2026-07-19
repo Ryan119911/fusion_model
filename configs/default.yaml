@@ -41,17 +41,14 @@ bbsmg:
   image_size: 128
   use_tanh: false
 
-# Direct whole-character model. It consumes all stroke features together and
-# emits one complete character image; it does not composite per-stroke images.
+# Direct whole-character U-Net. The five aligned spatial channels are:
+# centerline, pressure, stroke order, direction cosine, direction sine.
 character_generator:
-  input_dim: 10
-  latent_dim: 128
-  base_channels: 64
+  input_channels: 5
+  base_channels: 32
   out_channels: 1
   image_size: 128
-  max_strokes: 64
-  transformer_layers: 2
-  attention_heads: 4
+  depth: 4
   dropout: 0.1
   use_tanh: false
 

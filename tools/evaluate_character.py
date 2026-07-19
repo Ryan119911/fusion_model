@@ -40,10 +40,10 @@ def main(args) -> None:
         cfg.train.device if torch.cuda.is_available() or cfg.train.device == "cpu" else "cpu"
     )
     checkpoint = torch.load(args.checkpoint, map_location=device)
-    if checkpoint.get("format") != "character_generator_v1":
+    if checkpoint.get("format") != "character_unet_v2":
         raise ValueError(
-            "This is not a direct whole-character checkpoint. Use character_best.pt, "
-            "not bbsmg_best.pt."
+            "This is not a U-Net whole-character checkpoint. Rebuild the spatial NPZ "
+            "and train a new character_unet_v2 model."
         )
     model_config = checkpoint.get("model_config")
     if not model_config:
@@ -52,11 +52,9 @@ def main(args) -> None:
     model.load_state_dict(checkpoint["model_state"])
     model.eval()
 
-    dataset = CharacterTrainDataset(
-        args.npz_path,
-        coordinate_scale=model_config["image_size"],
-        normalization=checkpoint.get("input_normalization"),
-    )
+    dataset = CharacterTrainDataset(args.npz_path)
+    if tuple(checkpoint.get("channel_names", ())) != tuple(dataset.channel_names):
+        raise ValueError("Checkpoint and NPZ spatial channel schemas differ")
     if args.split == "val":
         indices: List[int] = list(checkpoint.get("val_indices", []))
         if not indices:
@@ -92,9 +90,8 @@ def main(args) -> None:
     with torch.no_grad():
         for batch in loader:
             inputs = batch["inputs"].to(device)
-            masks = batch["stroke_mask"].to(device)
             targets = batch["targets"].to(device).clamp(0.0, 1.0)
-            predictions = model(inputs, masks).clamp(0.0, 1.0)
+            predictions = model(inputs).clamp(0.0, 1.0)
             values = compute_batch_metrics(predictions, targets, criterion)
 
             zeros = torch.zeros_like(targets)
@@ -157,7 +154,7 @@ def main(args) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Evaluate direct whole-character predictions")
+    parser = argparse.ArgumentParser(description="Evaluate whole-character U-Net predictions")
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--npz_path", required=True)
     parser.add_argument("--checkpoint", required=True)

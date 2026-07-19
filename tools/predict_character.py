@@ -13,7 +13,7 @@ if __package__ in (None, ""):
 from config import load_config
 from datasets.trajectory_dataset import load_trajectory_csv
 from models.character_generator import build_character_generator
-from utils.character_features import extract_character_features, normalize_character_features
+from utils.character_features import SPATIAL_CHANNEL_NAMES, extract_character_spatial_maps
 from utils.image_preprocessing import load_character_image
 
 
@@ -59,15 +59,14 @@ def main(args) -> None:
         cfg.train.device if torch.cuda.is_available() or cfg.train.device == "cpu" else "cpu"
     )
     checkpoint = torch.load(args.checkpoint, map_location=device)
-    if checkpoint.get("format") != "character_generator_v1":
+    if checkpoint.get("format") != "character_unet_v2":
         raise ValueError(
-            "Expected character_best.pt/character_last.pt from train_character.py; "
-            "a stroke-level B-BSMG checkpoint cannot directly predict a whole character."
+            "Expected a character_unet_v2 checkpoint. Transformer-era character "
+            "checkpoints and stroke-level B-BSMG checkpoints are incompatible."
         )
     model_config = checkpoint["model_config"]
-    normalization = checkpoint.get("input_normalization")
-    if normalization is None:
-        raise ValueError("Whole-character checkpoint has no input_normalization")
+    if tuple(checkpoint.get("channel_names", ())) != tuple(SPATIAL_CHANNEL_NAMES):
+        raise ValueError("Checkpoint spatial channel schema is missing or incompatible")
     model = build_character_generator(model_config).to(device)
     model.load_state_dict(checkpoint["model_state"])
     model.eval()
@@ -79,34 +78,31 @@ def main(args) -> None:
         character=args.character,
         index=args.index,
     )
-    raw_inputs, stroke_mask, _ = extract_character_features(
+    spatial_maps, _ = extract_character_spatial_maps(
         sample,
-        max_strokes=int(model_config["max_strokes"]),
         canvas_size=int(model_config["image_size"]),
         padding=4,
+        line_width=args.trajectory_width,
     )
-    normalized = normalize_character_features(
-        raw_inputs[None, ...],
-        stroke_mask[None, ...],
-        normalization,
-    )
-    inputs = torch.from_numpy(normalized).to(device)
-    masks = torch.from_numpy(stroke_mask[None, ...]).to(device)
+    inputs = torch.from_numpy(spatial_maps[None, ...]).to(device)
     with torch.no_grad():
-        prediction = model(inputs, masks)[0, 0].clamp(0.0, 1.0).cpu().numpy()
+        prediction = model(inputs)[0, 0].clamp(0.0, 1.0).cpu().numpy()
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     character = sample.character or args.character or "character"
     stem = args.output_stem or f"{character}_whole_character"
+    save_gray(spatial_maps[0], output_dir / f"{stem}_trajectory.png")
     save_gray(prediction, output_dir / f"{stem}_prediction.png")
 
     report = {
         "character": character,
         "sample_id": sample.meta.get("sample_id"),
-        "num_strokes": int(stroke_mask.sum()),
+        "num_strokes": len(sample.sorted_strokes()),
+        "input_channels": list(SPATIAL_CHANNEL_NAMES),
         "checkpoint": str(args.checkpoint),
         "trajectory_csv": str(args.trajectory_csv or cfg.data.trajectory_csv),
+        "trajectory_preview": str(output_dir / f"{stem}_trajectory.png"),
     }
     if args.target_image:
         target, target_transform = load_character_image(
@@ -132,7 +128,7 @@ def main(args) -> None:
         json.dump(report, file, ensure_ascii=False, indent=2)
     print(
         f"[DONE] Directly generated complete character {character!r} "
-        f"from {int(stroke_mask.sum())} stroke tokens on {device}"
+        f"with the spatial U-Net on {device}"
     )
     if args.target_image:
         for name, value in report["metrics"].items():
@@ -143,7 +139,7 @@ def main(args) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Directly predict one complete character")
+    parser = argparse.ArgumentParser(description="Predict one complete character with the spatial U-Net")
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--trajectory_csv", default=None)
     parser.add_argument("--checkpoint", required=True)
@@ -153,4 +149,5 @@ if __name__ == "__main__":
     parser.add_argument("--target_image", default=None)
     parser.add_argument("--output_dir", default="outputs/predict_character")
     parser.add_argument("--output_stem", default=None)
+    parser.add_argument("--trajectory_width", type=int, default=3)
     main(parser.parse_args())

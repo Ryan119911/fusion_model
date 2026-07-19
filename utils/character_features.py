@@ -1,123 +1,111 @@
-from typing import Any, Dict, List, Optional, Tuple
+import math
+from typing import List, Tuple
 
 import numpy as np
+from PIL import Image, ImageDraw
 
-from models.dynamic_brush import DynamicBrushModel
-from models.geometry import dynamic_state_to_bbsmg_input, normalize_trajectory_xy
+from models.geometry import normalize_trajectory_xy
 from utils.types import CharacterTrajectory
 
 
-CHARACTER_FEATURE_NAMES = (
-    "h",
-    "alpha",
-    "beta",
-    "x0",
-    "y0",
-    "x1",
-    "y1",
-    "dx",
-    "dy",
-    "length",
+SPATIAL_CHANNEL_NAMES = (
+    "centerline",
+    "pressure",
+    "stroke_order",
+    "direction_cos",
+    "direction_sin",
 )
 
 
-def polyline_length(points: List[Tuple[float, float]]) -> float:
-    total = 0.0
-    for start, end in zip(points, points[1:]):
-        total += float(((end[0] - start[0]) ** 2 + (end[1] - start[1]) ** 2) ** 0.5)
-    return total
+def _new_float_canvas(canvas_size: int) -> Image.Image:
+    return Image.new("F", (canvas_size, canvas_size), 0.0)
 
 
-def extract_character_features(
+def _draw_point(draw: ImageDraw.ImageDraw, point, value: float, width: int) -> None:
+    x, y = point
+    radius = max(width / 2.0, 1.0)
+    draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=float(value))
+
+
+def extract_character_spatial_maps(
     sample: CharacterTrajectory,
-    max_strokes: int,
     canvas_size: int = 128,
     padding: int = 4,
-    brush: Optional[DynamicBrushModel] = None,
-) -> Tuple[np.ndarray, np.ndarray, List[List[Tuple[float, float]]]]:
-    """Encode every stroke, in order, without rendering intermediate images."""
+    line_width: int = 3,
+) -> Tuple[np.ndarray, List[List[Tuple[float, float]]]]:
+    """Rasterize the complete trajectory into five aligned U-Net input maps."""
     strokes = sample.sorted_strokes()
     if not strokes:
         raise ValueError("Character trajectory contains no strokes")
-    if len(strokes) > max_strokes:
-        raise ValueError(
-            f"Character {sample.character!r} has {len(strokes)} strokes, "
-            f"which exceeds max_strokes={max_strokes}"
-        )
+    if line_width < 1:
+        raise ValueError("line_width must be positive")
 
-    norm_strokes = normalize_trajectory_xy(
+    normalized_strokes = normalize_trajectory_xy(
         sample,
         canvas_size=canvas_size,
         padding=padding,
     )
-    brush = brush or DynamicBrushModel()
-    states_by_stroke = brush.simulate_character(sample, reset_each_stroke=True)
+    centerline = Image.new("L", (canvas_size, canvas_size), 0)
+    pressure = _new_float_canvas(canvas_size)
+    stroke_order = _new_float_canvas(canvas_size)
+    direction_cos = _new_float_canvas(canvas_size)
+    direction_sin = _new_float_canvas(canvas_size)
+    centerline_draw = ImageDraw.Draw(centerline)
+    pressure_draw = ImageDraw.Draw(pressure)
+    order_draw = ImageDraw.Draw(stroke_order)
+    cos_draw = ImageDraw.Draw(direction_cos)
+    sin_draw = ImageDraw.Draw(direction_sin)
 
-    features = np.zeros((max_strokes, len(CHARACTER_FEATURE_NAMES)), dtype=np.float32)
-    stroke_mask = np.zeros((max_strokes,), dtype=np.bool_)
-    for order, stroke in enumerate(strokes):
-        points = norm_strokes[order]
-        states = states_by_stroke.get(stroke.stroke_id, [])
-        if not points or not states:
+    all_z = [max(float(point.z), 0.0) for stroke in strokes for point in stroke.sorted_points()]
+    pressure_scale = max(max(all_z, default=0.0), 1e-6)
+    stroke_count = len(strokes)
+
+    for order, (stroke, normalized_points) in enumerate(zip(strokes, normalized_strokes)):
+        raw_points = stroke.sorted_points()
+        if not normalized_points or len(raw_points) != len(normalized_points):
             raise ValueError(
-                f"Character {sample.character!r}, stroke {stroke.stroke_id} has no usable points"
+                f"Character {sample.character!r}, stroke {stroke.stroke_id} has invalid points"
             )
-        x0, y0 = points[0]
-        x1, y1 = points[-1]
-        bb_input = dynamic_state_to_bbsmg_input(states[0], x0=x0, y0=y0)
-        features[order] = np.asarray(
-            [
-                bb_input.h,
-                bb_input.alpha,
-                bb_input.beta,
-                x0,
-                y0,
-                x1,
-                y1,
-                x1 - x0,
-                y1 - y0,
-                polyline_length(points),
-            ],
-            dtype=np.float32,
-        )
-        stroke_mask[order] = True
-    return features, stroke_mask, norm_strokes
+        order_value = float(order + 1) / float(stroke_count)
 
+        if len(normalized_points) == 1:
+            pressure_value = max(float(raw_points[0].z), 0.0) / pressure_scale
+            _draw_point(centerline_draw, normalized_points[0], 255.0, line_width)
+            _draw_point(pressure_draw, normalized_points[0], pressure_value, line_width)
+            _draw_point(order_draw, normalized_points[0], order_value, line_width)
+            continue
 
-def compute_character_normalization(
-    inputs: np.ndarray,
-    stroke_masks: np.ndarray,
-    coordinate_scale: float,
-) -> Dict[str, Any]:
-    if inputs.ndim != 3:
-        raise ValueError(f"Expected inputs [N,S,D], got {inputs.shape}")
-    if stroke_masks.shape != inputs.shape[:2]:
-        raise ValueError("stroke_masks shape must match the first two input dimensions")
-    valid = inputs[stroke_masks.astype(bool)]
-    if valid.size == 0:
-        raise ValueError("No valid strokes are present")
-    scales = np.ones((inputs.shape[-1],), dtype=np.float32)
-    scales[0] = max(float(np.nanmax(valid[:, 0])), 1.0)
-    if inputs.shape[-1] > 3:
-        scales[3:] = float(coordinate_scale)
-    return {
-        "version": 1,
-        "input_dim": int(inputs.shape[-1]),
-        "scales": scales.tolist(),
-        "feature_names": list(CHARACTER_FEATURE_NAMES),
-    }
+        for index in range(len(normalized_points) - 1):
+            start = normalized_points[index]
+            end = normalized_points[index + 1]
+            dx = float(end[0] - start[0])
+            dy = float(end[1] - start[1])
+            length = math.hypot(dx, dy)
+            cos_value = dx / length if length > 1e-8 else 0.0
+            sin_value = dy / length if length > 1e-8 else 0.0
+            pressure_value = (
+                max(float(raw_points[index].z), 0.0)
+                + max(float(raw_points[index + 1].z), 0.0)
+            ) / (2.0 * pressure_scale)
+            segment = [start, end]
+            centerline_draw.line(segment, fill=255, width=line_width)
+            pressure_draw.line(segment, fill=float(pressure_value), width=line_width)
+            order_draw.line(segment, fill=order_value, width=line_width)
+            cos_draw.line(segment, fill=float(cos_value), width=line_width)
+            sin_draw.line(segment, fill=float(sin_value), width=line_width)
 
-
-def normalize_character_features(
-    inputs: np.ndarray,
-    stroke_masks: np.ndarray,
-    normalization: Dict[str, Any],
-) -> np.ndarray:
-    scales = np.asarray(normalization.get("scales"), dtype=np.float32)
-    if scales.shape != (inputs.shape[-1],):
-        raise ValueError(
-            f"Normalization has {scales.size} scales for input_dim={inputs.shape[-1]}"
-        )
-    normalized = inputs.astype(np.float32, copy=True) / scales.reshape(1, 1, -1)
-    normalized *= stroke_masks[..., None].astype(np.float32)
-    return normalized
+    maps = np.stack(
+        [
+            np.asarray(centerline, dtype=np.float32) / 255.0,
+            np.asarray(pressure, dtype=np.float32),
+            np.asarray(stroke_order, dtype=np.float32),
+            np.asarray(direction_cos, dtype=np.float32),
+            np.asarray(direction_sin, dtype=np.float32),
+        ],
+        axis=0,
+    )
+    if maps.shape != (len(SPATIAL_CHANNEL_NAMES), canvas_size, canvas_size):
+        raise RuntimeError(f"Unexpected spatial feature shape: {maps.shape}")
+    if not np.isfinite(maps).all():
+        raise RuntimeError("Spatial trajectory maps contain NaN or Inf")
+    return maps.astype(np.float32), normalized_strokes

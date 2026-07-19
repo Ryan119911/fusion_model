@@ -1,76 +1,79 @@
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from utils.character_features import (
-    compute_character_normalization,
-    normalize_character_features,
-)
+from utils.character_features import SPATIAL_CHANNEL_NAMES
+
+
+CHARACTER_DATA_FORMAT = "character_spatial_v2"
 
 
 class CharacterTrainDataset(Dataset):
-    """NPZ dataset containing one variable-length stroke sequence per character."""
+    """Whole-character spatial maps paired with complete target glyphs."""
 
-    def __init__(
-        self,
-        npz_path: str,
-        coordinate_scale: float = 128.0,
-        normalization: Optional[Dict[str, Any]] = None,
-    ):
+    def __init__(self, npz_path: str):
         path = Path(npz_path)
         if not path.exists():
             raise FileNotFoundError(f"Character training NPZ not found: {npz_path}")
         data = np.load(path, allow_pickle=True)
-        required = {"inputs", "stroke_masks", "targets"}
+        required = {"inputs", "targets", "format_version"}
         missing = required - set(data.files)
         if missing:
-            raise ValueError(f"Character NPZ is missing keys: {sorted(missing)}")
+            raise ValueError(
+                f"Character NPZ is missing keys {sorted(missing)}. "
+                "Rebuild it with build_character_pairs.py."
+            )
 
-        raw_inputs = np.asarray(data["inputs"], dtype=np.float32)
-        self.stroke_masks = np.asarray(data["stroke_masks"], dtype=np.bool_)
-        self.targets = np.asarray(data["targets"], dtype=np.float32)
+        data_format = str(np.asarray(data["format_version"]).item())
+        if data_format != CHARACTER_DATA_FORMAT:
+            raise ValueError(
+                f"Unsupported character NPZ format {data_format!r}; expected "
+                f"{CHARACTER_DATA_FORMAT!r}. Transformer-era NPZ files are incompatible "
+                "and must be rebuilt."
+            )
+
+        self.inputs = np.asarray(data["inputs"], dtype=np.float16)
+        self.targets = np.asarray(data["targets"], dtype=np.float16)
         self.metadata = (
             np.asarray(data["meta"], dtype=object)
             if "meta" in data.files
-            else np.asarray([{} for _ in range(raw_inputs.shape[0])], dtype=object)
+            else np.asarray([{} for _ in range(self.inputs.shape[0])], dtype=object)
+        )
+        self.channel_names = (
+            tuple(str(value) for value in data["channel_names"].tolist())
+            if "channel_names" in data.files
+            else tuple(SPATIAL_CHANNEL_NAMES)
         )
 
-        if raw_inputs.ndim != 3:
-            raise ValueError(f"inputs must have shape [N,S,D], got {raw_inputs.shape}")
-        if self.stroke_masks.shape != raw_inputs.shape[:2]:
+        if self.inputs.ndim != 4:
+            raise ValueError(f"inputs must have shape [N,C,H,W], got {self.inputs.shape}")
+        if self.inputs.shape[1] != len(SPATIAL_CHANNEL_NAMES):
             raise ValueError(
-                f"stroke_masks {self.stroke_masks.shape} do not match inputs {raw_inputs.shape[:2]}"
+                f"Expected {len(SPATIAL_CHANNEL_NAMES)} trajectory channels, "
+                f"got {self.inputs.shape[1]}"
+            )
+        if self.channel_names != tuple(SPATIAL_CHANNEL_NAMES):
+            raise ValueError(
+                f"Spatial channel schema mismatch: {self.channel_names} != "
+                f"{SPATIAL_CHANNEL_NAMES}"
             )
         if self.targets.ndim == 3:
             self.targets = self.targets[:, None, :, :]
         if self.targets.ndim != 4 or self.targets.shape[1] != 1:
             raise ValueError(f"targets must have shape [N,1,H,W], got {self.targets.shape}")
-        if not (
-            raw_inputs.shape[0]
-            == self.stroke_masks.shape[0]
-            == self.targets.shape[0]
-            == len(self.metadata)
-        ):
+        if self.inputs.shape[0] != self.targets.shape[0] or len(self.metadata) != len(self.inputs):
             raise ValueError("Character NPZ arrays have inconsistent sample counts")
-        if np.any(self.stroke_masks.sum(axis=1) == 0):
-            raise ValueError("Every character sample must contain at least one valid stroke")
+        if self.inputs.shape[-2:] != self.targets.shape[-2:]:
+            raise ValueError("Input maps and target images must share the same spatial size")
+        if not np.isfinite(self.inputs).all() or not np.isfinite(self.targets).all():
+            raise ValueError("Character NPZ contains NaN or Inf")
 
-        self.input_normalization = normalization or compute_character_normalization(
-            raw_inputs,
-            self.stroke_masks,
-            coordinate_scale=coordinate_scale,
-        )
-        self.inputs = normalize_character_features(
-            raw_inputs,
-            self.stroke_masks,
-            self.input_normalization,
-        )
-        print("[CHECK] character inputs shape:", self.inputs.shape)
-        print("[CHECK] stroke masks shape:", self.stroke_masks.shape)
-        print("[CHECK] character targets shape:", self.targets.shape)
+        print("[CHECK] spatial trajectory inputs shape:", self.inputs.shape)
+        print("[CHECK] whole-character targets shape:", self.targets.shape)
+        print("[CHECK] input channels:", ", ".join(self.channel_names))
 
     def __len__(self) -> int:
         return self.inputs.shape[0]
@@ -80,9 +83,8 @@ class CharacterTrainDataset(Dataset):
         if hasattr(meta, "item"):
             meta = meta.item()
         return {
-            "inputs": torch.from_numpy(self.inputs[index]),
-            "stroke_mask": torch.from_numpy(self.stroke_masks[index]),
-            "targets": torch.from_numpy(self.targets[index]),
+            "inputs": torch.from_numpy(self.inputs[index]).float(),
+            "targets": torch.from_numpy(self.targets[index]).float(),
             "meta": meta if isinstance(meta, dict) else {},
             "index": int(index),
         }
@@ -91,7 +93,6 @@ class CharacterTrainDataset(Dataset):
 def collate_character_batch(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "inputs": torch.stack([item["inputs"] for item in batch], dim=0),
-        "stroke_mask": torch.stack([item["stroke_mask"] for item in batch], dim=0),
         "targets": torch.stack([item["targets"] for item in batch], dim=0),
         "meta": [item["meta"] for item in batch],
         "indices": [item["index"] for item in batch],

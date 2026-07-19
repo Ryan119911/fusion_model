@@ -15,6 +15,7 @@ if __package__ in (None, ""):
 
 from config import ensure_dirs, load_config
 from datasets.character_dataset import (
+    CHARACTER_DATA_FORMAT,
     CharacterTrainDataset,
     collate_character_batch,
     deterministic_split_indices,
@@ -61,10 +62,9 @@ def train_one_epoch(model, loader, optimizer, criterion, device) -> float:
     count = 0
     for batch in loader:
         inputs = batch["inputs"].to(device)
-        masks = batch["stroke_mask"].to(device)
         targets = batch["targets"].to(device).clamp(0.0, 1.0)
         optimizer.zero_grad(set_to_none=True)
-        predictions = model(inputs, masks)
+        predictions = model(inputs)
         loss = criterion(predictions, targets)
         if not torch.isfinite(loss):
             raise RuntimeError("Non-finite whole-character loss")
@@ -87,37 +87,14 @@ def validate(model, loader, criterion, device) -> Optional[Dict[str, float]]:
     count = 0
     for batch in loader:
         inputs = batch["inputs"].to(device)
-        masks = batch["stroke_mask"].to(device)
         targets = batch["targets"].to(device).clamp(0.0, 1.0)
-        predictions = model(inputs, masks).clamp(0.0, 1.0)
+        predictions = model(inputs).clamp(0.0, 1.0)
         values = compute_batch_metrics(predictions, targets, criterion)
         batch_size = inputs.shape[0]
         for name, value in values.items():
             totals[name] = totals.get(name, 0.0) + value * batch_size
         count += batch_size
     return {name: value / max(count, 1) for name, value in totals.items()}
-
-
-def initialize_from_stroke_checkpoint(model, checkpoint_path: str, input_dim: int) -> Dict[str, Any]:
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    state = checkpoint.get("model_state", checkpoint) if isinstance(checkpoint, dict) else checkpoint
-    current = model.state_dict()
-    loaded = []
-    for name, value in state.items():
-        mapped_name = name
-        if name.startswith("encoder."):
-            mapped_name = "stroke_encoder." + name[len("encoder."):]
-        if mapped_name in current and current[mapped_name].shape == value.shape:
-            current[mapped_name] = value
-            loaded.append(mapped_name)
-    model.load_state_dict(current)
-    if not loaded:
-        raise ValueError("No compatible encoder/decoder weights were found in the stroke checkpoint")
-    normalization = checkpoint.get("input_normalization") if isinstance(checkpoint, dict) else None
-    if normalization and int(normalization.get("input_dim", -1)) != input_dim:
-        raise ValueError("Stroke checkpoint input dimension is incompatible with the character model")
-    print(f"[INIT] Loaded {len(loaded)} compatible tensors from {checkpoint_path}")
-    return checkpoint if isinstance(checkpoint, dict) else {}
 
 
 def save_checkpoint(
@@ -130,13 +107,14 @@ def save_checkpoint(
     val_metrics: Optional[Dict[str, float]],
     best_val: float,
     model_config: Dict[str, Any],
-    input_normalization: Dict[str, Any],
+    channel_names,
     train_indices,
     val_indices,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({
-        "format": "character_generator_v1",
+        "format": "character_unet_v2",
+        "data_format": CHARACTER_DATA_FORMAT,
         "epoch": epoch,
         "model_state": model.state_dict(),
         "optimizer_state": optimizer.state_dict(),
@@ -146,7 +124,7 @@ def save_checkpoint(
         "val_loss": val_metrics.get("composite_loss") if val_metrics else None,
         "best_val": best_val,
         "model_config": model_config,
-        "input_normalization": input_normalization,
+        "channel_names": list(channel_names),
         "train_indices": list(train_indices),
         "val_indices": list(val_indices),
     }, path)
@@ -177,34 +155,31 @@ def main(args) -> None:
     )
 
     resume_checkpoint = torch.load(args.resume, map_location="cpu") if args.resume else None
-    init_checkpoint = torch.load(args.init_stroke_checkpoint, map_location="cpu") if args.init_stroke_checkpoint else None
     character_init_checkpoint = (
         torch.load(args.init_character_checkpoint, map_location="cpu")
         if args.init_character_checkpoint
         else None
     )
-    recorded_normalization = None
-    if resume_checkpoint is not None:
-        recorded_normalization = resume_checkpoint.get("input_normalization")
-    elif character_init_checkpoint is not None:
-        recorded_normalization = character_init_checkpoint.get("input_normalization")
-    elif init_checkpoint is not None:
-        recorded_normalization = init_checkpoint.get("input_normalization")
+    for checkpoint, label in (
+        (resume_checkpoint, "--resume"),
+        (character_init_checkpoint, "--init_character_checkpoint"),
+    ):
+        if checkpoint is not None and checkpoint.get("format") != "character_unet_v2":
+            raise ValueError(
+                f"{label} requires a character_unet_v2 checkpoint. Transformer-era "
+                "character checkpoints and stroke B-BSMG checkpoints are incompatible."
+            )
 
-    dataset = CharacterTrainDataset(
-        args.npz_path,
-        coordinate_scale=cfg.character_generator.image_size,
-        normalization=recorded_normalization,
-    )
+    dataset = CharacterTrainDataset(args.npz_path)
     model_config = asdict(cfg.character_generator)
     if resume_checkpoint and resume_checkpoint.get("model_config"):
         model_config = dict(resume_checkpoint["model_config"])
     elif character_init_checkpoint and character_init_checkpoint.get("model_config"):
         model_config = dict(character_init_checkpoint["model_config"])
-    if dataset.inputs.shape[-1] != int(model_config["input_dim"]):
-        raise ValueError("NPZ input dimension does not match character_generator.input_dim")
-    if dataset.inputs.shape[1] > int(model_config["max_strokes"]):
-        raise ValueError("NPZ max_strokes exceeds the model configuration")
+    if dataset.inputs.shape[1] != int(model_config["input_channels"]):
+        raise ValueError("NPZ channels do not match character_generator.input_channels")
+    if dataset.inputs.shape[-1] != int(model_config["image_size"]):
+        raise ValueError("NPZ spatial size does not match character_generator.image_size")
 
     if resume_checkpoint and resume_checkpoint.get("train_indices") is not None:
         train_indices = list(resume_checkpoint["train_indices"])
@@ -253,13 +228,9 @@ def main(args) -> None:
         print("[WARN] No validation samples; checkpoint selection will use training loss")
 
     model = build_character_generator(model_config).to(device)
-    if args.init_stroke_checkpoint:
-        initialize_from_stroke_checkpoint(model, args.init_stroke_checkpoint, model_config["input_dim"])
-    elif character_init_checkpoint is not None:
-        if character_init_checkpoint.get("format") != "character_generator_v1":
-            raise ValueError("--init_character_checkpoint requires a character_generator_v1 checkpoint")
+    if character_init_checkpoint is not None:
         model.load_state_dict(character_init_checkpoint["model_state"])
-        print(f"[INIT] Loaded complete character model from {args.init_character_checkpoint}")
+        print(f"[INIT] Loaded U-Net character model from {args.init_character_checkpoint}")
     criterion = build_loss(device)
     optimizer = torch.optim.Adam(
         model.parameters(), lr=cfg.train.lr, weight_decay=cfg.train.weight_decay
@@ -333,7 +304,7 @@ def main(args) -> None:
             val_metrics,
             best_val,
             model_config,
-            dataset.input_normalization,
+            dataset.channel_names,
             train_indices,
             val_indices,
         )
@@ -345,7 +316,7 @@ def main(args) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train the direct whole-character generator")
+    parser = argparse.ArgumentParser(description="Train the spatial whole-character U-Net")
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--npz_path", required=True)
     parser.add_argument("--output_dir", default=None)
@@ -353,7 +324,6 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--val_ratio", type=float, default=0.1)
     parser.add_argument("--resume", default=None)
-    parser.add_argument("--init_stroke_checkpoint", default=None)
     parser.add_argument(
         "--init_character_checkpoint",
         default=None,
@@ -365,12 +335,10 @@ if __name__ == "__main__":
     parsed = parser.parse_args()
     initialization_modes = [
         parsed.resume,
-        parsed.init_stroke_checkpoint,
         parsed.init_character_checkpoint,
     ]
     if sum(value is not None for value in initialization_modes) > 1:
         parser.error(
-            "--resume, --init_stroke_checkpoint and --init_character_checkpoint "
-            "are mutually exclusive"
+            "--resume and --init_character_checkpoint are mutually exclusive"
         )
     main(parsed)

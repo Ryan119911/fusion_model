@@ -12,9 +12,9 @@ if __package__ in (None, ""):
 
 from config import ensure_dirs, load_config
 from datasets.calligraphy_image_dataset import CalligraphyImageDataset
+from datasets.character_dataset import CHARACTER_DATA_FORMAT
 from datasets.trajectory_dataset import load_trajectory_csv
-from models.dynamic_brush import DynamicBrushModel
-from utils.character_features import CHARACTER_FEATURE_NAMES, extract_character_features
+from utils.character_features import SPATIAL_CHANNEL_NAMES, extract_character_spatial_maps
 from utils.image_preprocessing import letterbox_character_image, load_character_image
 
 
@@ -55,11 +55,10 @@ def main(args) -> None:
 
     char_cfg = cfg.character_generator
     canvas_size = int(char_cfg.image_size)
-    max_strokes = int(args.max_strokes or char_cfg.max_strokes)
-    if char_cfg.input_dim != len(CHARACTER_FEATURE_NAMES):
+    if char_cfg.input_channels != len(SPATIAL_CHANNEL_NAMES):
         raise ValueError(
-            f"character_generator.input_dim={char_cfg.input_dim}, but the feature schema "
-            f"contains {len(CHARACTER_FEATURE_NAMES)} fields"
+            f"character_generator.input_channels={char_cfg.input_channels}, but the spatial "
+            f"schema contains {len(SPATIAL_CHANNEL_NAMES)} channels"
         )
     if args.target_image and not args.target_character:
         raise ValueError("--target_image requires --target_character")
@@ -102,10 +101,8 @@ def main(args) -> None:
             f"character {args.target_character!r}"
         )
 
-    brush = DynamicBrushModel()
     image_pick_counter: DefaultDict[str, int] = defaultdict(int)
     inputs: List[np.ndarray] = []
-    stroke_masks: List[np.ndarray] = []
     targets: List[np.ndarray] = []
     metadata: List[Dict[str, Any]] = []
     source_counts: DefaultDict[str, int] = defaultdict(int)
@@ -117,12 +114,11 @@ def main(args) -> None:
             skipped += 1
             continue
         try:
-            feature_array, stroke_mask, normalized_strokes = extract_character_features(
+            spatial_maps, normalized_strokes = extract_character_spatial_maps(
                 trajectory,
-                max_strokes=max_strokes,
                 canvas_size=canvas_size,
                 padding=NORM_PADDING,
-                brush=brush,
+                line_width=args.trajectory_width,
             )
         except ValueError as error:
             print(f"[SKIP] sample={trajectory.meta.get('sample_id')}: {error}")
@@ -166,14 +162,15 @@ def main(args) -> None:
                 width=args.synthetic_width,
             )
 
-        inputs.append(feature_array)
-        stroke_masks.append(stroke_mask)
-        targets.append(np.clip(target, 0.0, 1.0).astype(np.float32)[None, ...])
+        # Float16 is sufficient for normalized conditioning/target maps and
+        # keeps a full 128x128 five-channel corpus practical in host memory.
+        inputs.append(spatial_maps.astype(np.float16))
+        targets.append(np.clip(target, 0.0, 1.0).astype(np.float16)[None, ...])
         metadata.append({
             "character": character,
             "sample_id": trajectory.meta.get("sample_id"),
             "trajectory_sample_index": sample_index,
-            "num_strokes": int(stroke_mask.sum()),
+            "num_strokes": len(trajectory.sorted_strokes()),
             "target_source": source_type,
             **source_info,
         })
@@ -191,22 +188,25 @@ def main(args) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         output_path,
-        inputs=np.stack(inputs).astype(np.float32),
-        stroke_masks=np.stack(stroke_masks).astype(np.bool_),
-        targets=np.stack(targets).astype(np.float32),
+        inputs=np.stack(inputs),
+        targets=np.stack(targets),
         meta=np.asarray(metadata, dtype=object),
-        feature_names=np.asarray(CHARACTER_FEATURE_NAMES),
-        format_version=np.asarray("character_sequence_v1"),
+        channel_names=np.asarray(SPATIAL_CHANNEL_NAMES),
+        format_version=np.asarray(CHARACTER_DATA_FORMAT),
     )
     print(f"[DONE] Character pairs saved to: {output_path}")
-    print(f"[DONE] inputs shape: ({len(inputs)}, {max_strokes}, {len(CHARACTER_FEATURE_NAMES)})")
+    print(
+        f"[DONE] inputs shape: "
+        f"({len(inputs)}, {len(SPATIAL_CHANNEL_NAMES)}, {canvas_size}, {canvas_size})"
+    )
+    print(f"[DONE] channels: {', '.join(SPATIAL_CHANNEL_NAMES)}")
     print(f"[DONE] targets shape: ({len(targets)}, 1, {canvas_size}, {canvas_size})")
     print(f"[DONE] target sources: {dict(source_counts)}; skipped={skipped}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Build direct whole-character supervision from complete trajectories"
+        description="Build five-channel spatial trajectory maps for the whole-character U-Net"
     )
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--trajectory_csv", default=None)
@@ -215,7 +215,7 @@ if __name__ == "__main__":
     parser.add_argument("--target_character", default=None, help="Character receiving --target_image")
     parser.add_argument("--target_image", default=None, help="Optional external whole-character target")
     parser.add_argument("--chirography", default=None)
-    parser.add_argument("--max_strokes", type=int, default=None)
+    parser.add_argument("--trajectory_width", type=int, default=3)
     parser.add_argument("--synthetic_width", type=int, default=5)
     parser.add_argument("--require_real_target", action="store_true")
     main(parser.parse_args())

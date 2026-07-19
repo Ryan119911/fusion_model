@@ -3,12 +3,8 @@ import unittest
 import numpy as np
 import torch
 
-from models.character_generator import CharacterGenerator
-from utils.character_features import (
-    compute_character_normalization,
-    extract_character_features,
-    normalize_character_features,
-)
+from models.character_generator import CharacterUNet
+from utils.character_features import SPATIAL_CHANNEL_NAMES, extract_character_spatial_maps
 from utils.image_preprocessing import letterbox_character_image
 from utils.types import (
     CharacterTrajectory,
@@ -43,41 +39,31 @@ class CharacterPipelineTest(unittest.TestCase):
             meta={"sample_id": "wu_test"},
         )
 
-    def test_feature_sequence_and_normalization(self):
-        inputs, mask, normalized_strokes = extract_character_features(
+    def test_complete_spatial_trajectory_maps(self):
+        inputs, normalized_strokes = extract_character_spatial_maps(
             self.sample,
-            max_strokes=4,
             canvas_size=32,
             padding=2,
+            line_width=2,
         )
-        self.assertEqual(inputs.shape, (4, 10))
-        self.assertEqual(mask.tolist(), [True, True, False, False])
+        self.assertEqual(inputs.shape, (len(SPATIAL_CHANNEL_NAMES), 32, 32))
         self.assertEqual(len(normalized_strokes), 2)
-        normalization = compute_character_normalization(
-            inputs[None, ...], mask[None, ...], coordinate_scale=32
-        )
-        normalized = normalize_character_features(
-            inputs[None, ...], mask[None, ...], normalization
-        )
-        self.assertTrue(np.all(normalized[0, 2:] == 0.0))
+        self.assertGreater(float(inputs[0].sum()), 0.0)
+        self.assertGreater(float(inputs[1].sum()), 0.0)
+        self.assertTrue(np.isfinite(inputs).all())
 
-    def test_model_emits_one_complete_image(self):
-        model = CharacterGenerator(
-            input_dim=10,
-            latent_dim=32,
+    def test_unet_emits_one_complete_image_without_transformer(self):
+        model = CharacterUNet(
+            input_channels=5,
             base_channels=8,
             image_size=32,
-            max_strokes=4,
-            transformer_layers=1,
-            attention_heads=4,
+            depth=3,
             dropout=0.0,
         )
-        output = model(
-            torch.randn(2, 4, 10),
-            torch.tensor([[1, 1, 0, 0], [1, 1, 1, 0]], dtype=torch.bool),
-        )
+        output = model(torch.randn(2, 5, 32, 32))
         self.assertEqual(tuple(output.shape), (2, 1, 32, 32))
         self.assertTrue(torch.isfinite(output).all())
+        self.assertFalse(any(isinstance(module, torch.nn.Transformer) for module in model.modules()))
 
     def test_image_preprocessing_uses_ink_positive_polarity(self):
         image = np.full((20, 30), 255, dtype=np.uint8)
