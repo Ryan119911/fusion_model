@@ -8,7 +8,7 @@ from torch.utils.data import Dataset
 from utils.character_features import SPATIAL_CHANNEL_NAMES
 
 
-CHARACTER_DATA_FORMAT = "character_spatial_v3"
+CHARACTER_DATA_FORMAT = "character_spatial_v4"
 
 
 class CharacterTrainDataset(Dataset):
@@ -31,8 +31,8 @@ class CharacterTrainDataset(Dataset):
         if data_format != CHARACTER_DATA_FORMAT:
             raise ValueError(
                 f"Unsupported character NPZ format {data_format!r}; expected "
-                f"{CHARACTER_DATA_FORMAT!r}. Transformer-era NPZ files are incompatible "
-                "and must be rebuilt."
+                f"{CHARACTER_DATA_FORMAT!r}. Older NPZ files do not contain the cleaned, "
+                "registered target pipeline and must be rebuilt."
             )
 
         self.inputs = np.asarray(data["inputs"], dtype=np.float16)
@@ -56,6 +56,16 @@ class CharacterTrainDataset(Dataset):
             np.asarray(data["trajectory_width"]).item()
             if "trajectory_width" in data.files
             else 3
+        )
+        self.preprocessing_version = str(
+            np.asarray(data["preprocessing_version"]).item()
+            if "preprocessing_version" in data.files
+            else "unknown"
+        )
+        self.min_alignment_coverage = float(
+            np.asarray(data["min_alignment_coverage"]).item()
+            if "min_alignment_coverage" in data.files
+            else 0.0
         )
 
         if self.inputs.ndim != 4:
@@ -84,6 +94,11 @@ class CharacterTrainDataset(Dataset):
         print("[CHECK] spatial trajectory inputs shape:", self.inputs.shape)
         print("[CHECK] whole-character targets shape:", self.targets.shape)
         print("[CHECK] input channels:", ", ".join(self.channel_names))
+        print(
+            "[CHECK] target preprocessing:",
+            self.preprocessing_version,
+            f"min_coverage={self.min_alignment_coverage:.4f}",
+        )
 
     def __len__(self) -> int:
         return self.inputs.shape[0]
@@ -124,3 +139,38 @@ def deterministic_split_indices(
     val_len = min(val_len, length - 1)
     permutation = torch.randperm(length, generator=torch.Generator().manual_seed(seed)).tolist()
     return permutation[val_len:], permutation[:val_len]
+
+
+def deterministic_character_split_indices(
+    metadata,
+    val_ratio: float,
+    seed: int,
+) -> Tuple[List[int], List[int]]:
+    """Split by character so one glyph identity cannot leak across train/validation."""
+    if not 0.0 <= val_ratio < 1.0:
+        raise ValueError("val_ratio must satisfy 0 <= val_ratio < 1")
+    groups: Dict[str, List[int]] = {}
+    for index, value in enumerate(metadata):
+        if hasattr(value, "item"):
+            value = value.item()
+        character = value.get("character") if isinstance(value, dict) else None
+        key = str(character) if character else f"__unknown_{index}"
+        groups.setdefault(key, []).append(index)
+    characters = sorted(groups)
+    if len(characters) <= 1 or val_ratio == 0.0:
+        return list(range(len(metadata))), []
+    val_character_count = max(1, int(len(characters) * val_ratio))
+    val_character_count = min(val_character_count, len(characters) - 1)
+    permutation = torch.randperm(
+        len(characters), generator=torch.Generator().manual_seed(seed)
+    ).tolist()
+    val_characters = {characters[index] for index in permutation[:val_character_count]}
+    train_indices = [
+        index for character, indices in groups.items() if character not in val_characters
+        for index in indices
+    ]
+    val_indices = [
+        index for character, indices in groups.items() if character in val_characters
+        for index in indices
+    ]
+    return train_indices, val_indices

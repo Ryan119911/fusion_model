@@ -33,6 +33,35 @@ def metadata_dict(value) -> Dict:
     return {}
 
 
+def per_sample_metrics(predictions, targets, inputs) -> Dict[str, np.ndarray]:
+    dims = (1, 2, 3)
+    pred_binary = predictions >= 0.5
+    target_binary = targets >= 0.5
+    centerline = inputs[:, 0:1] >= 0.5
+    intersection = (pred_binary & target_binary).sum(dim=dims).float()
+    union = (pred_binary | target_binary).sum(dim=dims).float()
+    dice_denominator = pred_binary.sum(dim=dims).float() + target_binary.sum(dim=dims).float()
+    centerline_count = centerline.sum(dim=dims).float().clamp_min(1.0)
+    background = 1.0 - targets
+    values = {
+        "plain_mse": ((predictions - targets) ** 2).mean(dim=dims),
+        "mae": torch.abs(predictions - targets).mean(dim=dims),
+        "dice_at_0.5": (2.0 * intersection + 1e-6) / (dice_denominator + 1e-6),
+        "iou_at_0.5": (intersection + 1e-6) / (union + 1e-6),
+        "target_ink": targets.mean(dim=dims),
+        "prediction_ink": predictions.mean(dim=dims),
+        "background_mean": (predictions * background).sum(dim=dims)
+        / background.sum(dim=dims).clamp_min(1.0),
+        "trajectory_target_coverage": (target_binary & centerline).sum(dim=dims).float()
+        / centerline_count,
+        "trajectory_prediction_coverage": (pred_binary & centerline).sum(dim=dims).float()
+        / centerline_count,
+        "zero_baseline_mse": (targets ** 2).mean(dim=dims),
+    }
+    values["ink_ratio"] = values["prediction_ink"] / values["target_ink"].clamp_min(1e-6)
+    return {name: value.detach().cpu().numpy() for name, value in values.items()}
+
+
 def main(args) -> None:
     cfg = load_config(args.config)
     set_seed(args.seed)
@@ -88,6 +117,8 @@ def main(args) -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     totals: Dict[str, float] = {}
+    character_totals: Dict[str, Dict[str, float]] = {}
+    character_counts: Dict[str, int] = {}
     count = 0
     saved = 0
 
@@ -110,10 +141,17 @@ def main(args) -> None:
                     ((zero_intersection + 1e-6) / (zero_union + 1e-6)).mean().item()
                 ),
             })
+            sample_values = per_sample_metrics(predictions, targets, inputs)
             batch_size = inputs.shape[0]
             for name, value in values.items():
                 totals[name] = totals.get(name, 0.0) + value * batch_size
             count += batch_size
+            for item_index, meta in enumerate(batch["meta"]):
+                character = str(meta.get("character") or "unknown")
+                character_counts[character] = character_counts.get(character, 0) + 1
+                bucket = character_totals.setdefault(character, {})
+                for name, array in sample_values.items():
+                    bucket[name] = bucket.get(name, 0.0) + float(array[item_index])
 
             pred_np = predictions.cpu().numpy()
             target_np = targets.cpu().numpy()
@@ -141,6 +179,21 @@ def main(args) -> None:
                 saved += 1
 
     metrics = {name: value / count for name, value in totals.items()}
+    per_character = {
+        character: {
+            "samples": character_counts[character],
+            **{
+                name: value / character_counts[character]
+                for name, value in character_totals[character].items()
+            },
+        }
+        for character in sorted(character_totals)
+    }
+    per_character_metric_names = list(next(iter(character_totals.values())))
+    macro_metrics = {
+        name: float(np.mean([row[name] for row in per_character.values()]))
+        for name in per_character_metric_names
+    }
     report = {
         "checkpoint": str(args.checkpoint),
         "npz_path": str(args.npz_path),
@@ -153,6 +206,9 @@ def main(args) -> None:
         "trajectory_width": checkpoint.get("trajectory_width"),
         "panel_order": ["trajectory", "target", "prediction", "absolute_difference"],
         "metrics": metrics,
+        "characters": len(per_character),
+        "macro_metrics": macro_metrics,
+        "per_character": per_character,
     }
     with open(output_dir / "metrics.json", "w", encoding="utf-8") as file:
         json.dump(report, file, ensure_ascii=False, indent=2)
@@ -160,9 +216,23 @@ def main(args) -> None:
         writer = csv.DictWriter(file, fieldnames=list(metrics))
         writer.writeheader()
         writer.writerow(metrics)
+    with open(
+        output_dir / "per_character_metrics.csv", "w", encoding="utf-8-sig", newline=""
+    ) as file:
+        fieldnames = ["character", "samples", *per_character_metric_names]
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        for character, row in per_character.items():
+            writer.writerow({"character": character, **row})
     print(f"[DONE] Evaluated {count} whole characters on {device}")
     for name, value in metrics.items():
         print(f"{name}: {value:.6f}")
+    print(
+        f"[GENERALIZATION] characters={len(per_character)}, "
+        f"macro_dice_at_0.5={macro_metrics['dice_at_0.5']:.6f}, "
+        f"macro_iou={macro_metrics['iou_at_0.5']:.6f}, "
+        f"macro_ink_ratio={macro_metrics['ink_ratio']:.6f}"
+    )
     print(f"[DONE] Reports and complete-character comparisons saved to: {output_dir}")
 
 

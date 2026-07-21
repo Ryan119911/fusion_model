@@ -18,6 +18,7 @@ from datasets.character_dataset import (
     CHARACTER_DATA_FORMAT,
     CharacterTrainDataset,
     collate_character_batch,
+    deterministic_character_split_indices,
     deterministic_split_indices,
 )
 from models.character_generator import build_character_generator
@@ -217,6 +218,16 @@ def append_metrics(path: Path, row: Dict[str, Any]) -> None:
         writer.writerow(row)
 
 
+def metadata_dict(value) -> Dict[str, Any]:
+    if hasattr(value, "item"):
+        value = value.item()
+    return value if isinstance(value, dict) else {}
+
+
+def metadata_character(value) -> str:
+    return str(metadata_dict(value).get("character") or "unknown")
+
+
 def migrate_v2_model_state(model, checkpoint) -> None:
     """Warm-start the six-channel v3 model from a five-channel v2 U-Net."""
     state = dict(checkpoint["model_state"])
@@ -308,23 +319,38 @@ def main(args) -> None:
                 "Use --init_character_checkpoint to fine-tune on a different dataset."
             )
     else:
-        train_indices, val_indices = deterministic_split_indices(
-            len(dataset), args.val_ratio, cfg.train.seed
-        )
+        if args.split_mode == "character":
+            train_indices, val_indices = deterministic_character_split_indices(
+                dataset.metadata, args.val_ratio, cfg.train.seed
+            )
+        else:
+            train_indices, val_indices = deterministic_split_indices(
+                len(dataset), args.val_ratio, cfg.train.seed
+            )
         # An explicitly supplied target (for example the user's 武 image) is a
         # fitting target, so keep it in training instead of losing it to a
         # random validation split. Validation still measures the other glyphs.
-        external_indices = []
-        for index in list(val_indices):
-            value = dataset.metadata[index]
-            if hasattr(value, "item"):
-                value = value.item()
+        external_characters = set()
+        for index in range(len(dataset)):
+            value = metadata_dict(dataset.metadata[index])
             if isinstance(value, dict) and value.get("target_source") == "external":
-                external_indices.append(index)
-        if external_indices:
-            val_indices = [index for index in val_indices if index not in external_indices]
-            train_indices.extend(external_indices)
-            print(f"[SPLIT] Kept {len(external_indices)} external target sample(s) in training")
+                external_characters.add(str(value.get("character") or ""))
+        if external_characters:
+            moved_indices = []
+            for index in list(val_indices):
+                value = metadata_dict(dataset.metadata[index])
+                if (
+                    isinstance(value, dict)
+                    and str(value.get("character") or "") in external_characters
+                ):
+                    moved_indices.append(index)
+            if moved_indices:
+                val_indices = [index for index in val_indices if index not in moved_indices]
+                train_indices.extend(moved_indices)
+                print(
+                    f"[SPLIT] Kept {len(moved_indices)} sample(s) from external-target "
+                    "characters in training"
+                )
     batch_size = args.batch_size or cfg.train.batch_size
     train_loader = DataLoader(
         Subset(dataset, train_indices),
@@ -382,8 +408,17 @@ def main(args) -> None:
         json.dump({
             "seed": cfg.train.seed,
             "val_ratio": args.val_ratio,
+            "split_mode": args.split_mode,
             "train_indices": train_indices,
             "val_indices": val_indices,
+            "train_characters": sorted({
+                metadata_character(dataset.metadata[index])
+                for index in train_indices
+            }),
+            "val_characters": sorted({
+                metadata_character(dataset.metadata[index])
+                for index in val_indices
+            }),
         }, file, ensure_ascii=False, indent=2)
 
     if start_epoch > cfg.train.epochs:
@@ -447,6 +482,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--val_ratio", type=float, default=0.1)
+    parser.add_argument("--split_mode", choices=("character", "sample"), default="character")
     parser.add_argument("--resume", default=None)
     parser.add_argument(
         "--init_character_checkpoint",

@@ -4,7 +4,9 @@ import numpy as np
 import torch
 
 from models.character_generator import CharacterUNet
+from datasets.character_dataset import deterministic_character_split_indices
 from tools.train_character import migrate_v2_model_state
+from utils.character_alignment import align_target_to_trajectory, transform_target
 from utils.character_features import SPATIAL_CHANNEL_NAMES, extract_character_spatial_maps
 from utils.image_preprocessing import letterbox_character_image
 from utils.types import (
@@ -103,6 +105,49 @@ class CharacterPipelineTest(unittest.TestCase):
         self.assertGreater(float(canvas.max()), 0.9)
         self.assertLess(float(canvas[0, 0]), 0.01)
         self.assertEqual(transform["crop_box"], [12, 5, 18, 15])
+
+    def test_paper_background_is_removed_before_letterboxing(self):
+        image = np.full((30, 30), 190, dtype=np.uint8)
+        image[7:23, 13:17] = 25
+        canvas, transform = letterbox_character_image(image, canvas_size=32, padding=2)
+        self.assertLess(float(np.median(canvas[:2])), 0.01)
+        self.assertGreater(float(canvas.max()), 0.95)
+        self.assertEqual(
+            transform["normalization"]["polarity"],
+            "dark_ink_on_light_background",
+        )
+
+    def test_target_registration_improves_trajectory_coverage(self):
+        inputs, _ = extract_character_spatial_maps(
+            self.sample,
+            canvas_size=32,
+            padding=4,
+            line_width=2,
+        )
+        shifted = transform_target(inputs[0], scale=0.72, shift_x=4, shift_y=-3)
+        _, report = align_target_to_trajectory(
+            shifted,
+            centerline=inputs[0],
+            proximity=inputs[1],
+            local_shift=3,
+        )
+        self.assertGreater(report["after"]["coverage"], report["before"]["coverage"])
+        self.assertGreater(report["after"]["score"], report["before"]["score"])
+
+    def test_character_split_has_no_identity_leakage(self):
+        metadata = np.asarray([
+            {"character": "武"},
+            {"character": "武"},
+            {"character": "永"},
+            {"character": "大"},
+        ], dtype=object)
+        train_indices, val_indices = deterministic_character_split_indices(
+            metadata, val_ratio=0.34, seed=42
+        )
+        train_characters = {metadata[index]["character"] for index in train_indices}
+        val_characters = {metadata[index]["character"] for index in val_indices}
+        self.assertFalse(train_characters & val_characters)
+        self.assertEqual(sorted(train_indices + val_indices), list(range(len(metadata))))
 
 
 if __name__ == "__main__":
