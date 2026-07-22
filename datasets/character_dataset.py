@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -8,7 +9,7 @@ from torch.utils.data import Dataset
 from utils.character_features import SPATIAL_CHANNEL_NAMES
 
 
-CHARACTER_DATA_FORMAT = "character_spatial_v4"
+CHARACTER_DATA_FORMAT = "character_spatial_v5"
 
 
 class CharacterTrainDataset(Dataset):
@@ -67,6 +68,17 @@ class CharacterTrainDataset(Dataset):
             if "min_alignment_coverage" in data.files
             else 0.0
         )
+        self.target_script = str(
+            np.asarray(data["target_script"]).item()
+            if "target_script" in data.files
+            else "unknown"
+        )
+        quality_thresholds_json = str(
+            np.asarray(data["quality_thresholds"]).item()
+            if "quality_thresholds" in data.files
+            else "{}"
+        )
+        self.quality_thresholds = json.loads(quality_thresholds_json)
 
         if self.inputs.ndim != 4:
             raise ValueError(f"inputs must have shape [N,C,H,W], got {self.inputs.shape}")
@@ -99,6 +111,7 @@ class CharacterTrainDataset(Dataset):
             self.preprocessing_version,
             f"min_coverage={self.min_alignment_coverage:.4f}",
         )
+        print(f"[CHECK] target script: {self.target_script}")
 
     def __len__(self) -> int:
         return self.inputs.shape[0]

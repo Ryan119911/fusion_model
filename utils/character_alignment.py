@@ -65,6 +65,22 @@ def alignment_metrics(
     centerline_count = int(centerline_binary.sum())
     target_count = int(target_binary.sum())
     support_count = int(support_binary.sum())
+    outside_support_count = int(np.logical_and(target_binary, ~support_binary).sum())
+    border_width = max(1, min(target_binary.shape) // 64)
+    border_mask = np.zeros_like(target_binary)
+    border_mask[:border_width] = True
+    border_mask[-border_width:] = True
+    border_mask[:, :border_width] = True
+    border_mask[:, -border_width:] = True
+    border_ink_count = int(np.logical_and(target_binary, border_mask).sum())
+    if target_count:
+        target_y, target_x = np.where(target_binary)
+        foreground_bbox_area = int(
+            (target_y.max() - target_y.min() + 1)
+            * (target_x.max() - target_x.min() + 1)
+        )
+    else:
+        foreground_bbox_area = 1
     coverage = float(
         np.logical_and(target_binary, centerline_binary).sum() / max(centerline_count, 1)
     )
@@ -72,12 +88,24 @@ def alignment_metrics(
     support_dice = float(
         (2.0 * intersection + 1e-6) / (target_count + support_count + 1e-6)
     )
-    score = 0.7 * coverage + 0.3 * support_dice
+    outside_support_fraction = float(outside_support_count / max(target_count, 1))
+    target_to_support_area_ratio = float(target_count / max(support_count, 1))
+    border_ink_fraction = float(border_ink_count / max(target_count, 1))
+    foreground_bbox_fill_fraction = float(target_count / foreground_bbox_area)
+    score = (
+        0.55 * coverage
+        + 0.30 * support_dice
+        + 0.15 * (1.0 - outside_support_fraction)
+    )
     return {
         "coverage": coverage,
         "support_dice": support_dice,
         "score": score,
         "target_ink_fraction": float(target_binary.mean()),
+        "target_outside_support_fraction": outside_support_fraction,
+        "target_to_support_area_ratio": target_to_support_area_ratio,
+        "border_ink_fraction": border_ink_fraction,
+        "foreground_bbox_fill_fraction": foreground_bbox_fill_fraction,
         "background_median": float(np.median(np.asarray(target)[~support_binary]))
         if np.any(~support_binary)
         else 0.0,
@@ -129,7 +157,7 @@ def align_target_to_trajectory(
                     }
 
     report: Dict[str, Any] = {
-        "version": 1,
+        "version": 2,
         "before": before,
         "after": best_metrics,
         **best_transform,

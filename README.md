@@ -13,7 +13,8 @@ U-Net 编码器 + 多尺度跳跃连接 + U-Net 解码器
 新流程不会先预测每一笔再叠加，也不使用 Transformer 或全局 token pooling。旧的
 `bbsmg_best.pt` 仍是单笔 checkpoint；整字流程使用独立的 `character_best.pt`。
 
-整字数据使用 `character_spatial_v4`：书法目标会先清除纸张背景，再从同字候选中
-选择最匹配图像，执行目标到固定轨迹的缩放/平移配准，并拒绝低覆盖配对。
+整字数据使用 `character_spatial_v5`：书法标注先统一到繁体轨迹身份，再清除纸张背景、
+选择候选并执行缩放/平移配准。双向形状规则会拒绝繁简错配、大片墨块、越界墨迹和
+异常裁剪，并保存通过/拒绝样本的审计图。
 
 详细命令见 [docs/whole_character.md](docs/whole_character.md)。

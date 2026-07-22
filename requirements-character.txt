@@ -1,0 +1,2 @@
+# Whole-character v5 target script normalization.
+opencc-python-reimplemented>=0.1.7
