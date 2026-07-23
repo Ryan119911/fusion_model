@@ -1,0 +1,13 @@
+[
+  {
+    "character": "乘",
+    "image_path": "data/raw/images/152/32.jpg",
+    "bbox": [
+      0.0,
+      2023.0,
+      391.0,
+      2408.0
+    ],
+    "reason": "Dense rubbing/noise block accepted by geometric v5 checks"
+  }
+]

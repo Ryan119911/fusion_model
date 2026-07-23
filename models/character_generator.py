@@ -5,6 +5,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+CHARACTER_CHECKPOINT_FORMAT = "character_unet_v4"
+
+
 def _group_count(channels: int) -> int:
     groups = min(8, channels)
     while channels % groups != 0:
@@ -74,8 +77,10 @@ class CharacterUNet(nn.Module):
         depth: int = 4,
         dropout: float = 0.1,
         use_tanh: bool = False,
-        prior_strength: float = 1.5,
+        prior_strength: float = 0.75,
         prior_channel: int = 1,
+        prior_threshold: float = 0.70,
+        prior_sharpness: float = 10.0,
     ):
         super().__init__()
         if input_channels < 1:
@@ -88,12 +93,22 @@ class CharacterUNet(nn.Module):
             raise ValueError("prior_channel must index an input trajectory channel")
         if prior_strength < 0:
             raise ValueError("prior_strength must be non-negative")
+        if not 0.0 < prior_threshold < 1.0:
+            raise ValueError("prior_threshold must satisfy 0 < value < 1")
+        if prior_sharpness <= 0:
+            raise ValueError("prior_sharpness must be positive")
 
         self.input_channels = input_channels
         self.image_size = image_size
         self.use_tanh = use_tanh
-        self.prior_strength = float(prior_strength)
         self.prior_channel = int(prior_channel)
+        self.prior_threshold = float(prior_threshold)
+        self.prior_sharpness = float(prior_sharpness)
+        # Unlike v3's fixed smooth proximity bias, v4 can learn to reduce this
+        # gate when the structure supervision demands a narrower stroke.
+        initial_gain = max(float(prior_strength), 1e-4)
+        raw_gain = torch.log(torch.expm1(torch.tensor(initial_gain)))
+        self.prior_gain_raw = nn.Parameter(raw_gain)
         widths = [base_channels * (2 ** level) for level in range(depth + 1)]
         self.input_block = ConvBlock(input_channels, widths[0])
         self.down_blocks = nn.ModuleList(
@@ -143,15 +158,17 @@ class CharacterUNet(nn.Module):
         if self.use_tanh:
             return torch.tanh(logits)
 
-        # A U-Net trained on sparse centerlines can minimize pixel losses by
-        # predicting a dataset-average gray cloud.  The proximity map supplies
-        # a dense, explicitly spatial logit prior: background starts negative,
-        # while pixels near the requested trajectory start positive.  The
-        # learned logits remain free to widen, taper and reshape every stroke.
+        # Initialize from a narrow trajectory neighborhood, but keep its gain
+        # learnable. The threshold is intentionally above 0.5 so the prior no
+        # longer hard-codes the wide gray ribbon observed with v3.
         proximity = trajectory_maps[
             :, self.prior_channel : self.prior_channel + 1
         ].clamp(0.0, 1.0)
-        logits = logits + self.prior_strength * (6.0 * proximity - 3.0)
+        prior_gain = F.softplus(self.prior_gain_raw)
+        prior_logits = self.prior_sharpness * (
+            proximity - self.prior_threshold
+        )
+        logits = logits + prior_gain * prior_logits
         return torch.sigmoid(logits)
 
 

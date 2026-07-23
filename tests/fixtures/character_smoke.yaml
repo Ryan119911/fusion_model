@@ -23,5 +23,7 @@ character_generator:
   depth: 3
   dropout: 0.0
   use_tanh: false
-  prior_strength: 1.5
+  prior_strength: 0.75
   prior_channel: 1
+  prior_threshold: 0.70
+  prior_sharpness: 10.0

@@ -19,6 +19,10 @@ from utils.character_features import SPATIAL_CHANNEL_NAMES, extract_character_sp
 from utils.character_alignment import align_target_to_trajectory, alignment_metrics
 from utils.character_script import CharacterScriptMapper, SCRIPT_MODES
 from utils.image_preprocessing import letterbox_character_image, load_character_image
+from utils.structure_mask import (
+    STRUCTURE_TARGET_MODE,
+    build_structure_mask,
+)
 
 
 TARGET_PADDING = 4
@@ -39,6 +43,60 @@ def rasterize_character(
             radius = max(width // 2, 1)
             draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=255)
     return np.asarray(image, dtype=np.float32) / 255.0
+
+
+def _normalize_candidate_path(value: Any) -> str:
+    return str(value or "").replace("\\", "/").removeprefix("./")
+
+
+def load_candidate_exclusions(path: Optional[str]) -> List[Dict[str, Any]]:
+    if not path:
+        return []
+    exclusion_path = Path(path)
+    if not exclusion_path.exists():
+        raise FileNotFoundError(f"Candidate exclusion file not found: {path}")
+    with open(exclusion_path, "r", encoding="utf-8") as file:
+        values = json.load(file)
+    if not isinstance(values, list):
+        raise ValueError("Candidate exclusion JSON must contain a list")
+    result = []
+    for index, value in enumerate(values):
+        if not isinstance(value, dict) or not value.get("image_path"):
+            raise ValueError(
+                f"Candidate exclusion #{index} requires an image_path object field"
+            )
+        result.append(dict(value))
+    return result
+
+
+def candidate_exclusion(
+    candidate: Dict[str, Any],
+    character: str,
+    exclusions: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    candidate_path = _normalize_candidate_path(candidate.get("image_path"))
+    candidate_bbox = candidate.get("bbox")
+    for exclusion in exclusions:
+        excluded_character = exclusion.get("character")
+        if excluded_character and str(excluded_character) != str(character):
+            continue
+        excluded_path = _normalize_candidate_path(exclusion.get("image_path"))
+        if (
+            excluded_path != candidate_path
+            and not candidate_path.endswith("/" + excluded_path)
+        ):
+            continue
+        excluded_bbox = exclusion.get("bbox")
+        if excluded_bbox is not None:
+            if candidate_bbox is None or len(candidate_bbox) != len(excluded_bbox):
+                continue
+            if any(
+                abs(float(actual) - float(expected)) > 1e-3
+                for actual, expected in zip(candidate_bbox, excluded_bbox)
+            ):
+                continue
+        return exclusion
+    return None
 
 
 def build_image_index(
@@ -105,17 +163,18 @@ def save_audit_panel(
     spatial_maps: np.ndarray,
     unregistered_target: np.ndarray,
     aligned_target: np.ndarray,
+    structure_target: np.ndarray,
 ) -> None:
-    """Save proximity, raw target, aligned target and an RGB overlap panel."""
+    """Save proximity, raw/aligned grayscale, structure mask and RGB overlap."""
     proximity = np.clip(spatial_maps[1], 0.0, 1.0)
     centerline = np.clip(spatial_maps[0], 0.0, 1.0)
-    panels = [proximity, unregistered_target, aligned_target]
+    panels = [proximity, unregistered_target, aligned_target, structure_target]
     gray_panels = [
         np.repeat((np.clip(panel, 0.0, 1.0) * 255).astype(np.uint8)[..., None], 3, axis=2)
         for panel in panels
     ]
     overlap = np.zeros((*aligned_target.shape, 3), dtype=np.uint8)
-    overlap[..., 0] = (np.clip(aligned_target, 0.0, 1.0) * 255).astype(np.uint8)
+    overlap[..., 0] = (np.clip(structure_target, 0.0, 1.0) * 255).astype(np.uint8)
     overlap[..., 1] = (centerline * 255).astype(np.uint8)
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(np.concatenate([*gray_panels, overlap], axis=1), mode="RGB").save(path)
@@ -129,8 +188,27 @@ def select_best_real_target(
     max_target_candidates: int,
     max_registered_candidates: int,
     quality_thresholds: Dict[str, float],
+    structure_threshold: float,
+    min_component_pixels: int,
+    candidate_exclusions: List[Dict[str, Any]],
 ) -> Tuple[np.ndarray, Dict[str, Any], Dict[str, np.ndarray]]:
-    """Clean candidates, register the strongest matches, and return the best one."""
+    """Clean candidates, register matches, and return the best structure mask."""
+    excluded_candidates = []
+    retained_candidates = []
+    character = str(candidates[0].get("mapped_target_character") or "") if candidates else ""
+    for candidate in candidates:
+        exclusion = candidate_exclusion(candidate, character, candidate_exclusions)
+        if exclusion is None:
+            retained_candidates.append(candidate)
+        else:
+            excluded_candidates.append({
+                "image_path": candidate.get("image_path"),
+                "bbox": candidate.get("bbox"),
+                "reason": exclusion.get("reason"),
+            })
+    candidates = retained_candidates
+    if not candidates:
+        raise ValueError("All real target candidates were manually excluded")
     if max_target_candidates > 0:
         candidates = candidates[:max_target_candidates]
     prepared = []
@@ -157,12 +235,25 @@ def select_best_real_target(
     best = None
     passing_registered_candidates = 0
     for raw_score, target, transform, selected, raw_metrics in registration_pool:
-        aligned, registration = align_target_to_trajectory(
-            target,
-            centerline=spatial_maps[0],
-            proximity=spatial_maps[1],
+        try:
+            aligned_gray, registration = align_target_to_trajectory(
+                target,
+                centerline=spatial_maps[0],
+                proximity=spatial_maps[1],
+            )
+            structure_target, structure_info = build_structure_mask(
+                aligned_gray,
+                threshold=structure_threshold,
+                min_component_pixels=min_component_pixels,
+            )
+        except ValueError:
+            errors += 1
+            continue
+        registered_metrics = alignment_metrics(
+            structure_target,
+            spatial_maps[0],
+            spatial_maps[1],
         )
-        registered_metrics = registration["after"]
         failures = target_quality_failures(registered_metrics, quality_thresholds)
         if not failures:
             passing_registered_candidates += 1
@@ -170,18 +261,22 @@ def select_best_real_target(
         if best is None or rank > best[0]:
             best = (
                 rank,
-                aligned,
+                structure_target,
+                aligned_gray,
                 target,
                 transform,
                 selected,
                 raw_metrics,
                 registration,
                 failures,
+                structure_info,
             )
+    if best is None:
+        raise ValueError("No registered target candidate produced a structure mask")
 
     (
-        _, aligned, unregistered, transform, selected, raw_metrics, registration,
-        selected_failures,
+        _, structure_target, aligned_gray, unregistered, transform, selected,
+        raw_metrics, registration, selected_failures, structure_info,
     ) = best
     info = {
         "image_path": str(selected.get("image_path")),
@@ -196,13 +291,22 @@ def select_best_real_target(
         "target_candidates_passing_quality": passing_registered_candidates,
         "selected_candidate_quality_failures": selected_failures,
         "target_candidate_errors": errors,
+        "target_candidates_excluded": len(excluded_candidates),
+        "excluded_candidates": excluded_candidates,
         "unregistered_alignment": raw_metrics,
+        "structure_cleanup": structure_info,
+        "structure_alignment": alignment_metrics(
+            structure_target,
+            spatial_maps[0],
+            spatial_maps[1],
+        ),
     }
     audit = {
         "unregistered_target": unregistered,
-        "aligned_target": aligned,
+        "aligned_target": aligned_gray,
+        "structure_target": structure_target,
     }
-    return aligned, info, audit
+    return structure_target, info, audit
 
 
 def main(args) -> None:
@@ -237,6 +341,10 @@ def main(args) -> None:
         raise ValueError("minimum target/support area ratio exceeds maximum")
     if args.audit_limit_per_status < 0:
         raise ValueError("--audit_limit_per_status must be non-negative")
+    if not 0.0 < args.structure_threshold < 1.0:
+        raise ValueError("--structure_threshold must satisfy 0 < value < 1")
+    if args.min_component_pixels < 0:
+        raise ValueError("--min_component_pixels must be non-negative")
     cfg = load_config(args.config)
     ensure_dirs(cfg)
     if args.chirography is not None:
@@ -256,6 +364,11 @@ def main(args) -> None:
         )
     if args.target_image and not args.target_character:
         raise ValueError("--target_image requires --target_character")
+    candidate_exclusions = load_candidate_exclusions(args.exclude_candidates_json)
+    if candidate_exclusions:
+        print(
+            f"[INFO] Loaded {len(candidate_exclusions)} manual target candidate exclusion(s)"
+        )
 
     trajectories = load_trajectory_csv(args.trajectory_csv or cfg.data.trajectory_csv)
     if args.character:
@@ -328,6 +441,7 @@ def main(args) -> None:
     )
     audit_counts = Counter()
     audit_manifest: List[Dict[str, Any]] = []
+    excluded_candidate_count = 0
     skipped = 0
 
     for sample_index, trajectory in enumerate(trajectories):
@@ -349,22 +463,30 @@ def main(args) -> None:
 
         source_type = "synthetic"
         source_info: Dict[str, Any] = {}
+        structure_info: Dict[str, Any] = {}
         audit_payload: Optional[Dict[str, np.ndarray]] = None
         if override_target is not None and character == args.target_character:
-            target, registration = align_target_to_trajectory(
+            aligned_gray, registration = align_target_to_trajectory(
                 override_target.copy(),
                 centerline=spatial_maps[0],
                 proximity=spatial_maps[1],
+            )
+            target, structure_info = build_structure_mask(
+                aligned_gray,
+                threshold=args.structure_threshold,
+                min_component_pixels=args.min_component_pixels,
             )
             source_type = "external"
             source_info = {
                 "image_path": str(args.target_image),
                 "canvas_transform": override_transform,
                 "registration": registration,
+                "structure_cleanup": structure_info,
             }
             audit_payload = {
                 "unregistered_target": override_target.copy(),
-                "aligned_target": target,
+                "aligned_target": aligned_gray,
+                "structure_target": target,
             }
         elif image_dataset is not None and image_index.get(character):
             candidates = image_index[character]
@@ -377,6 +499,9 @@ def main(args) -> None:
                     max_target_candidates=args.max_target_candidates,
                     max_registered_candidates=args.max_registered_candidates,
                     quality_thresholds=quality_thresholds,
+                    structure_threshold=args.structure_threshold,
+                    min_component_pixels=args.min_component_pixels,
+                    candidate_exclusions=candidate_exclusions,
                 )
             except ValueError as error:
                 rejected_pairs.append({
@@ -388,6 +513,10 @@ def main(args) -> None:
                 skipped += 1
                 continue
             source_type = "real"
+            structure_info = dict(source_info.get("structure_cleanup") or {})
+            excluded_candidate_count += int(
+                source_info.get("target_candidates_excluded", 0)
+            )
         else:
             if args.require_real_target:
                 rejected_pairs.append({
@@ -402,6 +531,17 @@ def main(args) -> None:
                 canvas_size=canvas_size,
                 width=args.synthetic_width,
             )
+            structure_info = {
+                "mode": STRUCTURE_TARGET_MODE,
+                "threshold": None,
+                "min_component_pixels": 0,
+                "foreground_pixels_before": int((target >= 0.5).sum()),
+                "foreground_pixels_after": int((target >= 0.5).sum()),
+                "foreground_fraction": float((target >= 0.5).mean()),
+                "components_total": None,
+                "components_removed": 0,
+                "pixels_removed": 0,
+            }
 
         centerline_mask = spatial_maps[0] >= 0.5
         trajectory_target_coverage = float((target[centerline_mask] >= 0.5).mean())
@@ -425,6 +565,7 @@ def main(args) -> None:
                 spatial_maps,
                 audit_payload["unregistered_target"],
                 audit_payload["aligned_target"],
+                audit_payload["structure_target"],
             )
             audit_counts[audit_status] += 1
             audit_manifest.append({
@@ -436,6 +577,7 @@ def main(args) -> None:
                 "image_path": source_info.get("image_path"),
                 "annotation_character": source_info.get("annotation_character"),
                 "mapped_target_character": source_info.get("mapped_target_character"),
+                "structure_cleanup": structure_info,
             })
         if failures:
             rejected_pairs.append({
@@ -468,6 +610,8 @@ def main(args) -> None:
             "trajectory_target_coverage": trajectory_target_coverage,
             "alignment_metrics": alignment,
             "target_source": source_type,
+            "target_mode": STRUCTURE_TARGET_MODE,
+            "structure_cleanup": structure_info,
             **source_info,
         })
         source_counts[source_type] += 1
@@ -492,6 +636,11 @@ def main(args) -> None:
             "rejection_reasons": dict(rejection_summary),
             "quality_failures": dict(quality_failure_summary),
             "quality_thresholds": quality_thresholds,
+            "target_mode": STRUCTURE_TARGET_MODE,
+            "structure_threshold": args.structure_threshold,
+            "min_component_pixels": args.min_component_pixels,
+            "candidate_exclusion_file": args.exclude_candidates_json,
+            "excluded_target_candidates": excluded_candidate_count,
         }, file, ensure_ascii=False, indent=2)
     if audit_manifest:
         audit_dir.mkdir(parents=True, exist_ok=True)
@@ -517,10 +666,13 @@ def main(args) -> None:
         format_version=np.asarray(CHARACTER_DATA_FORMAT),
         trajectory_padding=np.asarray(trajectory_padding, dtype=np.int32),
         trajectory_width=np.asarray(args.trajectory_width, dtype=np.int32),
-        preprocessing_version=np.asarray("clean_register_script_quality_v2"),
+        preprocessing_version=np.asarray("clean_register_script_structure_v3"),
         min_alignment_coverage=np.asarray(args.min_alignment_coverage, dtype=np.float32),
         target_script=np.asarray(args.target_script),
         quality_thresholds=np.asarray(json.dumps(quality_thresholds, sort_keys=True)),
+        target_mode=np.asarray(STRUCTURE_TARGET_MODE),
+        structure_threshold=np.asarray(args.structure_threshold, dtype=np.float32),
+        min_component_pixels=np.asarray(args.min_component_pixels, dtype=np.int32),
     )
     print(f"[DONE] Character pairs saved to: {output_path}")
     print(
@@ -533,6 +685,11 @@ def main(args) -> None:
         f"width={args.trajectory_width}"
     )
     print(f"[DONE] targets shape: ({len(targets)}, 1, {canvas_size}, {canvas_size})")
+    print(
+        f"[DONE] target mode: {STRUCTURE_TARGET_MODE}, "
+        f"threshold={args.structure_threshold:.3f}, "
+        f"min_component_pixels={args.min_component_pixels}"
+    )
     print(f"[DONE] target sources: {dict(source_counts)}; skipped={skipped}")
     print(
         f"[DONE] target quality filter: rejected={len(rejected_pairs)}, "
@@ -540,6 +697,7 @@ def main(args) -> None:
     )
     print(f"[DONE] rejection reasons: {dict(rejection_summary)}")
     print(f"[DONE] quality failures: {dict(quality_failure_summary)}")
+    print(f"[DONE] manually excluded target candidates: {excluded_candidate_count}")
     if audit_manifest:
         print(f"[DONE] audit panels: {dict(audit_counts)}, directory={audit_dir}")
     print(
@@ -576,6 +734,23 @@ if __name__ == "__main__":
     parser.add_argument("--max_border_ink_fraction", type=float, default=0.02)
     parser.add_argument("--max_target_candidates", type=int, default=64)
     parser.add_argument("--max_registered_candidates", type=int, default=8)
+    parser.add_argument(
+        "--structure_threshold",
+        type=float,
+        default=0.35,
+        help="Binarization threshold applied after target registration",
+    )
+    parser.add_argument(
+        "--min_component_pixels",
+        type=int,
+        default=8,
+        help="Remove isolated target-mask components smaller than this area",
+    )
+    parser.add_argument(
+        "--exclude_candidates_json",
+        default=None,
+        help="Optional JSON list of exact source image/bbox candidates to exclude",
+    )
     parser.add_argument("--audit_dir", default=None)
     parser.add_argument("--audit_limit_per_status", type=int, default=40)
     main(parser.parse_args())

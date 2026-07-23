@@ -5,8 +5,8 @@ import torch
 
 from models.character_generator import CharacterUNet
 from datasets.character_dataset import deterministic_character_split_indices
-from tools.train_character import migrate_v2_model_state
-from tools.build_character_pairs import target_quality_failures
+from tools.train_character import StructureMaskLoss
+from tools.build_character_pairs import candidate_exclusion, target_quality_failures
 from utils.character_alignment import (
     align_target_to_trajectory,
     alignment_metrics,
@@ -15,6 +15,7 @@ from utils.character_alignment import (
 from utils.character_features import SPATIAL_CHANNEL_NAMES, extract_character_spatial_maps
 from utils.image_preprocessing import letterbox_character_image
 from utils.character_script import CharacterScriptMapper
+from utils.structure_mask import STRUCTURE_TARGET_MODE, build_structure_mask
 from utils.types import (
     CharacterTrajectory,
     PointState,
@@ -75,33 +76,24 @@ class CharacterPipelineTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(output).all())
         self.assertFalse(any(isinstance(module, torch.nn.Transformer) for module in model.modules()))
 
-    def test_v2_checkpoint_migration_expands_input_and_resets_blurry_head(self):
-        old_model = CharacterUNet(
-            input_channels=5,
-            base_channels=8,
-            image_size=32,
-            depth=3,
-            dropout=0.0,
-        )
-        with torch.no_grad():
-            old_model.output_layer.weight.fill_(1.0)
-            old_model.output_layer.bias.fill_(1.0)
-        old_state = old_model.state_dict()
-        new_model = CharacterUNet(
+    def test_v6_proximity_prior_is_narrow_and_learnable(self):
+        model = CharacterUNet(
             input_channels=6,
             base_channels=8,
             image_size=32,
             depth=3,
             dropout=0.0,
+            prior_strength=0.75,
+            prior_threshold=0.70,
+            prior_sharpness=10.0,
         )
-        migrate_v2_model_state(new_model, {"model_state": old_state})
-        new_state = new_model.state_dict()
-        self.assertTrue(torch.equal(
-            new_state["input_block.block.0.weight"][:, 1],
-            old_state["input_block.block.0.weight"][:, 0],
-        ))
-        self.assertEqual(float(new_state["output_layer.weight"].abs().sum()), 0.0)
-        self.assertEqual(float(new_state["output_layer.bias"].abs().sum()), 0.0)
+        inputs = torch.zeros(1, 6, 32, 32)
+        inputs[:, 1, 16, 16] = 1.0
+        output = model(inputs)
+        self.assertGreater(float(output[0, 0, 16, 16].detach()), 0.5)
+        self.assertLess(float(output[0, 0, 0, 0].detach()), 0.1)
+        output.mean().backward()
+        self.assertIsNotNone(model.prior_gain_raw.grad)
 
     def test_image_preprocessing_uses_ink_positive_polarity(self):
         image = np.full((20, 30), 255, dtype=np.uint8)
@@ -148,7 +140,7 @@ class CharacterPipelineTest(unittest.TestCase):
         self.assertEqual(mapper.convert("丑"), "醜")
         self.assertEqual(mapper.convert("武"), "武")
 
-    def test_v5_quality_filter_rejects_dense_target_outside_trajectory(self):
+    def test_v6_quality_filter_rejects_dense_target_outside_trajectory(self):
         centerline = np.zeros((32, 32), dtype=np.float32)
         centerline[15:17, 5:27] = 1.0
         proximity = np.zeros_like(centerline)
@@ -169,6 +161,54 @@ class CharacterPipelineTest(unittest.TestCase):
         failures = target_quality_failures(metrics, thresholds)
         self.assertIn("outside_support_above_threshold", failures)
         self.assertIn("target_ink_above_threshold", failures)
+
+    def test_v6_structure_cleanup_is_binary_and_removes_speckles(self):
+        target = np.zeros((32, 32), dtype=np.float32)
+        target[12:20, 8:24] = 0.9
+        target[2, 2] = 1.0
+        target[29, 28] = 0.8
+        mask, info = build_structure_mask(
+            target,
+            threshold=0.35,
+            min_component_pixels=4,
+        )
+        self.assertEqual(info["mode"], STRUCTURE_TARGET_MODE)
+        self.assertEqual(set(np.unique(mask)), {0.0, 1.0})
+        self.assertEqual(float(mask[2, 2]), 0.0)
+        self.assertEqual(float(mask[15, 15]), 1.0)
+        self.assertEqual(info["components_removed"], 2)
+
+    def test_v6_structure_loss_is_finite_and_penalizes_gray(self):
+        criterion = StructureMaskLoss()
+        targets = torch.zeros(1, 1, 16, 16)
+        targets[:, :, 6:10, 3:13] = 1.0
+        inputs = torch.zeros(1, 6, 16, 16)
+        inputs[:, 0:1] = targets
+        gray = torch.full_like(targets, 0.5)
+        accurate = targets * 0.98 + (1.0 - targets) * 0.02
+        gray_loss = criterion(gray, targets, inputs)
+        accurate_loss = criterion(accurate, targets, inputs)
+        self.assertTrue(torch.isfinite(gray_loss))
+        self.assertLess(float(accurate_loss), float(gray_loss))
+
+    def test_exact_candidate_exclusion_preserves_other_boxes(self):
+        exclusions = [{
+            "character": "乘",
+            "image_path": "data/raw/images/152/32.jpg",
+            "bbox": [0.0, 2023.0, 391.0, 2408.0],
+            "reason": "noise",
+        }]
+        bad = {
+            "image_path": "data/raw/images/152/32.jpg",
+            "bbox": [0.0, 2023.0, 391.0, 2408.0],
+        }
+        other_box = {
+            "image_path": "data/raw/images/152/32.jpg",
+            "bbox": [10.0, 20.0, 30.0, 40.0],
+        }
+        self.assertIsNotNone(candidate_exclusion(bad, "乘", exclusions))
+        self.assertIsNone(candidate_exclusion(other_box, "乘", exclusions))
+        self.assertIsNone(candidate_exclusion(bad, "武", exclusions))
 
     def test_character_split_has_no_identity_leakage(self):
         metadata = np.asarray([

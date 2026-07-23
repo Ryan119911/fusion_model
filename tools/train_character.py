@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
 
 if __package__ in (None, ""):
@@ -21,57 +22,160 @@ from datasets.character_dataset import (
     deterministic_character_split_indices,
     deterministic_split_indices,
 )
-from models.character_generator import build_character_generator
-from tools.train_bbsmg import CompositeStrokeLoss, set_seed
+from models.character_generator import (
+    CHARACTER_CHECKPOINT_FORMAT,
+    build_character_generator,
+)
+from tools.train_bbsmg import set_seed
+from utils.structure_mask import STRUCTURE_TARGET_MODE
 
 
-class CharacterCompositeLoss(CompositeStrokeLoss):
-    """Whole-character loss with explicit anti-haze and trajectory terms."""
+def binary_boundary_f1(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    threshold: float = 0.5,
+    tolerance: int = 1,
+) -> torch.Tensor:
+    """Per-sample boundary F1 with a small spatial matching tolerance."""
+    pred_mask = (predictions >= threshold).float()
+    target_mask = (targets >= 0.5).float()
+    kernel_size = 2 * tolerance + 1
+
+    def boundary(mask):
+        dilated = F.max_pool2d(mask, kernel_size=3, stride=1, padding=1)
+        eroded = -F.max_pool2d(-mask, kernel_size=3, stride=1, padding=1)
+        return (dilated - eroded) > 0
+
+    pred_boundary = boundary(pred_mask)
+    target_boundary = boundary(target_mask)
+    pred_neighborhood = F.max_pool2d(
+        pred_boundary.float(),
+        kernel_size=kernel_size,
+        stride=1,
+        padding=tolerance,
+    ) > 0
+    target_neighborhood = F.max_pool2d(
+        target_boundary.float(),
+        kernel_size=kernel_size,
+        stride=1,
+        padding=tolerance,
+    ) > 0
+    dims = (1, 2, 3)
+    precision = (
+        (pred_boundary & target_neighborhood).sum(dim=dims).float() + 1e-6
+    ) / (pred_boundary.sum(dim=dims).float() + 1e-6)
+    recall = (
+        (target_boundary & pred_neighborhood).sum(dim=dims).float() + 1e-6
+    ) / (target_boundary.sum(dim=dims).float() + 1e-6)
+    return (2.0 * precision * recall + 1e-6) / (precision + recall + 1e-6)
+
+
+class StructureMaskLoss(nn.Module):
+    """Binary structure objective that penalizes over-ink and uncertain gray haze."""
 
     def __init__(
         self,
-        *args,
-        bce_weight: float = 0.5,
-        background_weight: float = 1.5,
-        trajectory_weight: float = 0.1,
-        bce_pos_weight: float = 3.0,
-        **kwargs,
+        bce_weight: float = 1.0,
+        dice_weight: float = 0.75,
+        tversky_weight: float = 0.5,
+        boundary_weight: float = 0.25,
+        background_weight: float = 0.5,
+        confidence_weight: float = 0.1,
+        ink_weight: float = 0.25,
+        trajectory_weight: float = 0.02,
+        bce_pos_weight: float = 1.5,
+        tversky_alpha: float = 0.7,
+        tversky_beta: float = 0.3,
     ):
-        super().__init__(*args, **kwargs)
+        super().__init__()
         self.bce_weight = float(bce_weight)
+        self.dice_weight = float(dice_weight)
+        self.tversky_weight = float(tversky_weight)
+        self.boundary_weight = float(boundary_weight)
         self.background_weight = float(background_weight)
+        self.confidence_weight = float(confidence_weight)
+        self.ink_weight = float(ink_weight)
         self.trajectory_weight = float(trajectory_weight)
         self.bce_pos_weight = float(bce_pos_weight)
+        self.tversky_alpha = float(tversky_alpha)
+        self.tversky_beta = float(tversky_beta)
+        sobel_x = torch.tensor(
+            [[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]]
+        ).view(1, 1, 3, 3)
+        sobel_y = sobel_x.transpose(-1, -2)
+        self.register_buffer("sobel_x", sobel_x)
+        self.register_buffer("sobel_y", sobel_y)
+
+    def _edge_magnitude(self, values):
+        grad_x = F.conv2d(values, self.sobel_x, padding=1)
+        grad_y = F.conv2d(values, self.sobel_y, padding=1)
+        return torch.sqrt(grad_x.square() + grad_y.square() + 1e-6) / 4.0
 
     def compute_components(self, preds, targets, inputs=None):
-        components = super().compute_components(preds, targets)
         preds = preds.clamp(1e-6, 1.0 - 1e-6)
-        targets = targets.clamp(0.0, 1.0)
+        targets = (targets >= 0.5).float()
+        dims = (1, 2, 3)
         pixel_weights = 1.0 + self.bce_pos_weight * targets
-        components["weighted_bce"] = (
+        weighted_bce = (
             F.binary_cross_entropy(preds, targets, reduction="none") * pixel_weights
         ).mean()
-
+        intersection = (preds * targets).sum(dim=dims)
+        dice_loss = 1.0 - (
+            (2.0 * intersection + 1e-6)
+            / (preds.sum(dim=dims) + targets.sum(dim=dims) + 1e-6)
+        ).mean()
+        false_positive = (preds * (1.0 - targets)).sum(dim=dims)
+        false_negative = ((1.0 - preds) * targets).sum(dim=dims)
+        tversky_loss = 1.0 - (
+            (intersection + 1e-6)
+            / (
+                intersection
+                + self.tversky_alpha * false_positive
+                + self.tversky_beta * false_negative
+                + 1e-6
+            )
+        ).mean()
+        boundary_loss = F.l1_loss(
+            self._edge_magnitude(preds),
+            self._edge_magnitude(targets),
+        )
         background = 1.0 - targets
-        components["background_loss"] = (
+        background_loss = (
             (preds.square() * background).sum() / background.sum().clamp_min(1.0)
+        )
+        confidence_loss = (4.0 * preds * (1.0 - preds)).mean()
+        ink_loss = F.l1_loss(
+            preds.mean(dim=dims),
+            targets.mean(dim=dims),
         )
         if inputs is None:
             raise ValueError("Whole-character loss requires trajectory input maps")
         centerline = inputs[:, 0:1].clamp(0.0, 1.0)
-        target_neighborhood = F.max_pool2d(targets, kernel_size=9, stride=1, padding=4)
-        guided_centerline = centerline * target_neighborhood
-        components["trajectory_loss"] = (
+        guided_centerline = centerline * targets
+        trajectory_loss = (
             ((1.0 - preds) * guided_centerline).sum()
             / guided_centerline.sum().clamp_min(1.0)
         )
-        return components
+        return {
+            "weighted_bce": weighted_bce,
+            "dice_loss": dice_loss,
+            "tversky_loss": tversky_loss,
+            "boundary_loss": boundary_loss,
+            "background_loss": background_loss,
+            "confidence_loss": confidence_loss,
+            "ink_loss": ink_loss,
+            "trajectory_loss": trajectory_loss,
+        }
 
     def combine_components(self, components):
         return (
-            super().combine_components(components)
-            + self.bce_weight * components["weighted_bce"]
+            self.bce_weight * components["weighted_bce"]
+            + self.dice_weight * components["dice_loss"]
+            + self.tversky_weight * components["tversky_loss"]
+            + self.boundary_weight * components["boundary_loss"]
             + self.background_weight * components["background_loss"]
+            + self.confidence_weight * components["confidence_loss"]
+            + self.ink_weight * components["ink_loss"]
             + self.trajectory_weight * components["trajectory_loss"]
         )
 
@@ -79,23 +183,20 @@ class CharacterCompositeLoss(CompositeStrokeLoss):
         return self.combine_components(self.compute_components(preds, targets, inputs))
 
 
-def build_loss(device: torch.device) -> CharacterCompositeLoss:
-    return CharacterCompositeLoss(
-        mse_weight=1.0,
-        ssim_weight=0.3,
-        dice_weight=0.3,
-        cldice_weight=0.05,
-        edge_weight=0.1,
-        structure_weight=0.05,
-        ink_weight=1.0,
-        pos_weight=4.0,
-    ).to(device)
+def build_loss(device: torch.device) -> StructureMaskLoss:
+    return StructureMaskLoss().to(device)
 
 
-def compute_batch_metrics(predictions, targets, inputs, criterion) -> Dict[str, float]:
+def compute_batch_metrics(
+    predictions,
+    targets,
+    inputs,
+    criterion,
+    threshold: float = 0.5,
+) -> Dict[str, float]:
     components = criterion.compute_components(predictions, targets, inputs)
     total = criterion.combine_components(components)
-    pred_binary = predictions >= 0.5
+    pred_binary = predictions >= threshold
     target_binary = targets >= 0.5
     intersection = (pred_binary & target_binary).sum(dim=(1, 2, 3)).float()
     union = (pred_binary | target_binary).sum(dim=(1, 2, 3)).float()
@@ -104,9 +205,21 @@ def compute_batch_metrics(predictions, targets, inputs, criterion) -> Dict[str, 
         "composite_loss": float(total.item()),
         "plain_mse": float(F.mse_loss(predictions, targets).item()),
         "mae": float(F.l1_loss(predictions, targets).item()),
-        "ssim_score": 1.0 - values["ssim_loss"],
-        "dice_score": 1.0 - values["dice_loss"],
-        "iou_at_0.5": float(((intersection + 1e-6) / (union + 1e-6)).mean().item()),
+        "dice_at_threshold": float(
+            ((2.0 * intersection + 1e-6) /
+             (pred_binary.sum(dim=(1, 2, 3)).float()
+              + target_binary.sum(dim=(1, 2, 3)).float() + 1e-6)).mean().item()
+        ),
+        "binary_threshold": float(threshold),
+        "iou_at_threshold": float(
+            ((intersection + 1e-6) / (union + 1e-6)).mean().item()
+        ),
+        "boundary_f1": float(
+            binary_boundary_f1(predictions, targets, threshold=threshold).mean().item()
+        ),
+        "uncertain_fraction": float(
+            ((predictions > 0.1) & (predictions < 0.9)).float().mean().item()
+        ),
         "background_mean": float(
             ((predictions * (1.0 - targets)).sum() / (1.0 - targets).sum().clamp_min(1.0)).item()
         ),
@@ -184,13 +297,19 @@ def save_checkpoint(
     channel_names,
     trajectory_padding,
     trajectory_width,
+    target_mode,
+    structure_threshold,
+    min_component_pixels,
     train_indices,
     val_indices,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({
-        "format": "character_unet_v3",
+        "format": CHARACTER_CHECKPOINT_FORMAT,
         "data_format": CHARACTER_DATA_FORMAT,
+        "target_mode": target_mode,
+        "structure_threshold": float(structure_threshold),
+        "min_component_pixels": int(min_component_pixels),
         "epoch": epoch,
         "model_state": model.state_dict(),
         "optimizer_state": optimizer.state_dict(),
@@ -228,31 +347,6 @@ def metadata_character(value) -> str:
     return str(metadata_dict(value).get("character") or "unknown")
 
 
-def migrate_v2_model_state(model, checkpoint) -> None:
-    """Warm-start the six-channel v3 model from a five-channel v2 U-Net."""
-    state = dict(checkpoint["model_state"])
-    key = "input_block.block.0.weight"
-    old_weight = state.get(key)
-    new_weight = model.state_dict()[key]
-    if old_weight is None or old_weight.shape[1] != 5 or new_weight.shape[1] != 6:
-        raise ValueError("Cannot migrate this character_unet_v2 input layer to v3")
-    expanded = new_weight.clone()
-    expanded[:, 0] = old_weight[:, 0]
-    expanded[:, 1] = old_weight[:, 0]
-    expanded[:, 2:] = old_weight[:, 1:]
-    state[key] = expanded
-    # The v2 prediction head encoded the blurred solution we are replacing.
-    # Keep its feature extractor, but restart the final head from the v3 prior.
-    state["output_layer.weight"] = torch.zeros_like(
-        model.state_dict()["output_layer.weight"]
-    )
-    if "output_layer.bias" in state:
-        state["output_layer.bias"] = torch.zeros_like(
-            model.state_dict()["output_layer.bias"]
-        )
-    model.load_state_dict(state, strict=True)
-
-
 def main(args) -> None:
     cfg = load_config(args.config)
     if args.epochs is not None:
@@ -273,37 +367,52 @@ def main(args) -> None:
         if args.init_character_checkpoint
         else None
     )
-    if resume_checkpoint is not None and resume_checkpoint.get("format") != "character_unet_v3":
-        raise ValueError("--resume requires a character_unet_v3 checkpoint")
-    if character_init_checkpoint is not None and character_init_checkpoint.get("format") not in {
-        "character_unet_v2",
-        "character_unet_v3",
-    }:
+    if resume_checkpoint is not None and resume_checkpoint.get("format") != CHARACTER_CHECKPOINT_FORMAT:
         raise ValueError(
-            "--init_character_checkpoint requires a character_unet_v2/v3 checkpoint; "
-            "Transformer-era and stroke B-BSMG checkpoints are incompatible."
+            f"--resume requires a {CHARACTER_CHECKPOINT_FORMAT} checkpoint"
+        )
+    if (
+        character_init_checkpoint is not None
+        and character_init_checkpoint.get("format") != CHARACTER_CHECKPOINT_FORMAT
+    ):
+        raise ValueError(
+            f"--init_character_checkpoint requires {CHARACTER_CHECKPOINT_FORMAT}; "
+            "v6 must not initialize from grayscale-target checkpoints."
         )
 
     dataset = CharacterTrainDataset(args.npz_path)
+    for label, checkpoint in (
+        ("resume", resume_checkpoint),
+        ("initialization", character_init_checkpoint),
+    ):
+        if checkpoint is None:
+            continue
+        if checkpoint.get("data_format") != CHARACTER_DATA_FORMAT:
+            raise ValueError(
+                f"{label} checkpoint data format does not match {CHARACTER_DATA_FORMAT}"
+            )
+        if checkpoint.get("target_mode") != STRUCTURE_TARGET_MODE:
+            raise ValueError(
+                f"{label} checkpoint does not use {STRUCTURE_TARGET_MODE}"
+            )
+        if abs(
+            float(checkpoint.get("structure_threshold", -1.0))
+            - dataset.structure_threshold
+        ) > 1e-6:
+            raise ValueError(
+                f"{label} checkpoint structure threshold differs from this NPZ"
+            )
+        if (
+            int(checkpoint.get("min_component_pixels", -1))
+            != dataset.min_component_pixels
+        ):
+            raise ValueError(
+                f"{label} checkpoint component cleanup differs from this NPZ"
+            )
     model_config = asdict(cfg.character_generator)
     if resume_checkpoint and resume_checkpoint.get("model_config"):
         model_config = dict(resume_checkpoint["model_config"])
-    elif (
-        character_init_checkpoint
-        and character_init_checkpoint.get("format") == "character_unet_v2"
-        and character_init_checkpoint.get("model_config")
-    ):
-        model_config = dict(character_init_checkpoint["model_config"])
-        model_config.update({
-            "input_channels": len(dataset.channel_names),
-            "prior_strength": cfg.character_generator.prior_strength,
-            "prior_channel": cfg.character_generator.prior_channel,
-        })
-    elif (
-        character_init_checkpoint
-        and character_init_checkpoint.get("format") == "character_unet_v3"
-        and character_init_checkpoint.get("model_config")
-    ):
+    elif character_init_checkpoint and character_init_checkpoint.get("model_config"):
         model_config = dict(character_init_checkpoint["model_config"])
     if dataset.inputs.shape[1] != int(model_config["input_channels"]):
         raise ValueError("NPZ channels do not match character_generator.input_channels")
@@ -373,11 +482,7 @@ def main(args) -> None:
 
     model = build_character_generator(model_config).to(device)
     if character_init_checkpoint is not None:
-        if character_init_checkpoint.get("format") == "character_unet_v2":
-            migrate_v2_model_state(model, character_init_checkpoint)
-            print("[INIT] Migrated five-channel character_unet_v2 weights to v3")
-        else:
-            model.load_state_dict(character_init_checkpoint["model_state"])
+        model.load_state_dict(character_init_checkpoint["model_state"])
         print(f"[INIT] Loaded U-Net character model from {args.init_character_checkpoint}")
     criterion = build_loss(device)
     optimizer = torch.optim.Adam(
@@ -464,6 +569,9 @@ def main(args) -> None:
             dataset.channel_names,
             dataset.trajectory_padding,
             dataset.trajectory_width,
+            dataset.target_mode,
+            dataset.structure_threshold,
+            dataset.min_component_pixels,
             train_indices,
             val_indices,
         )

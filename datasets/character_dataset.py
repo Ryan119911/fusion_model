@@ -7,9 +7,10 @@ import torch
 from torch.utils.data import Dataset
 
 from utils.character_features import SPATIAL_CHANNEL_NAMES
+from utils.structure_mask import STRUCTURE_TARGET_MODE
 
 
-CHARACTER_DATA_FORMAT = "character_spatial_v5"
+CHARACTER_DATA_FORMAT = "character_spatial_v6"
 
 
 class CharacterTrainDataset(Dataset):
@@ -32,8 +33,8 @@ class CharacterTrainDataset(Dataset):
         if data_format != CHARACTER_DATA_FORMAT:
             raise ValueError(
                 f"Unsupported character NPZ format {data_format!r}; expected "
-                f"{CHARACTER_DATA_FORMAT!r}. Older NPZ files do not contain the cleaned, "
-                "registered target pipeline and must be rebuilt."
+                f"{CHARACTER_DATA_FORMAT!r}. v6 requires binary structure-mask targets; "
+                "older grayscale NPZ files must be rebuilt."
             )
 
         self.inputs = np.asarray(data["inputs"], dtype=np.float16)
@@ -79,6 +80,21 @@ class CharacterTrainDataset(Dataset):
             else "{}"
         )
         self.quality_thresholds = json.loads(quality_thresholds_json)
+        self.target_mode = str(
+            np.asarray(data["target_mode"]).item()
+            if "target_mode" in data.files
+            else "unknown"
+        )
+        self.structure_threshold = float(
+            np.asarray(data["structure_threshold"]).item()
+            if "structure_threshold" in data.files
+            else 0.0
+        )
+        self.min_component_pixels = int(
+            np.asarray(data["min_component_pixels"]).item()
+            if "min_component_pixels" in data.files
+            else 0
+        )
 
         if self.inputs.ndim != 4:
             raise ValueError(f"inputs must have shape [N,C,H,W], got {self.inputs.shape}")
@@ -102,6 +118,12 @@ class CharacterTrainDataset(Dataset):
             raise ValueError("Input maps and target images must share the same spatial size")
         if not np.isfinite(self.inputs).all() or not np.isfinite(self.targets).all():
             raise ValueError("Character NPZ contains NaN or Inf")
+        if self.target_mode != STRUCTURE_TARGET_MODE:
+            raise ValueError(
+                f"Expected target_mode={STRUCTURE_TARGET_MODE!r}, got {self.target_mode!r}"
+            )
+        if not np.all(np.logical_or(self.targets == 0.0, self.targets == 1.0)):
+            raise ValueError("v6 structure targets must contain only binary 0/1 values")
 
         print("[CHECK] spatial trajectory inputs shape:", self.inputs.shape)
         print("[CHECK] whole-character targets shape:", self.targets.shape)
@@ -112,6 +134,11 @@ class CharacterTrainDataset(Dataset):
             f"min_coverage={self.min_alignment_coverage:.4f}",
         )
         print(f"[CHECK] target script: {self.target_script}")
+        print(
+            f"[CHECK] target mode: {self.target_mode}, "
+            f"threshold={self.structure_threshold:.3f}, "
+            f"min_component_pixels={self.min_component_pixels}"
+        )
 
     def __len__(self) -> int:
         return self.inputs.shape[0]

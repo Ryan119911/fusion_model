@@ -65,8 +65,10 @@ class CharacterGeneratorConfig:
     depth: int = 4
     dropout: float = 0.1
     use_tanh: bool = False
-    prior_strength: float = 1.5
+    prior_strength: float = 0.75
     prior_channel: int = 1
+    prior_threshold: float = 0.70
+    prior_sharpness: float = 10.0
 
 
 # 中文注释：动态笔刷模型的多项式阶数和物理近似参数配置。

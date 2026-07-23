@@ -14,10 +14,21 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import load_config
-from datasets.character_dataset import CharacterTrainDataset, collate_character_batch
-from models.character_generator import build_character_generator
+from datasets.character_dataset import (
+    CHARACTER_DATA_FORMAT,
+    CharacterTrainDataset,
+    collate_character_batch,
+)
+from models.character_generator import (
+    CHARACTER_CHECKPOINT_FORMAT,
+    build_character_generator,
+)
 from tools.train_bbsmg import set_seed
-from tools.train_character import build_loss, compute_batch_metrics
+from tools.train_character import (
+    binary_boundary_f1,
+    build_loss,
+    compute_batch_metrics,
+)
 
 
 def save_gray(array: np.ndarray, path: Path) -> None:
@@ -33,9 +44,14 @@ def metadata_dict(value) -> Dict:
     return {}
 
 
-def per_sample_metrics(predictions, targets, inputs) -> Dict[str, np.ndarray]:
+def per_sample_metrics(
+    predictions,
+    targets,
+    inputs,
+    threshold: float,
+) -> Dict[str, np.ndarray]:
     dims = (1, 2, 3)
-    pred_binary = predictions >= 0.5
+    pred_binary = predictions >= threshold
     target_binary = targets >= 0.5
     centerline = inputs[:, 0:1] >= 0.5
     intersection = (pred_binary & target_binary).sum(dim=dims).float()
@@ -46,8 +62,16 @@ def per_sample_metrics(predictions, targets, inputs) -> Dict[str, np.ndarray]:
     values = {
         "plain_mse": ((predictions - targets) ** 2).mean(dim=dims),
         "mae": torch.abs(predictions - targets).mean(dim=dims),
-        "dice_at_0.5": (2.0 * intersection + 1e-6) / (dice_denominator + 1e-6),
-        "iou_at_0.5": (intersection + 1e-6) / (union + 1e-6),
+        "dice_at_threshold": (2.0 * intersection + 1e-6) / (dice_denominator + 1e-6),
+        "iou_at_threshold": (intersection + 1e-6) / (union + 1e-6),
+        "boundary_f1": binary_boundary_f1(
+            predictions,
+            targets,
+            threshold=threshold,
+        ),
+        "uncertain_fraction": (
+            (predictions > 0.1) & (predictions < 0.9)
+        ).float().mean(dim=dims),
         "target_ink": targets.mean(dim=dims),
         "prediction_ink": predictions.mean(dim=dims),
         "background_mean": (predictions * background).sum(dim=dims)
@@ -62,17 +86,26 @@ def per_sample_metrics(predictions, targets, inputs) -> Dict[str, np.ndarray]:
     return {name: value.detach().cpu().numpy() for name, value in values.items()}
 
 
+def parse_thresholds(value: str) -> List[float]:
+    thresholds = sorted({float(item.strip()) for item in value.split(",") if item.strip()})
+    if not thresholds or any(not 0.0 < threshold < 1.0 for threshold in thresholds):
+        raise ValueError("--thresholds must contain comma-separated values in (0, 1)")
+    return thresholds
+
+
 def main(args) -> None:
+    if not 0.0 < args.threshold < 1.0:
+        raise ValueError("--threshold must satisfy 0 < value < 1")
     cfg = load_config(args.config)
     set_seed(args.seed)
     device = torch.device(
         cfg.train.device if torch.cuda.is_available() or cfg.train.device == "cpu" else "cpu"
     )
     checkpoint = torch.load(args.checkpoint, map_location=device)
-    if checkpoint.get("format") != "character_unet_v3":
+    if checkpoint.get("format") != CHARACTER_CHECKPOINT_FORMAT:
         raise ValueError(
-            "This is not a U-Net whole-character checkpoint. Rebuild the spatial NPZ "
-            "and train a new character_unet_v3 model."
+            f"Expected {CHARACTER_CHECKPOINT_FORMAT}. Rebuild the v6 structure NPZ "
+            "and train the structure-first U-Net from scratch."
         )
     model_config = checkpoint.get("model_config")
     if not model_config:
@@ -82,6 +115,19 @@ def main(args) -> None:
     model.eval()
 
     dataset = CharacterTrainDataset(args.npz_path)
+    if checkpoint.get("data_format") != CHARACTER_DATA_FORMAT:
+        raise ValueError(
+            f"Checkpoint was not trained with {CHARACTER_DATA_FORMAT} data"
+        )
+    if checkpoint.get("target_mode") != dataset.target_mode:
+        raise ValueError("Checkpoint and NPZ target modes differ")
+    if abs(
+        float(checkpoint.get("structure_threshold", -1.0))
+        - dataset.structure_threshold
+    ) > 1e-6:
+        raise ValueError("Checkpoint and NPZ structure thresholds differ")
+    if int(checkpoint.get("min_component_pixels", -1)) != dataset.min_component_pixels:
+        raise ValueError("Checkpoint and NPZ component-cleanup settings differ")
     if tuple(checkpoint.get("channel_names", ())) != tuple(dataset.channel_names):
         raise ValueError("Checkpoint and NPZ spatial channel schemas differ")
     if int(checkpoint.get("trajectory_padding", -1)) != dataset.trajectory_padding:
@@ -121,13 +167,24 @@ def main(args) -> None:
     character_counts: Dict[str, int] = {}
     count = 0
     saved = 0
+    thresholds = sorted({*parse_thresholds(args.thresholds), float(args.threshold)})
+    threshold_totals = {
+        threshold: {"dice": 0.0, "iou": 0.0, "boundary_f1": 0.0}
+        for threshold in thresholds
+    }
 
     with torch.no_grad():
         for batch in loader:
             inputs = batch["inputs"].to(device)
             targets = batch["targets"].to(device).clamp(0.0, 1.0)
             predictions = model(inputs).clamp(0.0, 1.0)
-            values = compute_batch_metrics(predictions, targets, inputs, criterion)
+            values = compute_batch_metrics(
+                predictions,
+                targets,
+                inputs,
+                criterion,
+                threshold=args.threshold,
+            )
 
             zeros = torch.zeros_like(targets)
             zero_binary = zeros.bool()
@@ -141,8 +198,29 @@ def main(args) -> None:
                     ((zero_intersection + 1e-6) / (zero_union + 1e-6)).mean().item()
                 ),
             })
-            sample_values = per_sample_metrics(predictions, targets, inputs)
+            sample_values = per_sample_metrics(
+                predictions,
+                targets,
+                inputs,
+                threshold=args.threshold,
+            )
             batch_size = inputs.shape[0]
+            for threshold in thresholds:
+                sweep_values = per_sample_metrics(
+                    predictions,
+                    targets,
+                    inputs,
+                    threshold=threshold,
+                )
+                threshold_totals[threshold]["dice"] += float(
+                    sweep_values["dice_at_threshold"].sum()
+                )
+                threshold_totals[threshold]["iou"] += float(
+                    sweep_values["iou_at_threshold"].sum()
+                )
+                threshold_totals[threshold]["boundary_f1"] += float(
+                    sweep_values["boundary_f1"].sum()
+                )
             for name, value in values.items():
                 totals[name] = totals.get(name, 0.0) + value * batch_size
             count += batch_size
@@ -164,16 +242,23 @@ def main(args) -> None:
                 stem = f"character_{saved:03d}_{character}"
                 target = target_np[item_index, 0]
                 prediction = pred_np[item_index, 0]
+                prediction_mask = (prediction >= args.threshold).astype(np.float32)
                 difference = np.abs(target - prediction)
+                mask_difference = np.abs(target - prediction_mask)
                 trajectory = input_np[item_index, 0]
                 proximity = input_np[item_index, 1]
                 save_gray(target, output_dir / f"{stem}_target.png")
                 save_gray(prediction, output_dir / f"{stem}_prediction.png")
+                save_gray(prediction_mask, output_dir / f"{stem}_prediction_mask.png")
                 save_gray(difference, output_dir / f"{stem}_diff.png")
+                save_gray(mask_difference, output_dir / f"{stem}_mask_diff.png")
                 save_gray(trajectory, output_dir / f"{stem}_trajectory.png")
                 save_gray(proximity, output_dir / f"{stem}_proximity.png")
                 save_gray(
-                    np.concatenate([trajectory, target, prediction, difference], axis=1),
+                    np.concatenate(
+                        [trajectory, target, prediction, prediction_mask, mask_difference],
+                        axis=1,
+                    ),
                     output_dir / f"{stem}_comparison.png",
                 )
                 saved += 1
@@ -194,6 +279,16 @@ def main(args) -> None:
         name: float(np.mean([row[name] for row in per_character.values()]))
         for name in per_character_metric_names
     }
+    threshold_sweep = [
+        {
+            "threshold": threshold,
+            "macro_dice": values["dice"] / count,
+            "macro_iou": values["iou"] / count,
+            "macro_boundary_f1": values["boundary_f1"] / count,
+        }
+        for threshold, values in threshold_totals.items()
+    ]
+    best_threshold = max(threshold_sweep, key=lambda row: row["macro_iou"])
     report = {
         "checkpoint": str(args.checkpoint),
         "npz_path": str(args.npz_path),
@@ -204,7 +299,16 @@ def main(args) -> None:
         "checkpoint_val_metrics": checkpoint.get("val_metrics"),
         "trajectory_padding": checkpoint.get("trajectory_padding"),
         "trajectory_width": checkpoint.get("trajectory_width"),
-        "panel_order": ["trajectory", "target", "prediction", "absolute_difference"],
+        "operating_threshold": args.threshold,
+        "threshold_sweep": threshold_sweep,
+        "best_threshold_by_macro_iou": best_threshold,
+        "panel_order": [
+            "trajectory",
+            "target_structure",
+            "prediction_probability",
+            "prediction_mask",
+            "mask_absolute_difference",
+        ],
         "metrics": metrics,
         "characters": len(per_character),
         "macro_metrics": macro_metrics,
@@ -229,9 +333,15 @@ def main(args) -> None:
         print(f"{name}: {value:.6f}")
     print(
         f"[GENERALIZATION] characters={len(per_character)}, "
-        f"macro_dice_at_0.5={macro_metrics['dice_at_0.5']:.6f}, "
-        f"macro_iou={macro_metrics['iou_at_0.5']:.6f}, "
+        f"macro_dice={macro_metrics['dice_at_threshold']:.6f}, "
+        f"macro_iou={macro_metrics['iou_at_threshold']:.6f}, "
+        f"macro_boundary_f1={macro_metrics['boundary_f1']:.6f}, "
         f"macro_ink_ratio={macro_metrics['ink_ratio']:.6f}"
+    )
+    print(
+        f"[THRESHOLD] best={best_threshold['threshold']:.2f}, "
+        f"macro_iou={best_threshold['macro_iou']:.6f}, "
+        f"macro_dice={best_threshold['macro_dice']:.6f}"
     )
     print(f"[DONE] Reports and complete-character comparisons saved to: {output_dir}")
 
@@ -249,4 +359,10 @@ if __name__ == "__main__":
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--num_images", type=int, default=20)
     parser.add_argument("--max_samples", type=int, default=0)
+    parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--thresholds",
+        default="0.30,0.35,0.40,0.45,0.50,0.55,0.60,0.65,0.70",
+        help="Comma-separated deployment thresholds evaluated on the selected split",
+    )
     main(parser.parse_args())

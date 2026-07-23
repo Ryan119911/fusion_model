@@ -52,8 +52,12 @@ character_generator:
   depth: 4
   dropout: 0.1
   use_tanh: false
-  prior_strength: 1.5
+  # v6 uses a narrow, learnable proximity-logit gate instead of the fixed
+  # smooth v3 prior. These values only define its initialization.
+  prior_strength: 0.75
   prior_channel: 1
+  prior_threshold: 0.70
+  prior_sharpness: 10.0
 
 # 中文注释：动态笔刷标定和物理近似参数配置。
 dynamic_brush:

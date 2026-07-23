@@ -12,9 +12,15 @@ if __package__ in (None, ""):
 
 from config import load_config
 from datasets.trajectory_dataset import load_trajectory_csv
-from models.character_generator import build_character_generator
+from models.character_generator import (
+    CHARACTER_CHECKPOINT_FORMAT,
+    build_character_generator,
+)
+from tools.train_character import binary_boundary_f1
+from utils.character_alignment import align_target_to_trajectory
 from utils.character_features import SPATIAL_CHANNEL_NAMES, extract_character_spatial_maps
 from utils.image_preprocessing import load_character_image
+from utils.structure_mask import STRUCTURE_TARGET_MODE, build_structure_mask
 
 
 def pick_sample(samples, sample_id=None, character=None, index=0):
@@ -37,33 +43,56 @@ def save_gray(array: np.ndarray, path: Path) -> None:
     Image.fromarray(np.clip(array * 255.0, 0, 255).astype(np.uint8), mode="L").save(path)
 
 
-def image_metrics(prediction: np.ndarray, target: np.ndarray) -> dict:
-    pred_binary = prediction >= 0.5
+def image_metrics(
+    prediction: np.ndarray,
+    target: np.ndarray,
+    threshold: float,
+) -> dict:
+    pred_binary = prediction >= threshold
     target_binary = target >= 0.5
     intersection = float(np.logical_and(pred_binary, target_binary).sum())
     union = float(np.logical_or(pred_binary, target_binary).sum())
     dice_denominator = float(pred_binary.sum() + target_binary.sum())
+    prediction_tensor = torch.from_numpy(prediction[None, None]).float()
+    target_tensor = torch.from_numpy(target[None, None]).float()
     return {
         "plain_mse": float(np.mean((prediction - target) ** 2)),
         "mae": float(np.mean(np.abs(prediction - target))),
-        "dice_at_0.5": (2.0 * intersection + 1e-6) / (dice_denominator + 1e-6),
-        "iou_at_0.5": (intersection + 1e-6) / (union + 1e-6),
+        "binary_threshold": float(threshold),
+        "dice_at_threshold": (2.0 * intersection + 1e-6) / (dice_denominator + 1e-6),
+        "iou_at_threshold": (intersection + 1e-6) / (union + 1e-6),
         "target_ink": float(target.mean()),
         "prediction_ink": float(prediction.mean()),
+        "prediction_mask_ink": float(pred_binary.mean()),
+        "ink_ratio": float(pred_binary.mean() / max(target.mean(), 1e-6)),
+        "boundary_f1": float(
+            binary_boundary_f1(
+                prediction_tensor,
+                target_tensor,
+                threshold=threshold,
+            ).item()
+        ),
+        "uncertain_fraction": float(
+            np.logical_and(prediction > 0.1, prediction < 0.9).mean()
+        ),
     }
 
 
 def main(args) -> None:
+    if not 0.0 < args.threshold < 1.0:
+        raise ValueError("--threshold must satisfy 0 < value < 1")
     cfg = load_config(args.config)
     device = torch.device(
         cfg.train.device if torch.cuda.is_available() or cfg.train.device == "cpu" else "cpu"
     )
     checkpoint = torch.load(args.checkpoint, map_location=device)
-    if checkpoint.get("format") != "character_unet_v3":
+    if checkpoint.get("format") != CHARACTER_CHECKPOINT_FORMAT:
         raise ValueError(
-            "Expected a character_unet_v3 checkpoint. Transformer-era character "
-            "checkpoints and stroke-level B-BSMG checkpoints are incompatible."
+            f"Expected {CHARACTER_CHECKPOINT_FORMAT}. v5 grayscale checkpoints and "
+            "stroke-level B-BSMG checkpoints are incompatible."
         )
+    if checkpoint.get("target_mode") != STRUCTURE_TARGET_MODE:
+        raise ValueError("Checkpoint is not a v6 binary structure model")
     model_config = checkpoint["model_config"]
     if tuple(checkpoint.get("channel_names", ())) != tuple(SPATIAL_CHANNEL_NAMES):
         raise ValueError("Checkpoint spatial channel schema is missing or incompatible")
@@ -95,6 +124,7 @@ def main(args) -> None:
     inputs = torch.from_numpy(spatial_maps[None, ...]).to(device)
     with torch.no_grad():
         prediction = model(inputs)[0, 0].clamp(0.0, 1.0).cpu().numpy()
+    prediction_mask = (prediction >= args.threshold).astype(np.float32)
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -103,6 +133,7 @@ def main(args) -> None:
     save_gray(spatial_maps[0], output_dir / f"{stem}_trajectory.png")
     save_gray(spatial_maps[1], output_dir / f"{stem}_proximity.png")
     save_gray(prediction, output_dir / f"{stem}_prediction.png")
+    save_gray(prediction_mask, output_dir / f"{stem}_prediction_mask.png")
 
     report = {
         "character": character,
@@ -124,29 +155,57 @@ def main(args) -> None:
             else checkpoint.get("trajectory_width", 3)
         ),
         "trajectory_preview": str(output_dir / f"{stem}_trajectory.png"),
+        "target_mode": checkpoint.get("target_mode"),
+        "structure_threshold": checkpoint.get("structure_threshold"),
+        "min_component_pixels": checkpoint.get("min_component_pixels"),
+        "prediction_threshold": args.threshold,
     }
     if args.target_image:
-        target, target_transform = load_character_image(
+        target_gray, target_transform = load_character_image(
             args.target_image,
             canvas_size=int(model_config["image_size"]),
             padding=4,
         )
+        aligned_gray, target_registration = align_target_to_trajectory(
+            target_gray,
+            centerline=spatial_maps[0],
+            proximity=spatial_maps[1],
+        )
+        target, structure_info = build_structure_mask(
+            aligned_gray,
+            threshold=float(checkpoint.get("structure_threshold", 0.35)),
+            min_component_pixels=int(checkpoint.get("min_component_pixels", 8)),
+        )
         difference = np.abs(prediction - target)
+        mask_difference = np.abs(prediction_mask - target)
+        save_gray(aligned_gray, output_dir / f"{stem}_target_gray.png")
         save_gray(target, output_dir / f"{stem}_target.png")
         save_gray(difference, output_dir / f"{stem}_diff.png")
+        save_gray(mask_difference, output_dir / f"{stem}_mask_diff.png")
         save_gray(
-            np.concatenate([target, prediction, difference], axis=1),
+            np.concatenate(
+                [spatial_maps[0], target, prediction, prediction_mask, mask_difference],
+                axis=1,
+            ),
             output_dir / f"{stem}_comparison.png",
         )
         centerline = spatial_maps[0] > 0.5
         target_binary = target >= 0.5
-        prediction_binary = prediction >= 0.5
+        prediction_binary = prediction >= args.threshold
         report.update({
             "target_image": str(args.target_image),
             "target_transform": target_transform,
-            "panel_order": ["target", "prediction", "absolute_difference"],
+            "target_registration": target_registration,
+            "structure_cleanup": structure_info,
+            "panel_order": [
+                "trajectory",
+                "target_structure",
+                "prediction_probability",
+                "prediction_mask",
+                "mask_absolute_difference",
+            ],
             "metrics": {
-                **image_metrics(prediction, target),
+                **image_metrics(prediction, target, threshold=args.threshold),
                 "trajectory_target_coverage": float(target_binary[centerline].mean()),
                 "trajectory_prediction_coverage": float(prediction_binary[centerline].mean()),
                 "trajectory_target_mean": float(target[centerline].mean()),
@@ -181,4 +240,5 @@ if __name__ == "__main__":
     parser.add_argument("--output_stem", default=None)
     parser.add_argument("--trajectory_width", type=int, default=None)
     parser.add_argument("--trajectory_padding", type=int, default=None)
+    parser.add_argument("--threshold", type=float, default=0.5)
     main(parser.parse_args())
