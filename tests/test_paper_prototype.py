@@ -3,8 +3,10 @@ import unittest
 import numpy as np
 
 from models.paper_bbsm import (
+    PAPER_ANGLE_BASIS_DEGREE_FITTED,
     PAPER_POSTURE_MAX,
     PAPER_POSTURE_MIN,
+    PAPER_REGRESSION_MATRIX,
     bbsm_boundary,
     posture_to_geometry_numpy,
     render_bbsm_mask,
@@ -25,6 +27,28 @@ class PaperBBSMTests(unittest.TestCase):
             dtype=np.float32,
         )
         np.testing.assert_allclose(geometry, expected, rtol=1e-6, atol=1e-6)
+
+    def test_degree_fitted_basis_keeps_external_angles_in_radians(self):
+        posture_zero = np.asarray([[11.0, 0.0, 0.0]], dtype=np.float32)
+        posture_ten_deg = np.asarray(
+            [[11.0, np.deg2rad(10.0), 0.0]], dtype=np.float32
+        )
+        delta = (
+            posture_to_geometry_numpy(
+                posture_ten_deg,
+                angle_basis=PAPER_ANGLE_BASIS_DEGREE_FITTED,
+            )
+            - posture_to_geometry_numpy(
+                posture_zero,
+                angle_basis=PAPER_ANGLE_BASIS_DEGREE_FITTED,
+            )
+        )[0]
+        np.testing.assert_allclose(
+            delta,
+            PAPER_REGRESSION_MATRIX[:, 1] * 10.0,
+            rtol=1e-6,
+            atol=1e-6,
+        )
 
     def test_bezier_peak_and_anchor_geometry(self):
         boundary = bbsm_boundary(lt=1.2, lh=0.4, lr=0.5, samples_per_side=101)
@@ -58,6 +82,22 @@ class PaperBBSMTests(unittest.TestCase):
             float(np.deg2rad(10.0)),
             places=6,
         )
+
+    def test_degree_fitted_dataset_is_versioned_separately(self):
+        _, _, metadata = build_dataset(
+            count=2,
+            image_size=128,
+            pixels_per_model_unit=20.0,
+            supersample=1,
+            seed=7,
+            regression_angle_basis=PAPER_ANGLE_BASIS_DEGREE_FITTED,
+        )
+        self.assertEqual(metadata["format"], "paper_bbsmg_degree_fitted_v2")
+        self.assertEqual(
+            metadata["input_normalization"]["regression_angle_basis"],
+            PAPER_ANGLE_BASIS_DEGREE_FITTED,
+        )
+        self.assertEqual(metadata["units"]["alpha"], "rad")
 
 
 try:

@@ -396,7 +396,14 @@ class PaperPSOCLM:
             ).clamp_min(1e-4)
             normalized_sensitivity = column_norms / sigmoid_slope
             field_means = normalized_sensitivity.mean(dim=(0, 2))
+            field_medians = torch.stack(
+                [
+                    normalized_sensitivity[:, field_index, :].median()
+                    for field_index in range(3)
+                ]
+            )
             max_mean = float(field_means.max().clamp_min(1e-12))
+            max_median = float(field_medians.max().clamp_min(1e-12))
             sensitivity = {}
             for field_index, field_name in enumerate(("H", "alpha", "beta")):
                 values = normalized_sensitivity[:, field_index, :]
@@ -405,6 +412,9 @@ class PaperPSOCLM:
                     "median_l2_per_normalized_range": float(values.median()),
                     "max_l2_per_normalized_range": float(values.max()),
                     "relative_mean": float(field_means[field_index]) / max_mean,
+                    "relative_median": (
+                        float(field_medians[field_index]) / max_median
+                    ),
                 }
             diagnostics["image_jacobian_sensitivity"] = sensitivity
 

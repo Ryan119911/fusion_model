@@ -17,6 +17,9 @@ import torch.nn.functional as F
 
 from models.bbsmg import build_bbsmg, normalize_bbsmg_inputs
 from models.paper_bbsm import (
+    PAPER_ANGLE_BASES,
+    PAPER_ANGLE_BASIS_DEGREE_FITTED,
+    PAPER_ANGLE_BASIS_RADIAN,
     clamp_posture_torch,
     geometry_to_posture_torch,
     posture_to_geometry_torch,
@@ -31,7 +34,7 @@ class PaperDynamicConfig:
     pixels_per_model_unit: float = 20.0
     inverse_regularization: float = 1e-4
     patch_floor: float = 0.05
-    footprint_scale: float = 0.35
+    footprint_scale: float = 0.22
     render_max_step_px: float = 2.0
 
 
@@ -68,12 +71,20 @@ class PaperFusionRenderer(nn.Module):
         super().__init__()
         if int(input_normalization.get("input_dim", -1)) != 5:
             raise ValueError(
-                "PaperFusionRenderer requires a 5D paper_bbsmg_v1 checkpoint"
+                "PaperFusionRenderer requires a 5D paper B-BSMG checkpoint"
             )
         self.bbsmg = bbsmg.eval()
         for parameter in self.bbsmg.parameters():
             parameter.requires_grad_(False)
         self.input_normalization = input_normalization
+        self.regression_angle_basis = input_normalization.get(
+            "regression_angle_basis", PAPER_ANGLE_BASIS_RADIAN
+        )
+        if self.regression_angle_basis not in PAPER_ANGLE_BASES:
+            raise ValueError(
+                "Checkpoint has an unsupported regression_angle_basis: "
+                f"{self.regression_angle_basis!r}"
+            )
         self.image_size = int(image_size)
         self.dynamic = dynamic or PaperDynamicConfig()
         if not 0.0 <= self.dynamic.patch_floor < 1.0:
@@ -124,13 +135,34 @@ class PaperFusionRenderer(nn.Module):
             "x0_px",
             "y0_px",
         ]
+        checkpoint_format = checkpoint.get("format")
+        regression_angle_basis = normalization.get(
+            "regression_angle_basis", PAPER_ANGLE_BASIS_RADIAN
+        )
+        expected_formats = {
+            PAPER_ANGLE_BASIS_RADIAN: "paper_bbsmg_v1",
+            PAPER_ANGLE_BASIS_DEGREE_FITTED: "paper_bbsmg_degree_fitted_v2",
+        }
+        if regression_angle_basis not in expected_formats:
+            raise ValueError(
+                "Checkpoint declares an unsupported regression angle basis: "
+                f"{regression_angle_basis!r}"
+            )
         if (
-            checkpoint.get("format") != "paper_bbsmg_v1"
+            checkpoint_format != expected_formats[regression_angle_basis]
             and feature_names != expected_features
         ):
             raise ValueError(
-                "Checkpoint is not marked as paper_bbsmg_v1 and does not "
-                "declare the required paper posture features"
+                "Checkpoint format and paper posture features are incompatible"
+            )
+        allowed_formats = {expected_formats[regression_angle_basis]}
+        if regression_angle_basis == PAPER_ANGLE_BASIS_RADIAN:
+            allowed_formats.add(None)
+        if checkpoint_format not in allowed_formats:
+            raise ValueError(
+                "Checkpoint format does not match regression_angle_basis: "
+                f"format={checkpoint_format!r}, "
+                f"basis={regression_angle_basis!r}"
             )
         if feature_names is not None and feature_names != expected_features:
             raise ValueError("Checkpoint posture features do not match paper semantics")
@@ -170,7 +202,9 @@ class PaperFusionRenderer(nn.Module):
         stroke_ids: torch.Tensor,
     ) -> torch.Tensor:
         """Apply paper-style first-order width/drag dynamics."""
-        instant = posture_to_geometry_torch(posture)
+        instant = posture_to_geometry_torch(
+            posture, angle_basis=self.regression_angle_basis
+        )
         result = torch.empty_like(instant)
         kw = float(self.dynamic.width_inertia)
         kd = float(self.dynamic.drag_inertia)
@@ -192,6 +226,7 @@ class PaperFusionRenderer(nn.Module):
             result,
             reference=posture,
             regularization=self.dynamic.inverse_regularization,
+            angle_basis=self.regression_angle_basis,
         )
         return clamp_posture_torch(virtual)
 
@@ -367,7 +402,9 @@ class PaperFusionRenderer(nn.Module):
         """Expose the paper dynamic state bridge for calibration diagnostics."""
         heading, step_length = self.trajectory_heading(xy_canvas, stroke_ids)
         virtual_posture = self.dynamic_posture(posture, stroke_ids)
-        geometry = posture_to_geometry_torch(virtual_posture)
+        geometry = posture_to_geometry_torch(
+            virtual_posture, angle_basis=self.regression_angle_basis
+        )
         free_offset = self.dynamic.offset_fraction * (
             geometry[:, 0] + geometry[:, 1]
         )

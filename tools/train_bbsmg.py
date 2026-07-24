@@ -588,12 +588,15 @@ def save_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, schedule
         "base_channels": int(model.decoder.fc.out_features // (8 * 8 * 8)),
         "image_size": int(model.decoder.image_size),
     }
-    checkpoint_format = (
-        "paper_bbsmg_v1"
-        if (input_normalization or {}).get("feature_names")
-        == ["H_mm", "alpha_rad", "beta_rad", "x0_px", "y0_px"]
-        else "bbsmg_legacy"
-    )
+    normalization = input_normalization or {}
+    checkpoint_format = normalization.get("checkpoint_format")
+    if checkpoint_format is None:
+        checkpoint_format = (
+            "paper_bbsmg_v1"
+            if normalization.get("feature_names")
+            == ["H_mm", "alpha_rad", "beta_rad", "x0_px", "y0_px"]
+            else "bbsmg_legacy"
+        )
     torch.save({
         "format": checkpoint_format,
         "epoch": epoch,
@@ -622,6 +625,16 @@ def load_resume_checkpoint(path: str, model: nn.Module, optimizer: torch.optim.O
         np.asarray(input_normalization["scales"], dtype=np.float64),
     ):
         raise ValueError("Resume checkpoint normalization does not match the current NPZ")
+    recorded_basis = (recorded or {}).get(
+        "regression_angle_basis", "paper_declared_radian"
+    )
+    current_basis = input_normalization.get(
+        "regression_angle_basis", "paper_declared_radian"
+    )
+    if recorded_basis != current_basis:
+        raise ValueError(
+            "Resume checkpoint regression angle basis does not match the current NPZ"
+        )
 
     best_val = checkpoint.get("best_val")
     if best_val is None:

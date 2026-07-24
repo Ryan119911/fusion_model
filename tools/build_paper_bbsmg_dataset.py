@@ -13,6 +13,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from models.paper_bbsm import (
+    PAPER_ANGLE_BASES,
+    PAPER_ANGLE_BASIS_DEGREE_FITTED,
+    PAPER_ANGLE_BASIS_RADIAN,
     PAPER_POSTURE_MAX,
     PAPER_POSTURE_MIN,
     render_bbsm_mask,
@@ -20,7 +23,10 @@ from models.paper_bbsm import (
 
 
 FEATURE_NAMES = ["H_mm", "alpha_rad", "beta_rad", "x0_px", "y0_px"]
-FORMAT_NAME = "paper_bbsmg_v1"
+FORMAT_BY_ANGLE_BASIS = {
+    PAPER_ANGLE_BASIS_RADIAN: "paper_bbsmg_v1",
+    PAPER_ANGLE_BASIS_DEGREE_FITTED: "paper_bbsmg_degree_fitted_v2",
+}
 
 
 def build_dataset(
@@ -30,6 +36,7 @@ def build_dataset(
     supersample: int,
     seed: int,
     anchor_margin: float = 4.0,
+    regression_angle_basis: str = PAPER_ANGLE_BASIS_RADIAN,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     if count < 1:
         raise ValueError("count must be positive")
@@ -52,11 +59,14 @@ def build_dataset(
             image_size=image_size,
             pixels_per_model_unit=pixels_per_model_unit,
             supersample=supersample,
+            angle_basis=regression_angle_basis,
         )
         targets[index, 0] = np.rint(mask * 255.0).astype(np.uint8)
+    format_name = FORMAT_BY_ANGLE_BASIS[regression_angle_basis]
     metadata = {
-        "format": FORMAT_NAME,
+        "format": format_name,
         "feature_names": FEATURE_NAMES,
+        "regression_angle_basis": regression_angle_basis,
         "input_normalization": {
             "version": 2,
             "input_dim": 5,
@@ -68,6 +78,8 @@ def build_dataset(
                 float(image_size),
             ],
             "feature_names": FEATURE_NAMES,
+            "checkpoint_format": format_name,
+            "regression_angle_basis": regression_angle_basis,
         },
         "units": {
             "H": "mm",
@@ -107,6 +119,7 @@ def main(args: argparse.Namespace) -> None:
         supersample=args.supersample,
         seed=args.seed,
         anchor_margin=args.anchor_margin,
+        regression_angle_basis=args.regression_angle_basis,
     )
     path = Path(args.output_npz)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,6 +139,10 @@ def main(args: argparse.Namespace) -> None:
         "[RANGE] H=11-20 mm, alpha=0-0.174533 rad, "
         "beta=0-0.087266 rad, gamma=0 rad"
     )
+    print(
+        "[SEMANTICS] external angles=rad, regression_angle_basis="
+        f"{args.regression_angle_basis}"
+    )
     print(f"[DONE] summary: {summary_path}")
 
 
@@ -140,4 +157,9 @@ if __name__ == "__main__":
     parser.add_argument("--supersample", type=int, default=4)
     parser.add_argument("--anchor_margin", type=float, default=4.0)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--regression_angle_basis",
+        choices=PAPER_ANGLE_BASES,
+        default=PAPER_ANGLE_BASIS_RADIAN,
+    )
     main(parser.parse_args())

@@ -2,7 +2,10 @@
 
 The regression coefficients are transcribed from the B-BSMG paper. They are
 temporary simulation calibration, not real brush or robot calibration data.
-Angles are always radians.
+External posture angles are always radians.  The explicit angle-basis option
+exists because the paper text declares radians while its sampled levels,
+plots, and coefficient magnitudes may indicate that degree values were used
+when fitting the published regression.
 """
 from __future__ import annotations
 
@@ -33,6 +36,12 @@ PAPER_REGRESSION_MATRIX = np.asarray(
     dtype=np.float32,
 )
 PAPER_REGRESSION_BIAS = np.asarray([0.0267, 0.0372, 0.1137], dtype=np.float32)
+PAPER_ANGLE_BASIS_RADIAN = "paper_declared_radian"
+PAPER_ANGLE_BASIS_DEGREE_FITTED = "degree_fitted"
+PAPER_ANGLE_BASES = (
+    PAPER_ANGLE_BASIS_RADIAN,
+    PAPER_ANGLE_BASIS_DEGREE_FITTED,
+)
 
 
 @dataclass(frozen=True)
@@ -46,16 +55,40 @@ class PaperPrototypeLimits:
     gamma_rad: float = 0.0
 
 
-def posture_to_geometry_numpy(posture: np.ndarray) -> np.ndarray:
+def regression_matrix_numpy(
+    angle_basis: str = PAPER_ANGLE_BASIS_RADIAN,
+) -> np.ndarray:
+    """Return coefficients acting on external [H_mm, alpha_rad, beta_rad]."""
+    if angle_basis not in PAPER_ANGLE_BASES:
+        raise ValueError(
+            f"Unknown regression angle basis {angle_basis!r}; "
+            f"expected one of {PAPER_ANGLE_BASES}"
+        )
+    matrix = PAPER_REGRESSION_MATRIX.copy()
+    if angle_basis == PAPER_ANGLE_BASIS_DEGREE_FITTED:
+        matrix[:, 1:] *= np.float32(180.0 / np.pi)
+    return matrix
+
+
+def posture_to_geometry_numpy(
+    posture: np.ndarray,
+    angle_basis: str = PAPER_ANGLE_BASIS_RADIAN,
+) -> np.ndarray:
     posture = np.asarray(posture, dtype=np.float32)
-    return posture @ PAPER_REGRESSION_MATRIX.T + PAPER_REGRESSION_BIAS
+    matrix = regression_matrix_numpy(angle_basis)
+    return posture @ matrix.T + PAPER_REGRESSION_BIAS
 
 
-def posture_to_geometry_torch(posture: torch.Tensor) -> torch.Tensor:
+def posture_to_geometry_torch(
+    posture: torch.Tensor,
+    angle_basis: str = PAPER_ANGLE_BASIS_RADIAN,
+) -> torch.Tensor:
     if torch is None:
         raise RuntimeError("PyTorch is required for differentiable rendering")
     matrix = torch.as_tensor(
-        PAPER_REGRESSION_MATRIX, dtype=posture.dtype, device=posture.device
+        regression_matrix_numpy(angle_basis),
+        dtype=posture.dtype,
+        device=posture.device,
     )
     bias = torch.as_tensor(
         PAPER_REGRESSION_BIAS, dtype=posture.dtype, device=posture.device
@@ -67,12 +100,15 @@ def geometry_to_posture_torch(
     geometry: torch.Tensor,
     reference: torch.Tensor | None = None,
     regularization: float = 1e-4,
+    angle_basis: str = PAPER_ANGLE_BASIS_RADIAN,
 ) -> torch.Tensor:
     """Invert the regression with a small reference-pose regularizer."""
     if torch is None:
         raise RuntimeError("PyTorch is required for differentiable rendering")
     matrix = torch.as_tensor(
-        PAPER_REGRESSION_MATRIX, dtype=geometry.dtype, device=geometry.device
+        regression_matrix_numpy(angle_basis),
+        dtype=geometry.dtype,
+        device=geometry.device,
     )
     bias = torch.as_tensor(
         PAPER_REGRESSION_BIAS, dtype=geometry.dtype, device=geometry.device
@@ -131,11 +167,13 @@ def render_bbsm_mask(
     image_size: int = 128,
     pixels_per_model_unit: float = 20.0,
     supersample: int = 4,
+    angle_basis: str = PAPER_ANGLE_BASIS_RADIAN,
 ) -> np.ndarray:
     """Rasterize one analytic B-BSM target with background=0 and ink=1."""
     h, alpha, beta = np.asarray(posture, dtype=np.float64).tolist()
     lt, lh, lr = posture_to_geometry_numpy(
-        np.asarray([[h, alpha, beta]], dtype=np.float32)
+        np.asarray([[h, alpha, beta]], dtype=np.float32),
+        angle_basis=angle_basis,
     )[0]
     points = bbsm_boundary(float(lt), float(lh), float(lr))
     c, s = np.cos(beta), np.sin(beta)
@@ -158,9 +196,10 @@ def safe_anchor_ranges(
     image_size: int = 128,
     pixels_per_model_unit: float = 20.0,
     margin: float = 2.0,
+    angle_basis: str = PAPER_ANGLE_BASIS_RADIAN,
 ) -> Tuple[Tuple[float, float], Tuple[float, float]]:
     corners = np.stack([PAPER_POSTURE_MIN, PAPER_POSTURE_MAX])
-    geometry = posture_to_geometry_numpy(corners)
+    geometry = posture_to_geometry_numpy(corners, angle_basis=angle_basis)
     radius = float(np.max(geometry) * pixels_per_model_unit + margin)
     return (radius, image_size - 1.0 - radius), (
         radius,

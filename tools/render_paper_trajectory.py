@@ -18,7 +18,12 @@ if str(ROOT) not in sys.path:
 from datasets.trajectory_dataset import load_trajectory_csv
 from models.paper_bbsm import PAPER_POSTURE_MAX, PAPER_POSTURE_MIN
 from models.paper_fusion_renderer import PaperDynamicConfig, PaperFusionRenderer
-from tools.invert_paper_trajectory import flatten_canvas_trajectory, pick_sample
+from optim.trajectory_optimizer import load_target_image
+from tools.invert_paper_trajectory import (
+    binary_metrics,
+    flatten_canvas_trajectory,
+    pick_sample,
+)
 
 
 def load_pose_csv(
@@ -198,7 +203,7 @@ def main(args: argparse.Namespace) -> None:
         sample, xy, posture, states, output.with_suffix(".states.csv")
     )
     report = {
-        "format": "paper_forward_renderer_v1",
+        "format": "paper_forward_renderer_v2",
         "simulation_only": True,
         "character": sample.character,
         "sample_id": sample.meta.get("sample_id"),
@@ -208,11 +213,20 @@ def main(args: argparse.Namespace) -> None:
         "angle_unit": "rad",
         "z_semantics": "H_mm",
         "gamma_rad": 0.0,
+        "regression_angle_basis": renderer.regression_angle_basis,
         "footprint_scale": args.footprint_scale,
         "input_point_count": int(len(xy)),
         "render_sample_count": int(len(dense_xy)),
         "render_max_step_px": args.render_max_step_px,
     }
+    if args.target_image:
+        target = load_target_image(args.target_image, image_size=args.image_size)
+        report["target_image"] = args.target_image
+        report["target_metrics"] = {
+            **binary_metrics(rendered, target),
+            "target_ink": float((target >= 0.5).mean()),
+            "prediction_ink": float((rendered >= 0.5).mean()),
+        }
     output.with_suffix(".json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -220,12 +234,15 @@ def main(args: argparse.Namespace) -> None:
         f"[DONE] Forward-rendered {sample.character or 'sample'} on {device}: "
         f"{output}"
     )
+    for key, value in report.get("target_metrics", {}).items():
+        print(f"{key}: {value:.6f}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--trajectory_csv", required=True)
     parser.add_argument("--bbsmg_ckpt", required=True)
+    parser.add_argument("--target_image", default=None)
     parser.add_argument("--pose_csv", default=None)
     parser.add_argument("--clip_pose_limits", action="store_true")
     parser.add_argument("--character", default=None)
@@ -245,7 +262,7 @@ if __name__ == "__main__":
     parser.add_argument("--offset_fraction", type=float, default=0.25)
     parser.add_argument("--pixels_per_model_unit", type=float, default=20.0)
     parser.add_argument("--patch_floor", type=float, default=0.05)
-    parser.add_argument("--footprint_scale", type=float, default=0.35)
+    parser.add_argument("--footprint_scale", type=float, default=0.22)
     parser.add_argument("--render_max_step_px", type=float, default=2.0)
     parser.add_argument("--point_batch_size", type=int, default=128)
     main(parser.parse_args())

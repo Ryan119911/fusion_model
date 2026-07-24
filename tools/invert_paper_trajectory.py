@@ -49,7 +49,12 @@ def flatten_canvas_trajectory(sample, image_size: int, padding: int):
     return np.asarray(xy, dtype=np.float32), np.asarray(stroke_ids, dtype=np.int64)
 
 
-def save_pose_csv(sample, posture: np.ndarray, output_path: Path) -> None:
+def save_pose_csv(
+    sample,
+    posture: np.ndarray,
+    output_path: Path,
+    regression_angle_basis: str,
+) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fields = [
         "character",
@@ -67,6 +72,7 @@ def save_pose_csv(sample, posture: np.ndarray, output_path: Path) -> None:
         "angle_unit",
         "pose_frame",
         "prototype",
+        "regression_angle_basis",
     ]
     points = sample.all_points()
     if len(points) != len(posture):
@@ -92,7 +98,8 @@ def save_pose_csv(sample, posture: np.ndarray, output_path: Path) -> None:
                     "z_unit": "mm",
                     "angle_unit": "rad",
                     "pose_frame": "paper_model",
-                    "prototype": "paper_psoc_lm_v4",
+                    "prototype": "paper_psoc_lm_v5_ab",
+                    "regression_angle_basis": regression_angle_basis,
                 }
             )
 
@@ -246,7 +253,12 @@ def main(args: argparse.Namespace) -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = args.output_stem or f"{sample.character or 'sample'}_paper_inverse"
-    save_pose_csv(sample, result.posture, output_dir / f"{stem}_trajectory.csv")
+    save_pose_csv(
+        sample,
+        result.posture,
+        output_dir / f"{stem}_trajectory.csv",
+        renderer.regression_angle_basis,
+    )
     save_gray(target, output_dir / f"{stem}_target.png")
     save_gray(initial_render, output_dir / f"{stem}_initial.png")
     save_gray(result.rendered_image, output_dir / f"{stem}_rendered.png")
@@ -260,7 +272,7 @@ def main(args: argparse.Namespace) -> None:
         output_dir / f"{stem}_comparison.png",
     )
     report = {
-        "format": "paper_psoc_lm_v4",
+        "format": "paper_psoc_lm_v5_ab",
         "simulation_only": True,
         "character": sample.character,
         "sample_id": sample.meta.get("sample_id"),
@@ -269,11 +281,10 @@ def main(args: argparse.Namespace) -> None:
         "optimized_fields": ["z_as_H_mm", "alpha_rad", "beta_rad"],
         "gamma_rad": 0.0,
         "pose_frame": "paper_model",
-        "regression_angle_basis": "paper_declared_radian",
+        "regression_angle_basis": renderer.regression_angle_basis,
         "regression_unit_note": (
-            "The paper text declares radians, while its sampled angle levels "
-            "and coefficient magnitudes may indicate degree-valued fitting. "
-            "This checkpoint follows the declared-radian v1 dataset."
+            "External and CSV angles are radians. The internal regression "
+            f"basis is checkpoint-defined as {renderer.regression_angle_basis!r}."
         ),
         "forward_calibration": {
             "pixels_per_model_unit": args.pixels_per_model_unit,
@@ -347,7 +358,9 @@ def main(args: argparse.Namespace) -> None:
         if field_name in sensitivity:
             print(
                 f"[SENSITIVITY] {field_name}: "
-                f"relative_mean={sensitivity[field_name]['relative_mean']:.6f}"
+                f"relative_mean={sensitivity[field_name]['relative_mean']:.6f}, "
+                "relative_median="
+                f"{sensitivity[field_name]['relative_median']:.6f}"
             )
     for field_name, fractions in result.diagnostics[
         "bound_fraction_within_1pct"

@@ -195,6 +195,26 @@ def main(args):
                 f"Checkpoint normalization {recorded.tolist()} does not match "
                 f"NPZ normalization {expected.tolist()}"
             )
+        expected_basis = dataset.input_normalization.get(
+            "regression_angle_basis", "paper_declared_radian"
+        )
+        recorded_basis = checkpoint_normalization.get(
+            "regression_angle_basis", "paper_declared_radian"
+        )
+        if expected_basis != recorded_basis:
+            raise ValueError(
+                "Checkpoint regression angle basis does not match NPZ: "
+                f"checkpoint={recorded_basis!r}, npz={expected_basis!r}"
+            )
+        expected_format = dataset.input_normalization.get("checkpoint_format")
+        checkpoint_format = (
+            checkpoint.get("format") if isinstance(checkpoint, dict) else None
+        )
+        if expected_format is not None and checkpoint_format != expected_format:
+            raise ValueError(
+                "Checkpoint format does not match NPZ: "
+                f"checkpoint={checkpoint_format!r}, npz={expected_format!r}"
+            )
 
     indices = fixed_validation_indices(len(dataset), args.val_ratio, args.seed)
     if args.max_samples > 0:
