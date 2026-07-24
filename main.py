@@ -71,7 +71,7 @@ def cmd_train(args):
 def cmd_build_character(args):
     cmd = [
         sys.executable,
-        "tools/build_character_pairs.py",
+        "tools/build_trajectory_character_pairs.py",
         "--config", args.config,
         "--output_npz", args.output_npz,
     ]
@@ -79,34 +79,19 @@ def cmd_build_character(args):
         cmd += ["--trajectory_csv", args.trajectory_csv]
     if args.character:
         cmd += ["--character", args.character]
-    if args.target_character:
-        cmd += ["--target_character", args.target_character]
-    if args.target_image:
-        ensure_exists(args.target_image, "Whole-character target image")
-        cmd += ["--target_image", args.target_image]
-    if args.chirography:
-        cmd += ["--chirography", args.chirography]
-    if args.require_real_target:
-        cmd += ["--require_real_target"]
     cmd += [
         "--trajectory_width", str(args.trajectory_width),
-        "--target_script", args.target_script,
-        "--structure_threshold", str(args.structure_threshold),
-        "--min_component_pixels", str(args.min_component_pixels),
-        "--opening_iterations", str(args.opening_iterations),
+        "--render_min_width", str(args.render_min_width),
+        "--render_max_width", str(args.render_max_width),
+        "--pressure_gamma", str(args.pressure_gamma),
         "--skeleton_tolerance", str(args.skeleton_tolerance),
-        "--min_target_skeleton_in_support_fraction",
-        str(args.min_target_skeleton_in_support_fraction),
-        "--min_trajectory_near_target_skeleton_fraction",
-        str(args.min_trajectory_near_target_skeleton_fraction),
-        "--min_alignment_coverage", str(args.min_alignment_coverage),
-        "--audit_limit_per_status", str(args.audit_limit_per_status),
+        "--min_trajectory_coverage", str(args.min_trajectory_coverage),
+        "--audit_limit", str(args.audit_limit),
     ]
+    if args.pressure_invert:
+        cmd += ["--pressure_invert"]
     if args.trajectory_padding is not None:
         cmd += ["--trajectory_padding", str(args.trajectory_padding)]
-    if args.exclude_candidates_json:
-        ensure_exists(args.exclude_candidates_json, "Target candidate exclusion JSON")
-        cmd += ["--exclude_candidates_json", args.exclude_candidates_json]
     run(cmd, args.log_file)
 
 
@@ -303,31 +288,23 @@ def build_parser():
     p5.add_argument("--log_dir", type=str, default="outputs/logs")
     p5.set_defaults(func=cmd_all)
 
-    p6 = subparsers.add_parser("build-character", help="Build direct whole-character pairs")
+    p6 = subparsers.add_parser(
+        "build-character",
+        help="Build trajectory-faithful whole-character pairs",
+    )
     p6.add_argument("--config", default="configs/default.yaml")
     p6.add_argument("--trajectory_csv", default=None)
     p6.add_argument("--output_npz", default="data/processed/character_train.npz")
     p6.add_argument("--character", default=None)
-    p6.add_argument("--target_character", default=None)
-    p6.add_argument("--target_image", default=None)
-    p6.add_argument("--chirography", default=None)
-    p6.add_argument("--require_real_target", action="store_true")
     p6.add_argument("--trajectory_width", type=int, default=3)
     p6.add_argument("--trajectory_padding", type=int, default=None)
-    p6.add_argument("--target_script", choices=("preserve", "traditional", "simplified"), default="traditional")
-    p6.add_argument("--structure_threshold", type=float, default=0.35)
-    p6.add_argument("--min_component_pixels", type=int, default=8)
-    p6.add_argument("--opening_iterations", type=int, default=1)
-    p6.add_argument("--skeleton_tolerance", type=int, default=5)
-    p6.add_argument(
-        "--min_target_skeleton_in_support_fraction", type=float, default=0.70
-    )
-    p6.add_argument(
-        "--min_trajectory_near_target_skeleton_fraction", type=float, default=0.60
-    )
-    p6.add_argument("--min_alignment_coverage", type=float, default=0.55)
-    p6.add_argument("--exclude_candidates_json", default=None)
-    p6.add_argument("--audit_limit_per_status", type=int, default=40)
+    p6.add_argument("--render_min_width", type=float, default=4.0)
+    p6.add_argument("--render_max_width", type=float, default=8.0)
+    p6.add_argument("--pressure_gamma", type=float, default=1.0)
+    p6.add_argument("--pressure_invert", action="store_true")
+    p6.add_argument("--skeleton_tolerance", type=int, default=3)
+    p6.add_argument("--min_trajectory_coverage", type=float, default=0.999)
+    p6.add_argument("--audit_limit", type=int, default=200)
     p6.add_argument("--log_dir", default="outputs/logs")
     p6.set_defaults(func=cmd_build_character)
 

@@ -14,6 +14,7 @@ from config import load_config
 from datasets.trajectory_dataset import load_trajectory_csv
 from models.character_generator import (
     CHARACTER_CHECKPOINT_FORMAT,
+    SUPPORTED_CHARACTER_CHECKPOINT_FORMATS,
     build_character_generator,
 )
 from tools.train_character import binary_boundary_f1
@@ -21,6 +22,10 @@ from utils.character_alignment import align_target_to_trajectory
 from utils.character_features import SPATIAL_CHANNEL_NAMES, extract_character_spatial_maps
 from utils.image_preprocessing import load_character_image
 from utils.structure_mask import STRUCTURE_TARGET_MODE, build_structure_mask
+from utils.trajectory_target import (
+    TRAJECTORY_TARGET_MODE,
+    render_trajectory_target,
+)
 
 
 def pick_sample(samples, sample_id=None, character=None, index=0):
@@ -89,14 +94,22 @@ def main(args) -> None:
         cfg.train.device if torch.cuda.is_available() or cfg.train.device == "cpu" else "cpu"
     )
     checkpoint = torch.load(args.checkpoint, map_location=device)
-    if checkpoint.get("format") != CHARACTER_CHECKPOINT_FORMAT:
+    if checkpoint.get("format") not in SUPPORTED_CHARACTER_CHECKPOINT_FORMATS:
         raise ValueError(
-            f"Expected {CHARACTER_CHECKPOINT_FORMAT}. Older character checkpoints and "
-            "stroke-level B-BSMG checkpoints are incompatible."
+            f"Expected one of {SUPPORTED_CHARACTER_CHECKPOINT_FORMATS}. "
+            "Stroke-level B-BSMG checkpoints are incompatible."
         )
-    if checkpoint.get("target_mode") != STRUCTURE_TARGET_MODE:
-        raise ValueError("Checkpoint is not a v7 binary structure model")
-    model_config = checkpoint["model_config"]
+    if checkpoint.get("target_mode") not in (
+        STRUCTURE_TARGET_MODE,
+        TRAJECTORY_TARGET_MODE,
+    ):
+        raise ValueError("Checkpoint target mode is unsupported")
+    model_config = dict(checkpoint["model_config"])
+    if (
+        checkpoint.get("format") != CHARACTER_CHECKPOINT_FORMAT
+        and "geometry_gate_threshold" not in model_config
+    ):
+        model_config["geometry_gate_threshold"] = 0.0
     if tuple(checkpoint.get("channel_names", ())) != tuple(SPATIAL_CHANNEL_NAMES):
         raise ValueError("Checkpoint spatial channel schema is missing or incompatible")
     model = build_character_generator(model_config).to(device)
@@ -110,7 +123,7 @@ def main(args) -> None:
         character=args.character,
         index=args.index,
     )
-    spatial_maps, _ = extract_character_spatial_maps(
+    spatial_maps, normalized_strokes = extract_character_spatial_maps(
         sample,
         canvas_size=int(model_config["image_size"]),
         padding=(
@@ -163,9 +176,57 @@ def main(args) -> None:
         "min_component_pixels": checkpoint.get("min_component_pixels"),
         "opening_iterations": checkpoint.get("opening_iterations"),
         "skeleton_tolerance": checkpoint.get("skeleton_tolerance"),
+        "render_min_width": checkpoint.get("render_min_width"),
+        "render_max_width": checkpoint.get("render_max_width"),
+        "render_pressure_gamma": checkpoint.get("render_pressure_gamma"),
+        "render_pressure_invert": checkpoint.get("render_pressure_invert"),
         "prediction_threshold": args.threshold,
     }
-    if args.target_image:
+    if checkpoint.get("target_mode") == TRAJECTORY_TARGET_MODE:
+        target, render_info = render_trajectory_target(
+            sample,
+            normalized_strokes,
+            canvas_size=int(model_config["image_size"]),
+            min_width=float(checkpoint["render_min_width"]),
+            max_width=float(checkpoint["render_max_width"]),
+            pressure_gamma=float(checkpoint["render_pressure_gamma"]),
+            pressure_invert=bool(checkpoint.get("render_pressure_invert", False)),
+        )
+        difference = np.abs(prediction - target)
+        mask_difference = np.abs(prediction_mask - target)
+        save_gray(target, output_dir / f"{stem}_target.png")
+        save_gray(difference, output_dir / f"{stem}_diff.png")
+        save_gray(mask_difference, output_dir / f"{stem}_mask_diff.png")
+        save_gray(
+            np.concatenate(
+                [spatial_maps[0], target, prediction, prediction_mask, mask_difference],
+                axis=1,
+            ),
+            output_dir / f"{stem}_comparison.png",
+        )
+        centerline = spatial_maps[0] > 0.5
+        target_binary = target >= 0.5
+        prediction_binary = prediction >= args.threshold
+        report.update({
+            "trajectory_target_render": render_info,
+            "panel_order": [
+                "trajectory",
+                "same_source_trajectory_target",
+                "prediction_probability",
+                "prediction_mask",
+                "mask_absolute_difference",
+            ],
+            "metrics": {
+                **image_metrics(prediction, target, threshold=args.threshold),
+                "trajectory_target_coverage": float(target_binary[centerline].mean()),
+                "trajectory_prediction_coverage": float(
+                    prediction_binary[centerline].mean()
+                ),
+                "trajectory_target_mean": float(target[centerline].mean()),
+                "trajectory_prediction_mean": float(prediction[centerline].mean()),
+            },
+        })
+    elif args.target_image:
         target_gray, target_transform = load_character_image(
             args.target_image,
             canvas_size=int(model_config["image_size"]),
@@ -219,13 +280,71 @@ def main(args) -> None:
             },
         })
 
+    if (
+        checkpoint.get("target_mode") == TRAJECTORY_TARGET_MODE
+        and args.target_image
+    ):
+        external_gray, external_transform = load_character_image(
+            args.target_image,
+            canvas_size=int(model_config["image_size"]),
+            padding=4,
+        )
+        aligned_external, external_registration = align_target_to_trajectory(
+            external_gray,
+            centerline=spatial_maps[0],
+            proximity=spatial_maps[1],
+        )
+        external_target, external_cleanup = build_structure_mask(
+            aligned_external,
+            threshold=0.35,
+            min_component_pixels=8,
+            opening_iterations=1,
+        )
+        external_difference = np.abs(prediction_mask - external_target)
+        save_gray(
+            aligned_external,
+            output_dir / f"{stem}_external_reference_gray.png",
+        )
+        save_gray(
+            external_target,
+            output_dir / f"{stem}_external_reference.png",
+        )
+        save_gray(
+            np.concatenate(
+                [
+                    spatial_maps[0],
+                    external_target,
+                    prediction,
+                    prediction_mask,
+                    external_difference,
+                ],
+                axis=1,
+            ),
+            output_dir / f"{stem}_external_reference_comparison.png",
+        )
+        report["external_reference"] = {
+            "warning": (
+                "The external image is evaluation-only and is not a model input. "
+                "Its stroke geometry may differ from the input trajectory."
+            ),
+            "target_image": str(args.target_image),
+            "target_transform": external_transform,
+            "target_registration": external_registration,
+            "structure_cleanup": external_cleanup,
+            "metrics": image_metrics(
+                prediction,
+                external_target,
+                threshold=args.threshold,
+            ),
+        }
+
     with open(output_dir / f"{stem}_metrics.json", "w", encoding="utf-8") as file:
         json.dump(report, file, ensure_ascii=False, indent=2)
     print(
         f"[DONE] Directly generated complete character {character!r} "
         f"with the spatial U-Net on {device}"
     )
-    if args.target_image:
+    if report.get("metrics"):
         for name, value in report["metrics"].items():
             print(f"{name}: {value:.6f}")
         print(f"[DONE] Comparison panel: {output_dir / (stem + '_comparison.png')}")

@@ -1,69 +1,76 @@
-# Fusion Model：v7 双向结构约束整字生成
+# Fusion Model：v8 轨迹忠实整字生成
 
-本仓库包含两条彼此独立的流程：
+本仓库包含两条独立流程：
 
 - 单笔 B-BSMG：保留原有单笔训练与推理代码。
-- 整字 U-Net：输入完整汉字轨迹，一次生成完整 `128×128` 汉字结构。
+- 整字 U-Net：输入一条完整汉字轨迹，一次生成完整 `128×128` 字形。
 
-当前整字版本是 **v7 双向结构约束模型**。它只学习清晰的笔画结构 Mask，暂不学习书法
-纹理、纸张纹理、拓片噪声或风格迁移。
+当前整字主流程是 **v8 轨迹几何优先模型**。它解决 v7 中最关键的数据冲突：
 
 ```text
-trajectories.csv 中的一条完整汉字轨迹
+v7：一条轨迹 + 另一位书写者的同字图片
+     → 笔画长度、位置、粗细和转折并非真正配对
+
+v8：一条轨迹 + 由这条轨迹自身生成的压力感知目标
+     → 长度、位置、起止点和交叉关系严格同源
+```
+
+v8 暂不做书法家风格迁移，也不使用 Transformer。
+
+```text
+完整 trajectories.csv 样本
   ↓
 6×128×128 空间条件图
   centerline / proximity / pressure / stroke_order / direction_cos / direction_sin
   ↓
-纯 U-Net（GroupNorm、多尺度跳跃连接，不使用 Transformer）
+压力感知的同源轨迹目标 Mask
   ↓
-完整汉字概率图
-  ↓ 指定阈值
-完整二值结构 Mask
+纯 U-Net + 轨迹邻域几何门控
+  ↓
+完整字形概率图与二值 Mask
 ```
 
-v7 的目标是先回答一个明确问题：
+## 1. v8 设计原则
 
-> 模型能否根据未见汉字的完整轨迹，生成位置正确、边界清楚、不过度铺墨的完整字形？
+### 轨迹是几何真值
 
-风格迁移不属于本版本范围。仅有轨迹而没有风格参考时，模型也无法唯一确定某位
-书法家的笔锋和墨色。
+模型输出必须忠实于输入轨迹。目标图不再由随机楷书图片决定，因此不会出现同一笔画
+长度、位置和走向互相冲突的问题。
 
-## 1. v7 相对 v6 的变化
+### 压力决定局部笔宽
 
-v6 已解决灰度目标导致的模糊光带，但结果仍容易沿轨迹整体加粗。原因是旧筛选主要
-检查“轨迹是否落在目标中”，不能充分排除“目标包含额外结构”或“轨迹与目标骨架
-不一致”的配对。v7 改为：
-
-1. 二值化后执行形态学开运算，再删除小型连通域，清除细碎拓片和扫描毛刺。
-2. 同时计算“目标骨架落入轨迹支撑区”和“轨迹靠近目标骨架”两项指标。
-3. 候选目标按配准分数与双向骨架分数共同排序，不再只依赖覆盖率。
-4. 新增 soft-clDice 拓扑损失，并加强边界、背景和墨量约束。
-5. `character_best.pt` 按结构评分保存，而不是按 composite loss 保存。
-6. 阈值扫描同时报告纯 IoU 最优阈值和兼顾边界、墨量的平衡阈值。
-
-当前格式：
+构建目标时，将每个轨迹点的 `z` 归一化，并映射到：
 
 ```text
-NPZ format       character_spatial_v7
-target_mode      binary_structure_mask
-checkpoint       character_unet_v5
-preprocessing    clean_register_script_structure_v4
+render_min_width ～ render_max_width
 ```
 
-以下旧文件不兼容：
+如果一条轨迹的所有 `z` 相同，使用中间宽度，不会全部渲染成最粗笔画。
+
+### 输出受轨迹邻域约束
+
+U-Net 输出乘以由 `proximity` 生成的几何门控。轨迹邻域之外的概率被压为零，防止模型
+生成与输入轨迹无关的额外墨迹。
+
+### 真实楷书图不再是像素真值
+
+`data/raw/images/` 可以保留给以后独立的风格阶段，但 v8 结构训练不读取这些图像。
+指定的外部武字图片在推理时也只用于额外视觉比较，不会输入模型。
+
+## 2. 格式与兼容性
 
 ```text
-character_sequence_v1
-character_spatial_v2 / v3 / v4 / v5 / v6
-character_generator_v1
-character_unet_v2 / v3 / v4
-单笔 bbsmg_best.pt
+NPZ format       character_spatial_v8
+target_mode      trajectory_faithful_mask
+checkpoint       character_unet_v6
+preprocessing    trajectory_pressure_render_v1
 ```
 
-v7 必须从原始轨迹和书法图重新构建数据，并从头训练。不能使用 v6 checkpoint
-`--resume` 或 `--init_character_checkpoint`。
+v8 必须重新构建数据并从头训练，不能从 v7 checkpoint 恢复或初始化。
 
-## 2. Ubuntu 环境准备
+旧 v7 数据和 checkpoint 仍可用于只读评估，但不能进入 v8 训练。
+
+## 3. Ubuntu 环境
 
 ```bash
 cd ~/coppeliasim/machine_learning/model
@@ -73,139 +80,88 @@ conda activate ddpm
 python -m pip install -r requirements-character.txt
 ```
 
-确认以下原始资源存在：
+确认轨迹文件存在：
 
 ```text
 data/raw/trajectories.csv
-data/raw/images/
-data/raw/json_files/
-data/raw/data.csv
-assets/targets/wu_kaishu_target.png
 ```
 
-`trajectories.csv` 至少要包含：
+至少包含：
 
 ```text
-character, stroke_id, point_id, x, y, z, ...
+character, sample_id, stroke_id, point_id, x, y, z, ...
 ```
 
-项目默认筛选 `data.csv` 中书体为“楷”的图像。OpenCC 用于把图像简体标注映射为
-繁体轨迹身份，例如“丑”映射为“醜”、“儿”映射为“兒”。
-
-## 3. 异常目标黑名单
-
-几何检查不能识别所有拓片内容。已确认的异常候选记录在：
-
-```text
-configs/character_target_exclusions.json
-```
-
-当前文件精确排除“乘”的一个噪声候选：
-
-```json
-{
-  "character": "乘",
-  "image_path": "data/raw/images/152/32.jpg",
-  "bbox": [0.0, 2023.0, 391.0, 2408.0]
-}
-```
-
-它只排除这个图像中的这个边界框，不排除“乘”字的其他候选。后续发现异常图时，
-按照审计清单中的 `character`、`image_path` 和 `bbox` 添加新项，不要直接删除审计
-PNG，也不要删除整个汉字。
-
-## 4. 构建 v7 全字符楷书数据
-
-不要覆盖 v6 文件：
+## 4. 构建 v8 同源轨迹数据
 
 ```bash
-python -u tools/build_character_pairs.py \
+python -u tools/build_trajectory_character_pairs.py \
   --config configs/default.yaml \
   --trajectory_csv data/raw/trajectories.csv \
-  --output_npz data/processed/character_all_kaishu_structure_v7.npz \
-  --chirography 楷 \
-  --require_real_target \
+  --output_npz data/processed/character_trajectory_faithful_v8.npz \
   --trajectory_padding 16 \
   --trajectory_width 3 \
-  --target_script traditional \
-  --structure_threshold 0.35 \
-  --min_component_pixels 8 \
-  --opening_iterations 1 \
-  --skeleton_tolerance 5 \
-  --min_target_skeleton_in_support_fraction 0.70 \
-  --min_trajectory_near_target_skeleton_fraction 0.60 \
-  --min_alignment_coverage 0.55 \
-  --min_support_dice 0.45 \
-  --max_outside_support_fraction 0.35 \
-  --min_target_support_area_ratio 0.30 \
-  --max_target_support_area_ratio 1.70 \
-  --max_target_ink_fraction 0.45 \
-  --max_foreground_bbox_fill_fraction 0.55 \
-  --max_border_ink_fraction 0.02 \
-  --max_target_candidates 64 \
-  --max_registered_candidates 8 \
-  --exclude_candidates_json configs/character_target_exclusions.json \
-  --audit_limit_per_status 2000
+  --render_min_width 4 \
+  --render_max_width 8 \
+  --pressure_gamma 1.0 \
+  --min_trajectory_coverage 0.999 \
+  --skeleton_tolerance 3 \
+  --audit_limit 500
 ```
 
-`--audit_limit_per_status 2000` 的目的是尽可能保存全部通过和质量拒绝样本，避免只看
-前 40 张产生误判。磁盘空间不足时可以改为 100。
+默认解释为 `z` 越大，笔画越宽。如果数据的物理含义相反，增加：
 
-正确输出应包含：
+```bash
+--pressure_invert
+```
+
+不要在未检查压力数据前随意使用这个选项。
+
+正确输出的关键检查应接近：
 
 ```text
-inputs shape: (N, 6, 128, 128)
-targets shape: (N, 1, 128, 128)
-target mode: binary_structure_mask
-target sources: {'real': N}
-target quality filter: rejected=...
-manually excluded target candidates: 1
-trajectory/target coverage: mean=...
-target skeleton in trajectory support: mean=...
-trajectory near target skeleton: mean=...
+target mode: trajectory_faithful_mask
+trajectory/target coverage: mean=1.000000, min≈1.000000
+symmetric skeleton score: 接近 1
 ```
 
 生成文件：
 
 ```text
-data/processed/character_all_kaishu_structure_v7.npz
-data/processed/character_all_kaishu_structure_v7.summary.json
-data/processed/character_all_kaishu_structure_v7.rejected.json
-data/processed/character_all_kaishu_structure_v7_audit/
-  accepted/
-  rejected/
-  audit_manifest.json
+data/processed/character_trajectory_faithful_v8.npz
+data/processed/character_trajectory_faithful_v8.summary.json
+data/processed/character_trajectory_faithful_v8.rejected.json
+data/processed/character_trajectory_faithful_v8_audit/
 ```
 
-审计图从左到右依次为：
+审计图从左到右：
 
 ```text
+轨迹中心线
 proximity
-配准前灰度目标
-配准后灰度目标
-v7 净化后二值结构目标
-红色结构目标 / 绿色轨迹重叠
+pressure
+同源目标 Mask
+红色目标 / 绿色中心线重叠
 ```
 
-训练前必须检查：
+训练前检查：
 
-- accepted 中是否仍有错字、大片墨块、错误裁剪或残留拓片内容；
-- 二值结构是否保留所有有效笔画；
-- rejected 中是否有大量明显正确样本；
-- `.summary.json` 中接受数量、拒绝原因和人工排除数量是否合理。
+- 目标必须包含完整中心线；
+- 笔画长度和位置必须与第一幅中心线一致；
+- 压力变化是否产生合理的局部宽度；
+- 如果整体过粗，先调整 `4～8`，不要用阈值补救数据目标；
+- 如果整体过细，可尝试 `5～9`。
 
-不要为了增加数量直接降低 `0.55` 覆盖阈值。先检查字形映射、源图和候选选择。
-
-## 5. 从头训练 v7
+## 5. 从头训练 v8
 
 GTX 1660 6GB 建议：
 
 ```bash
 python -u tools/train_character.py \
   --config configs/default.yaml \
-  --npz_path data/processed/character_all_kaishu_structure_v7.npz \
-  --output_dir outputs/character_general_structure_v7 \
-  --epochs 40 \
+  --npz_path data/processed/character_trajectory_faithful_v8.npz \
+  --output_dir outputs/character_trajectory_faithful_v8 \
+  --epochs 30 \
   --batch_size 4 \
   --val_ratio 0.1 \
   --split_mode character \
@@ -214,194 +170,124 @@ python -u tools/train_character.py \
   --min_lr 0.000001
 ```
 
-显存足够时可以使用 `--batch_size 8`。`--split_mode character` 会保证训练字符与验证
-字符身份互斥，因此验证集可以评价未见汉字泛化。
+显存不足时把 `batch_size` 改为 `2`。
 
-主要损失分项：
+v8 主要损失：
 
 ```text
 weighted_bce       二值像素分类
 dice_loss          整体重叠
-tversky_loss       更强惩罚假阳性和过度铺墨
-cldice_loss         笔画骨架连通与拓扑
-boundary_loss      笔画边界
+tversky_loss       过度铺墨
+cldice_loss         骨架拓扑
+boundary_loss      边界
 background_loss    背景漏墨
 confidence_loss    灰色不确定区域
-ink_loss           总含墨量
-trajectory_loss    仅在目标确有笔画的中心线上施加弱约束
+ink_loss           全字总墨量
+local_ink_loss     局部笔宽与局部墨量
+trajectory_loss    输入中心线连续覆盖
 ```
 
-输出：
+`character_best.pt` 仍按结构综合评分选择。正式评估不要使用
+`character_last.pt`。
 
-```text
-outputs/character_general_structure_v7/
-  character_best.pt
-  character_last.pt
-  character_epoch_*.pt
-  training_metrics.csv
-  split_manifest.json
-```
-
-正式评估始终使用 `character_best.pt`。v7 用
-`0.40×IoU + 0.30×Boundary F1 + 0.20×Dice + 0.10×墨量平衡` 选择最佳模型；
-每个 epoch 会在 `0.35–0.70` 中选择结构评分最高的阈值，避免固定 `0.5` 误选模型。
-ReduceLROnPlateau 仍只依据验证损失调整学习率。增加 epoch 不等于效果更好。
-
-## 6. 验证集评估与阈值选择
+## 6. 验证未见字符
 
 ```bash
 python -u tools/evaluate_character.py \
   --config configs/default.yaml \
-  --npz_path data/processed/character_all_kaishu_structure_v7.npz \
-  --checkpoint outputs/character_general_structure_v7/character_best.pt \
-  --output_dir outputs/eval_character_general_structure_v7 \
+  --npz_path data/processed/character_trajectory_faithful_v8.npz \
+  --checkpoint outputs/character_trajectory_faithful_v8/character_best.pt \
+  --output_dir outputs/eval_character_trajectory_faithful_v8 \
   --split val \
   --batch_size 4 \
-  --num_images 100 \
+  --num_images 200 \
   --threshold 0.50 \
-  --thresholds 0.30,0.35,0.40,0.45,0.50,0.55,0.60,0.65,0.70
+  --thresholds 0.35,0.40,0.45,0.50,0.55,0.60,0.65
 ```
 
 重点指标：
 
 ```text
-macro_metrics.dice_at_threshold
 macro_metrics.iou_at_threshold
+macro_metrics.dice_at_threshold
 macro_metrics.boundary_f1
-macro_metrics.uncertain_fraction
-macro_metrics.probability_ink_ratio
-macro_metrics.mask_ink_ratio
-background_mean
 trajectory_prediction_coverage
-trajectory_target_coverage
-best_threshold_by_macro_iou
+mask_ink_ratio
+uncertain_fraction
 best_threshold_by_balanced_score
 ```
 
-理想方向：
+在 v8 中，验证字符身份与训练字符互斥，但验证目标仍由各自轨迹生成，因此评价的是：
 
-```text
-Dice / IoU / Boundary F1       越高越好
-uncertain_fraction             越低越好
-background_mean                越低越好
-mask_ink_ratio                 接近 1
-prediction/target coverage     差距缩小
-```
+> 模型能否把从未见过的轨迹结构可靠地渲染成完整字形。
 
-输出的 `character_*_comparison.png` 从左到右为：
+## 7. 生成“武”字
 
-```text
-轨迹
-目标结构 Mask
-预测概率图
-预测二值 Mask
-二值绝对差异
-```
-
-完整结果位于：
-
-```text
-metrics.json
-metrics.csv
-per_character_metrics.csv
-```
-
-优先从 `metrics.json -> best_threshold_by_balanced_score.threshold` 读取部署阈值。它兼顾
-IoU、边界和二值墨量；`best_threshold_by_macro_iou` 只用于报告重叠率上限。最终部署和
-单字预测应使用同一个阈值，而不是默认永远使用 `0.5`。
-
-## 7. 用冻结模型生成“武”字
-
-假设验证集最佳阈值为 `0.45`：
+先使用验证集平衡阈值。假设最佳阈值为 `0.50`：
 
 ```bash
 python -u tools/predict_character.py \
   --config configs/default.yaml \
   --trajectory_csv data/raw/trajectories.csv \
-  --checkpoint outputs/character_general_structure_v7/character_best.pt \
+  --checkpoint outputs/character_trajectory_faithful_v8/character_best.pt \
   --character 武 \
-  --target_image assets/targets/wu_kaishu_target.png \
-  --output_dir outputs/wu_structure_v7 \
-  --output_stem wu_structure \
+  --output_dir outputs/wu_trajectory_faithful_v8 \
+  --output_stem wu_v8 \
   --trajectory_padding 16 \
   --trajectory_width 3 \
-  --threshold 0.45
+  --threshold 0.50
 ```
 
-结果：
+主要对比图：
 
 ```text
-wu_structure_trajectory.png
-wu_structure_proximity.png
-wu_structure_target_gray.png
-wu_structure_target.png
-wu_structure_prediction.png
-wu_structure_prediction_mask.png
-wu_structure_diff.png
-wu_structure_mask_diff.png
-wu_structure_comparison.png
-wu_structure_metrics.json
+wu_v8_comparison.png
 ```
 
-`prediction.png` 是网络概率图；用于机器人轨迹后续处理或结构评价的正式结果是
-`prediction_mask.png`。目标图只用于比较，不会在推理时输入模型。
+面板顺序：
 
-## 8. 泛化能力的正确验证方式
+```text
+输入轨迹
+同源压力渲染目标
+U-Net 概率预测
+二值预测
+二值差异
+```
 
-上面的 `--split val --split_mode character` 已经是多字符泛化测试。还可以建立一个完全
-独立、从未参与训练的字符集合。不要使用单个“永”字代表总体泛化能力，建议至少
-20 个字符。
-
-以单个“永”做流程检查：
+如需额外显示原来的楷书武字参考：
 
 ```bash
-python -u tools/build_character_pairs.py \
+python -u tools/predict_character.py \
   --config configs/default.yaml \
   --trajectory_csv data/raw/trajectories.csv \
-  --output_npz data/processed/yong_unseen_structure_v7.npz \
-  --character 永 \
-  --chirography 楷 \
-  --require_real_target \
+  --checkpoint outputs/character_trajectory_faithful_v8/character_best.pt \
+  --character 武 \
+  --target_image assets/targets/wu_kaishu_target.png \
+  --output_dir outputs/wu_trajectory_faithful_v8 \
+  --output_stem wu_v8 \
   --trajectory_padding 16 \
   --trajectory_width 3 \
-  --target_script traditional \
-  --structure_threshold 0.35 \
-  --min_component_pixels 8 \
-  --opening_iterations 1 \
-  --skeleton_tolerance 5 \
-  --min_target_skeleton_in_support_fraction 0.70 \
-  --min_trajectory_near_target_skeleton_fraction 0.60 \
-  --min_alignment_coverage 0.55 \
-  --exclude_candidates_json configs/character_target_exclusions.json
+  --threshold 0.50
 ```
 
-冻结 checkpoint 直接评价，不能微调：
+这会额外生成：
 
-```bash
-python -u tools/evaluate_character.py \
-  --config configs/default.yaml \
-  --npz_path data/processed/yong_unseen_structure_v7.npz \
-  --checkpoint outputs/character_general_structure_v7/character_best.pt \
-  --output_dir outputs/yong_unseen_structure_v7 \
-  --split all \
-  --character 永 \
-  --batch_size 1 \
-  --num_images 1 \
-  --threshold 0.45
+```text
+wu_v8_external_reference_comparison.png
 ```
 
-必须先确认 `split_manifest.json` 的 `train_characters` 中没有被测字符。
+外部楷书图只用于说明两套写法的差异，不参与同源轨迹指标。
 
-## 9. 继续训练与微调
+## 8. 继续训练
 
-在完全相同的 v7 NPZ 上继续训练到总计 80 epoch：
+只能在完全相同的 v8 NPZ 上恢复：
 
 ```bash
 python -u tools/train_character.py \
   --config configs/default.yaml \
-  --npz_path data/processed/character_all_kaishu_structure_v7.npz \
-  --resume outputs/character_general_structure_v7/character_last.pt \
-  --epochs 80 \
+  --npz_path data/processed/character_trajectory_faithful_v8.npz \
+  --resume outputs/character_trajectory_faithful_v8/character_last.pt \
+  --epochs 50 \
   --batch_size 4 \
   --val_ratio 0.1 \
   --split_mode character \
@@ -410,62 +296,49 @@ python -u tools/train_character.py \
   --min_lr 0.000001
 ```
 
-`--epochs 80` 表示训练到总计 80 epoch，不是额外再训练 80 epoch。
+`--epochs 50` 表示训练到总计 50 epoch。
 
-只针对“武”微调可以用于检查模型容量或制作单字演示，但它属于拟合实验，不能再用于
-证明泛化能力。微调也只能加载 v7 `character_unet_v5` checkpoint。
+## 9. 如何解释 v8 结果
 
-## 10. 常见问题
+### 同源目标效果好，外部楷书参考差
 
-### 提示 NPZ 格式不兼容
+这是正常现象：两者笔画几何不同。说明模型忠实于轨迹，但没有学习外部图片的写法。
 
-说明使用了 v5 或更早数据。重新运行第 4 节，不能仅修改文件名或
-`format_version`。
+### 同源目标仍有长度或位置偏移
 
-### 提示 checkpoint 不兼容
-
-v7 不能加载 `character_unet_v4` 或 `bbsmg_best.pt`。从头训练 v7。
-
-### 输出概率图仍有灰色边缘
-
-概率图允许存在不确定值。先查看 `prediction_mask.png`，并使用验证集扫描得到的最佳
-阈值。若二值 Mask 仍明显偏粗，再根据 `mask_ink_ratio`、`background_mean` 和 Boundary F1
-调整模型，而不是仅延长训练。
-
-### 目标 Mask 丢失细笔画
-
-先降低 `--structure_threshold`，例如从 `0.35` 改为 `0.30`；如果只丢失孤立的小笔画，
-再把 `--min_component_pixels` 从 `8` 改为 `4`。修改后必须重新检查 accepted 审计图。
-
-### accepted 中出现噪声图
-
-把审计清单中的精确 `character`、`image_path` 和 `bbox` 加入
-`configs/character_target_exclusions.json`，然后重新构建 NPZ。
-
-### CUDA 显存不足
-
-依次尝试：
+优先检查：
 
 ```text
-batch_size 8 → 4 → 2
+trajectory_prediction_coverage
+geometry_gate_threshold
+comparison 图第一、二、四幅
 ```
 
-不要修改输入尺寸或通道数，否则 checkpoint 与数据格式会不兼容。
+v8 的几何门控应使轨迹之外的远距离墨迹为零。
 
-## 11. 不属于 v7 的内容
+### 整体粗细不合适
 
-v7 不做：
-
-- 根据参考图迁移书法家风格；
-- 生成纸张、拓片和墨色纹理；
-- 用单字微调结果证明泛化；
-- 逐笔预测后再叠加整字；
-- Transformer 或全局 token pooling。
-
-完成结构泛化后，风格迁移应作为独立的第二阶段：
+重新构建数据并调整：
 
 ```text
-v7 结构 Mask + 风格参考图 → 风格化书法图
+render_min_width
+render_max_width
 ```
 
-该阶段不会与当前 v7 结构模型混在一起训练。
+不要只调整推理阈值，因为目标笔宽本身应先符合项目需求。
+
+## 10. v8 不解决的内容
+
+v8 不做：
+
+- 复现任意外部楷书图片的具体笔画布局；
+- 书法家风格迁移；
+- 纸张、拓片和墨色纹理；
+- 用训练集中的武字证明字符泛化；
+- Transformer 或逐笔图像叠加。
+
+后续风格阶段应保持几何分离：
+
+```text
+v8 轨迹忠实结构 Mask + 风格参考 → 风格化书法图
+```

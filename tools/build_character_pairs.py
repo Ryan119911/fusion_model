@@ -13,7 +13,7 @@ if __package__ in (None, ""):
 
 from config import ensure_dirs, load_config
 from datasets.calligraphy_image_dataset import CalligraphyImageDataset
-from datasets.character_dataset import CHARACTER_DATA_FORMAT
+from datasets.character_dataset import LEGACY_CHARACTER_DATA_FORMAT
 from datasets.trajectory_dataset import load_trajectory_csv
 from utils.character_features import SPATIAL_CHANNEL_NAMES, extract_character_spatial_maps
 from utils.character_alignment import align_target_to_trajectory, alignment_metrics
@@ -27,6 +27,7 @@ from utils.structure_mask import (
 
 
 TARGET_PADDING = 4
+CHARACTER_DATA_FORMAT = LEGACY_CHARACTER_DATA_FORMAT
 
 
 def rasterize_character(

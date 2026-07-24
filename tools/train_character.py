@@ -27,7 +27,7 @@ from models.character_generator import (
     build_character_generator,
 )
 from tools.train_bbsmg import set_seed
-from utils.structure_mask import STRUCTURE_TARGET_MODE
+from utils.trajectory_target import TRAJECTORY_TARGET_MODE
 
 
 def binary_boundary_f1(
@@ -124,8 +124,9 @@ class StructureMaskLoss(nn.Module):
         boundary_weight: float = 0.5,
         background_weight: float = 0.75,
         confidence_weight: float = 0.2,
-        ink_weight: float = 0.5,
-        trajectory_weight: float = 0.01,
+        ink_weight: float = 0.25,
+        local_ink_weight: float = 0.75,
+        trajectory_weight: float = 0.25,
         bce_pos_weight: float = 1.0,
         tversky_alpha: float = 0.8,
         tversky_beta: float = 0.2,
@@ -140,6 +141,7 @@ class StructureMaskLoss(nn.Module):
         self.background_weight = float(background_weight)
         self.confidence_weight = float(confidence_weight)
         self.ink_weight = float(ink_weight)
+        self.local_ink_weight = float(local_ink_weight)
         self.trajectory_weight = float(trajectory_weight)
         self.bce_pos_weight = float(bce_pos_weight)
         self.tversky_alpha = float(tversky_alpha)
@@ -234,6 +236,16 @@ class StructureMaskLoss(nn.Module):
             preds.mean(dim=dims),
             targets.mean(dim=dims),
         )
+        local_ink_loss = 0.5 * (
+            F.l1_loss(
+                F.avg_pool2d(preds, kernel_size=5, stride=1, padding=2),
+                F.avg_pool2d(targets, kernel_size=5, stride=1, padding=2),
+            )
+            + F.l1_loss(
+                F.avg_pool2d(preds, kernel_size=11, stride=1, padding=5),
+                F.avg_pool2d(targets, kernel_size=11, stride=1, padding=5),
+            )
+        )
         if inputs is None:
             raise ValueError("Whole-character loss requires trajectory input maps")
         centerline = inputs[:, 0:1].clamp(0.0, 1.0)
@@ -251,6 +263,7 @@ class StructureMaskLoss(nn.Module):
             "background_loss": background_loss,
             "confidence_loss": confidence_loss,
             "ink_loss": ink_loss,
+            "local_ink_loss": local_ink_loss,
             "trajectory_loss": trajectory_loss,
         }
 
@@ -264,6 +277,7 @@ class StructureMaskLoss(nn.Module):
             + self.background_weight * components["background_loss"]
             + self.confidence_weight * components["confidence_loss"]
             + self.ink_weight * components["ink_loss"]
+            + self.local_ink_weight * components["local_ink_loss"]
             + self.trajectory_weight * components["trajectory_loss"]
         )
 
@@ -423,6 +437,10 @@ def save_checkpoint(
     min_component_pixels,
     opening_iterations,
     skeleton_tolerance,
+    render_min_width,
+    render_max_width,
+    render_pressure_gamma,
+    render_pressure_invert,
     train_indices,
     val_indices,
 ) -> None:
@@ -435,6 +453,10 @@ def save_checkpoint(
         "min_component_pixels": int(min_component_pixels),
         "opening_iterations": int(opening_iterations),
         "skeleton_tolerance": int(skeleton_tolerance),
+        "render_min_width": float(render_min_width),
+        "render_max_width": float(render_max_width),
+        "render_pressure_gamma": float(render_pressure_gamma),
+        "render_pressure_invert": bool(render_pressure_invert),
         "epoch": epoch,
         "model_state": model.state_dict(),
         "optimizer_state": optimizer.state_dict(),
@@ -505,10 +527,19 @@ def main(args) -> None:
     ):
         raise ValueError(
             f"--init_character_checkpoint requires {CHARACTER_CHECKPOINT_FORMAT}; "
-            "v7 must not initialize from older or grayscale-target checkpoints."
+            "v8 must not initialize from older or unpaired-target checkpoints."
         )
 
     dataset = CharacterTrainDataset(args.npz_path)
+    if dataset.data_format != CHARACTER_DATA_FORMAT:
+        raise ValueError(
+            f"Training requires {CHARACTER_DATA_FORMAT}; rebuild with "
+            "tools/build_trajectory_character_pairs.py"
+        )
+    if dataset.target_mode != TRAJECTORY_TARGET_MODE:
+        raise ValueError(
+            f"Training requires target_mode={TRAJECTORY_TARGET_MODE!r}"
+        )
     for label, checkpoint in (
         ("resume", resume_checkpoint),
         ("initialization", character_init_checkpoint),
@@ -519,9 +550,9 @@ def main(args) -> None:
             raise ValueError(
                 f"{label} checkpoint data format does not match {CHARACTER_DATA_FORMAT}"
             )
-        if checkpoint.get("target_mode") != STRUCTURE_TARGET_MODE:
+        if checkpoint.get("target_mode") != TRAJECTORY_TARGET_MODE:
             raise ValueError(
-                f"{label} checkpoint does not use {STRUCTURE_TARGET_MODE}"
+                f"{label} checkpoint does not use {TRAJECTORY_TARGET_MODE}"
             )
         if abs(
             float(checkpoint.get("structure_threshold", -1.0))
@@ -551,6 +582,22 @@ def main(args) -> None:
             raise ValueError(
                 f"{label} checkpoint skeleton tolerance differs from this NPZ"
             )
+        for key, dataset_value in (
+            ("render_min_width", dataset.render_min_width),
+            ("render_max_width", dataset.render_max_width),
+            ("render_pressure_gamma", dataset.render_pressure_gamma),
+        ):
+            if abs(float(checkpoint.get(key, -1.0)) - dataset_value) > 1e-6:
+                raise ValueError(
+                    f"{label} checkpoint {key} differs from this NPZ"
+                )
+        if (
+            bool(checkpoint.get("render_pressure_invert", False))
+            != dataset.render_pressure_invert
+        ):
+            raise ValueError(
+                f"{label} checkpoint pressure direction differs from this NPZ"
+            )
     model_config = asdict(cfg.character_generator)
     if resume_checkpoint and resume_checkpoint.get("model_config"):
         model_config = dict(resume_checkpoint["model_config"])
@@ -560,6 +607,10 @@ def main(args) -> None:
         raise ValueError("NPZ channels do not match character_generator.input_channels")
     if dataset.inputs.shape[-1] != int(model_config["image_size"]):
         raise ValueError("NPZ spatial size does not match character_generator.image_size")
+    if float(model_config.get("geometry_gate_threshold", 0.0)) <= 0.0:
+        raise ValueError(
+            "v8 training requires character_generator.geometry_gate_threshold > 0"
+        )
 
     if resume_checkpoint and resume_checkpoint.get("train_indices") is not None:
         train_indices = list(resume_checkpoint["train_indices"])
@@ -578,30 +629,6 @@ def main(args) -> None:
             train_indices, val_indices = deterministic_split_indices(
                 len(dataset), args.val_ratio, cfg.train.seed
             )
-        # An explicitly supplied target (for example the user's 武 image) is a
-        # fitting target, so keep it in training instead of losing it to a
-        # random validation split. Validation still measures the other glyphs.
-        external_characters = set()
-        for index in range(len(dataset)):
-            value = metadata_dict(dataset.metadata[index])
-            if isinstance(value, dict) and value.get("target_source") == "external":
-                external_characters.add(str(value.get("character") or ""))
-        if external_characters:
-            moved_indices = []
-            for index in list(val_indices):
-                value = metadata_dict(dataset.metadata[index])
-                if (
-                    isinstance(value, dict)
-                    and str(value.get("character") or "") in external_characters
-                ):
-                    moved_indices.append(index)
-            if moved_indices:
-                val_indices = [index for index in val_indices if index not in moved_indices]
-                train_indices.extend(moved_indices)
-                print(
-                    f"[SPLIT] Kept {len(moved_indices)} sample(s) from external-target "
-                    "characters in training"
-                )
     batch_size = args.batch_size or cfg.train.batch_size
     train_loader = DataLoader(
         Subset(dataset, train_indices),
@@ -656,6 +683,12 @@ def main(args) -> None:
             "seed": cfg.train.seed,
             "val_ratio": args.val_ratio,
             "split_mode": args.split_mode,
+            "data_format": dataset.data_format,
+            "target_mode": dataset.target_mode,
+            "render_min_width": dataset.render_min_width,
+            "render_max_width": dataset.render_max_width,
+            "render_pressure_gamma": dataset.render_pressure_gamma,
+            "render_pressure_invert": dataset.render_pressure_invert,
             "train_indices": train_indices,
             "val_indices": val_indices,
             "train_characters": sorted({
@@ -719,6 +752,10 @@ def main(args) -> None:
             dataset.min_component_pixels,
             dataset.opening_iterations,
             dataset.skeleton_tolerance,
+            dataset.render_min_width,
+            dataset.render_max_width,
+            dataset.render_pressure_gamma,
+            dataset.render_pressure_invert,
             train_indices,
             val_indices,
         )

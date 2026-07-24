@@ -21,6 +21,7 @@ from datasets.character_dataset import (
 )
 from models.character_generator import (
     CHARACTER_CHECKPOINT_FORMAT,
+    SUPPORTED_CHARACTER_CHECKPOINT_FORMATS,
     build_character_generator,
 )
 from tools.train_bbsmg import set_seed
@@ -112,22 +113,30 @@ def main(args) -> None:
         cfg.train.device if torch.cuda.is_available() or cfg.train.device == "cpu" else "cpu"
     )
     checkpoint = torch.load(args.checkpoint, map_location=device)
-    if checkpoint.get("format") != CHARACTER_CHECKPOINT_FORMAT:
+    if checkpoint.get("format") not in SUPPORTED_CHARACTER_CHECKPOINT_FORMATS:
         raise ValueError(
-            f"Expected {CHARACTER_CHECKPOINT_FORMAT}. Rebuild the v7 structure NPZ "
-            "and train the structure-first U-Net from scratch."
+            f"Expected one of {SUPPORTED_CHARACTER_CHECKPOINT_FORMATS}. "
+            "Rebuild the trajectory-faithful NPZ and train the U-Net from scratch."
         )
     model_config = checkpoint.get("model_config")
     if not model_config:
         raise ValueError("Checkpoint does not contain model_config")
+    model_config = dict(model_config)
+    if (
+        checkpoint.get("format") != CHARACTER_CHECKPOINT_FORMAT
+        and "geometry_gate_threshold" not in model_config
+    ):
+        # Reproduce legacy v7 output exactly; the hard geometry gate is a v8
+        # architectural constraint and was not present in those checkpoints.
+        model_config["geometry_gate_threshold"] = 0.0
     model = build_character_generator(model_config).to(device)
     model.load_state_dict(checkpoint["model_state"])
     model.eval()
 
     dataset = CharacterTrainDataset(args.npz_path)
-    if checkpoint.get("data_format") != CHARACTER_DATA_FORMAT:
+    if checkpoint.get("data_format") != dataset.data_format:
         raise ValueError(
-            f"Checkpoint was not trained with {CHARACTER_DATA_FORMAT} data"
+            "Checkpoint and NPZ data formats differ"
         )
     if checkpoint.get("target_mode") != dataset.target_mode:
         raise ValueError("Checkpoint and NPZ target modes differ")
@@ -142,6 +151,19 @@ def main(args) -> None:
         raise ValueError("Checkpoint and NPZ morphology-cleanup settings differ")
     if int(checkpoint.get("skeleton_tolerance", -1)) != dataset.skeleton_tolerance:
         raise ValueError("Checkpoint and NPZ skeleton tolerances differ")
+    if dataset.data_format == CHARACTER_DATA_FORMAT:
+        for key, dataset_value in (
+            ("render_min_width", dataset.render_min_width),
+            ("render_max_width", dataset.render_max_width),
+            ("render_pressure_gamma", dataset.render_pressure_gamma),
+        ):
+            if abs(float(checkpoint.get(key, -1.0)) - dataset_value) > 1e-6:
+                raise ValueError(f"Checkpoint and NPZ {key} values differ")
+        if (
+            bool(checkpoint.get("render_pressure_invert", False))
+            != dataset.render_pressure_invert
+        ):
+            raise ValueError("Checkpoint and NPZ pressure directions differ")
     if tuple(checkpoint.get("channel_names", ())) != tuple(dataset.channel_names):
         raise ValueError("Checkpoint and NPZ spatial channel schemas differ")
     if int(checkpoint.get("trajectory_padding", -1)) != dataset.trajectory_padding:
@@ -336,6 +358,11 @@ def main(args) -> None:
         "checkpoint_val_metrics": checkpoint.get("val_metrics"),
         "trajectory_padding": checkpoint.get("trajectory_padding"),
         "trajectory_width": checkpoint.get("trajectory_width"),
+        "target_mode": checkpoint.get("target_mode"),
+        "render_min_width": checkpoint.get("render_min_width"),
+        "render_max_width": checkpoint.get("render_max_width"),
+        "render_pressure_gamma": checkpoint.get("render_pressure_gamma"),
+        "render_pressure_invert": checkpoint.get("render_pressure_invert"),
         "operating_threshold": args.threshold,
         "threshold_sweep": threshold_sweep,
         "best_threshold_by_macro_iou": best_threshold,

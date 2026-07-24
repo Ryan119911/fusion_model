@@ -67,8 +67,9 @@ class CharacterGeneratorConfig:
     use_tanh: bool = False
     prior_strength: float = 0.75
     prior_channel: int = 1
-    prior_threshold: float = 0.70
+    prior_threshold: float = 0.35
     prior_sharpness: float = 10.0
+    geometry_gate_threshold: float = 0.03
 
 
 # 中文注释：动态笔刷模型的多项式阶数和物理近似参数配置。

@@ -8,9 +8,15 @@ from torch.utils.data import Dataset
 
 from utils.character_features import SPATIAL_CHANNEL_NAMES
 from utils.structure_mask import STRUCTURE_TARGET_MODE
+from utils.trajectory_target import TRAJECTORY_TARGET_MODE
 
 
-CHARACTER_DATA_FORMAT = "character_spatial_v7"
+CHARACTER_DATA_FORMAT = "character_spatial_v8"
+LEGACY_CHARACTER_DATA_FORMAT = "character_spatial_v7"
+SUPPORTED_CHARACTER_DATA_FORMATS = (
+    CHARACTER_DATA_FORMAT,
+    LEGACY_CHARACTER_DATA_FORMAT,
+)
 
 
 class CharacterTrainDataset(Dataset):
@@ -26,16 +32,15 @@ class CharacterTrainDataset(Dataset):
         if missing:
             raise ValueError(
                 f"Character NPZ is missing keys {sorted(missing)}. "
-                "Rebuild it with build_character_pairs.py."
+                "Rebuild it with tools/build_trajectory_character_pairs.py."
             )
 
-        data_format = str(np.asarray(data["format_version"]).item())
-        if data_format != CHARACTER_DATA_FORMAT:
+        self.data_format = str(np.asarray(data["format_version"]).item())
+        if self.data_format not in SUPPORTED_CHARACTER_DATA_FORMATS:
             raise ValueError(
-                f"Unsupported character NPZ format {data_format!r}; expected "
-                f"{CHARACTER_DATA_FORMAT!r}. v7 requires morphologically cleaned, "
-                "skeleton-checked structure-mask targets; "
-                "older grayscale NPZ files must be rebuilt."
+                f"Unsupported character NPZ format {self.data_format!r}; expected one of "
+                f"{SUPPORTED_CHARACTER_DATA_FORMATS!r}. Rebuild it with the current "
+                "trajectory-faithful data builder."
             )
 
         self.inputs = np.asarray(data["inputs"], dtype=np.float16)
@@ -106,6 +111,26 @@ class CharacterTrainDataset(Dataset):
             if "skeleton_tolerance" in data.files
             else -1
         )
+        self.render_min_width = float(
+            np.asarray(data["render_min_width"]).item()
+            if "render_min_width" in data.files
+            else -1.0
+        )
+        self.render_max_width = float(
+            np.asarray(data["render_max_width"]).item()
+            if "render_max_width" in data.files
+            else -1.0
+        )
+        self.render_pressure_gamma = float(
+            np.asarray(data["render_pressure_gamma"]).item()
+            if "render_pressure_gamma" in data.files
+            else -1.0
+        )
+        self.render_pressure_invert = bool(
+            np.asarray(data["render_pressure_invert"]).item()
+            if "render_pressure_invert" in data.files
+            else False
+        )
 
         if self.inputs.ndim != 4:
             raise ValueError(f"inputs must have shape [N,C,H,W], got {self.inputs.shape}")
@@ -129,20 +154,37 @@ class CharacterTrainDataset(Dataset):
             raise ValueError("Input maps and target images must share the same spatial size")
         if not np.isfinite(self.inputs).all() or not np.isfinite(self.targets).all():
             raise ValueError("Character NPZ contains NaN or Inf")
-        if self.target_mode != STRUCTURE_TARGET_MODE:
+        expected_target_mode = (
+            TRAJECTORY_TARGET_MODE
+            if self.data_format == CHARACTER_DATA_FORMAT
+            else STRUCTURE_TARGET_MODE
+        )
+        if self.target_mode != expected_target_mode:
             raise ValueError(
-                f"Expected target_mode={STRUCTURE_TARGET_MODE!r}, got {self.target_mode!r}"
+                f"Expected target_mode={expected_target_mode!r} for "
+                f"{self.data_format}, got {self.target_mode!r}"
             )
         if not np.all(np.logical_or(self.targets == 0.0, self.targets == 1.0)):
-            raise ValueError("v7 structure targets must contain only binary 0/1 values")
-        if self.opening_iterations < 0 or self.skeleton_tolerance < 0:
+            raise ValueError("Whole-character targets must contain only binary 0/1 values")
+        if self.data_format == LEGACY_CHARACTER_DATA_FORMAT and (
+            self.opening_iterations < 0 or self.skeleton_tolerance < 0
+        ):
             raise ValueError(
                 "v7 NPZ is missing morphology/skeleton preprocessing metadata"
+            )
+        if self.data_format == CHARACTER_DATA_FORMAT and (
+            self.render_min_width < 1.0
+            or self.render_max_width < self.render_min_width
+            or self.render_pressure_gamma <= 0.0
+        ):
+            raise ValueError(
+                "v8 NPZ is missing trajectory renderer width/pressure metadata"
             )
 
         print("[CHECK] spatial trajectory inputs shape:", self.inputs.shape)
         print("[CHECK] whole-character targets shape:", self.targets.shape)
         print("[CHECK] input channels:", ", ".join(self.channel_names))
+        print(f"[CHECK] data format: {self.data_format}")
         print(
             "[CHECK] target preprocessing:",
             self.preprocessing_version,
@@ -156,6 +198,13 @@ class CharacterTrainDataset(Dataset):
             f"opening_iterations={self.opening_iterations}, "
             f"skeleton_tolerance={self.skeleton_tolerance}"
         )
+        if self.data_format == CHARACTER_DATA_FORMAT:
+            print(
+                "[CHECK] trajectory target renderer: "
+                f"width={self.render_min_width:.2f}-{self.render_max_width:.2f}, "
+                f"pressure_gamma={self.render_pressure_gamma:.3f}, "
+                f"pressure_invert={self.render_pressure_invert}"
+            )
 
     def __len__(self) -> int:
         return self.inputs.shape[0]

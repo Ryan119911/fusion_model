@@ -52,12 +52,13 @@ character_generator:
   depth: 4
   dropout: 0.1
   use_tanh: false
-  # v6 uses a narrow, learnable proximity-logit gate instead of the fixed
-  # smooth v3 prior. These values only define its initialization.
+  # A narrow learnable prior initializes ink on the trajectory. The v8
+  # geometry gate suppresses pixels outside the trajectory neighborhood.
   prior_strength: 0.75
   prior_channel: 1
-  prior_threshold: 0.70
+  prior_threshold: 0.35
   prior_sharpness: 10.0
+  geometry_gate_threshold: 0.03
 
 # 中文注释：动态笔刷标定和物理近似参数配置。
 dynamic_brush:

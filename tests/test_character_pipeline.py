@@ -20,6 +20,10 @@ from utils.structure_mask import (
     build_structure_mask,
     symmetric_structure_metrics,
 )
+from utils.trajectory_target import (
+    TRAJECTORY_TARGET_MODE,
+    render_trajectory_target,
+)
 from utils.types import (
     CharacterTrajectory,
     PointState,
@@ -80,7 +84,7 @@ class CharacterPipelineTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(output).all())
         self.assertFalse(any(isinstance(module, torch.nn.Transformer) for module in model.modules()))
 
-    def test_v7_proximity_prior_is_narrow_and_learnable(self):
+    def test_v8_proximity_prior_is_narrow_learnable_and_gated(self):
         model = CharacterUNet(
             input_channels=6,
             base_channels=8,
@@ -98,6 +102,26 @@ class CharacterPipelineTest(unittest.TestCase):
         self.assertLess(float(output[0, 0, 0, 0].detach()), 0.1)
         output.mean().backward()
         self.assertIsNotNone(model.prior_gain_raw.grad)
+
+    def test_v8_trajectory_target_preserves_centerline_geometry(self):
+        inputs, normalized_strokes = extract_character_spatial_maps(
+            self.sample,
+            canvas_size=32,
+            padding=4,
+            line_width=2,
+        )
+        target, info = render_trajectory_target(
+            self.sample,
+            normalized_strokes,
+            canvas_size=32,
+            min_width=4.0,
+            max_width=8.0,
+        )
+        centerline = inputs[0] >= 0.5
+        self.assertEqual(info["mode"], TRAJECTORY_TARGET_MODE)
+        self.assertEqual(float(target[centerline].mean()), 1.0)
+        self.assertAlmostEqual(info["rendered_width_mean"], 6.0)
+        self.assertGreater(float(target.sum()), float(centerline.sum()))
 
     def test_image_preprocessing_uses_ink_positive_polarity(self):
         image = np.full((20, 30), 255, dtype=np.uint8)

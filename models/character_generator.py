@@ -5,7 +5,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-CHARACTER_CHECKPOINT_FORMAT = "character_unet_v5"
+CHARACTER_CHECKPOINT_FORMAT = "character_unet_v6"
+LEGACY_CHARACTER_CHECKPOINT_FORMAT = "character_unet_v5"
+SUPPORTED_CHARACTER_CHECKPOINT_FORMATS = (
+    CHARACTER_CHECKPOINT_FORMAT,
+    LEGACY_CHARACTER_CHECKPOINT_FORMAT,
+)
 
 
 def _group_count(channels: int) -> int:
@@ -79,8 +84,9 @@ class CharacterUNet(nn.Module):
         use_tanh: bool = False,
         prior_strength: float = 0.75,
         prior_channel: int = 1,
-        prior_threshold: float = 0.70,
+        prior_threshold: float = 0.35,
         prior_sharpness: float = 10.0,
+        geometry_gate_threshold: float = 0.03,
     ):
         super().__init__()
         if input_channels < 1:
@@ -97,6 +103,8 @@ class CharacterUNet(nn.Module):
             raise ValueError("prior_threshold must satisfy 0 < value < 1")
         if prior_sharpness <= 0:
             raise ValueError("prior_sharpness must be positive")
+        if geometry_gate_threshold < 0:
+            raise ValueError("geometry_gate_threshold must be non-negative")
 
         self.input_channels = input_channels
         self.image_size = image_size
@@ -104,7 +112,8 @@ class CharacterUNet(nn.Module):
         self.prior_channel = int(prior_channel)
         self.prior_threshold = float(prior_threshold)
         self.prior_sharpness = float(prior_sharpness)
-        # Unlike the old fixed smooth proximity bias, v5 can reduce this
+        self.geometry_gate_threshold = float(geometry_gate_threshold)
+        # The learnable prior initializes ink around the trajectory.
         # gate when the structure supervision demands a narrower stroke.
         initial_gain = max(float(prior_strength), 1e-4)
         raw_gain = torch.log(torch.expm1(torch.tensor(initial_gain)))
@@ -158,9 +167,8 @@ class CharacterUNet(nn.Module):
         if self.use_tanh:
             return torch.tanh(logits)
 
-        # Initialize from a narrow trajectory neighborhood, but keep its gain
-        # learnable. The threshold is intentionally above 0.5 so the prior no
-        # longer hard-codes the wide gray ribbon observed with v3.
+        # Initialize from the trajectory neighborhood, but keep its gain
+        # learnable. The geometry gate below remains the hard spatial bound.
         proximity = trajectory_maps[
             :, self.prior_channel : self.prior_channel + 1
         ].clamp(0.0, 1.0)
@@ -169,7 +177,18 @@ class CharacterUNet(nn.Module):
             proximity - self.prior_threshold
         )
         logits = logits + prior_gain * prior_logits
-        return torch.sigmoid(logits)
+        probabilities = torch.sigmoid(logits)
+        if self.geometry_gate_threshold == 0:
+            return probabilities
+        # No output may appear where the input trajectory has no spatial
+        # support. This makes length and position faithful by construction,
+        # while the U-Net still learns the local stroke width inside the gate.
+        geometry_gate = torch.clamp(
+            proximity / self.geometry_gate_threshold,
+            min=0.0,
+            max=1.0,
+        )
+        return probabilities * geometry_gate
 
 
 def build_character_generator(
