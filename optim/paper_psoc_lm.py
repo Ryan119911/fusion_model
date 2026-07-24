@@ -57,6 +57,8 @@ class PaperPSOCLM:
         smoothness_weight: float = 0.02,
         posture_prior_weight: float = 0.001,
         render_stride: int = 1,
+        jacobian_mode: str = "finite_difference",
+        finite_difference_eps: float = 1e-2,
     ):
         if order < 1:
             raise ValueError("order must be >= 1")
@@ -68,6 +70,14 @@ class PaperPSOCLM:
         self.smoothness_weight = float(smoothness_weight)
         self.posture_prior_weight = float(posture_prior_weight)
         self.render_stride = max(int(render_stride), 1)
+        if jacobian_mode not in {"finite_difference", "autograd"}:
+            raise ValueError(
+                "jacobian_mode must be 'finite_difference' or 'autograd'"
+            )
+        if finite_difference_eps <= 0:
+            raise ValueError("finite_difference_eps must be positive")
+        self.jacobian_mode = jacobian_mode
+        self.finite_difference_eps = float(finite_difference_eps)
 
     @property
     def device(self) -> torch.device:
@@ -228,23 +238,36 @@ class PaperPSOCLM:
                 residual = residual_fn(vector)
                 return 0.5 * float(torch.dot(residual, residual).item())
 
-        def build_jacobian(vector: torch.Tensor) -> torch.Tensor:
-            """Build J column-wise to keep GPU memory bounded."""
+        def finite_difference_jacobian(
+            vector: torch.Tensor, base_residual: torch.Tensor
+        ) -> torch.Tensor:
+            """Memory-bounded numerical Jacobian, matching the Wang LM flow."""
             columns = []
-            try:
+            with torch.no_grad():
                 for column in range(vector.numel()):
-                    tangent = torch.zeros_like(vector)
-                    tangent[column] = 1.0
-                    _, derivative = torch.func.jvp(
-                        residual_fn, (vector,), (tangent,)
+                    step = self.finite_difference_eps * (
+                        1.0 + abs(float(vector[column]))
                     )
+                    trial = vector.clone()
+                    trial[column] += step
+                    derivative = (
+                        residual_fn(trial) - base_residual
+                    ) / step
                     columns.append(derivative)
-                return torch.stack(columns, dim=1)
-            except (RuntimeError, AttributeError):
-                # Reverse-mode fallback is slower but supports older PyTorch ops.
-                return torch.autograd.functional.jacobian(
-                    residual_fn, vector, vectorize=False
-                )
+                    if (column + 1) % 10 == 0 or column + 1 == vector.numel():
+                        print(
+                            f"[JACOBIAN] column {column + 1}/"
+                            f"{vector.numel()}",
+                            flush=True,
+                        )
+            return torch.stack(columns, dim=1)
+
+        def autograd_jacobian(vector: torch.Tensor) -> torch.Tensor:
+            """Optional high-memory path for GPUs with substantially more VRAM."""
+            differentiable = vector.detach().requires_grad_(True)
+            return torch.autograd.functional.jacobian(
+                residual_fn, differentiable, vectorize=False
+            ).detach()
 
         current_cost = evaluate_cost(decision)
         initial_cost = current_cost
@@ -255,10 +278,19 @@ class PaperPSOCLM:
         completed_steps = 0
 
         for step in range(1, int(max_steps) + 1):
-            decision = decision.detach().requires_grad_(True)
-            residual = residual_fn(decision)
-            jacobian = build_jacobian(decision).detach()
-            gradient = jacobian.T @ residual.detach()
+            decision = decision.detach()
+            with torch.no_grad():
+                residual = residual_fn(decision)
+            print(
+                f"[JACOBIAN {step:03d}] mode={self.jacobian_mode}, "
+                f"variables={decision.numel()}, residuals={residual.numel()}",
+                flush=True,
+            )
+            if self.jacobian_mode == "finite_difference":
+                jacobian = finite_difference_jacobian(decision, residual)
+            else:
+                jacobian = autograd_jacobian(decision)
+            gradient = jacobian.T @ residual
             if float(torch.linalg.vector_norm(gradient, ord=float("inf"))) < 1e-6:
                 success = True
                 message = "Gradient tolerance reached"

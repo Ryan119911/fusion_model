@@ -220,6 +220,8 @@ def main(args: argparse.Namespace) -> None:
         smoothness_weight=args.smoothness_weight,
         posture_prior_weight=args.posture_prior_weight,
         render_stride=args.render_stride,
+        jacobian_mode=args.jacobian_mode,
+        finite_difference_eps=args.finite_difference_eps,
     )
     result = solver.optimize(
         xy_canvas,
@@ -297,6 +299,8 @@ def main(args: argparse.Namespace) -> None:
             "initial_cost": result.initial_cost,
             "final_cost": result.final_cost,
             "history": result.history,
+            "jacobian_mode": args.jacobian_mode,
+            "finite_difference_eps": args.finite_difference_eps,
         },
         "metrics": binary_metrics(result.rendered_image, target),
         "trajectory_target_coverage_at_5px": trajectory_target_coverage(
@@ -348,6 +352,12 @@ if __name__ == "__main__":
     parser.add_argument("--pixel_weight", type=float, default=3.0)
     parser.add_argument("--smoothness_weight", type=float, default=0.02)
     parser.add_argument("--posture_prior_weight", type=float, default=0.001)
+    parser.add_argument(
+        "--jacobian_mode",
+        choices=["finite_difference", "autograd"],
+        default="finite_difference",
+    )
+    parser.add_argument("--finite_difference_eps", type=float, default=0.01)
     parser.add_argument("--initial_h_mm", type=float, default=15.5)
     parser.add_argument("--initial_alpha_deg", type=float, default=0.0)
     parser.add_argument("--initial_beta_deg", type=float, default=0.0)

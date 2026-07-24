@@ -495,6 +495,8 @@ python -u tools/invert_paper_trajectory.py \
   --optimization_size 16 \
   --max_steps 15 \
   --damping 0.05 \
+  --jacobian_mode finite_difference \
+  --finite_difference_eps 0.01 \
   --initial_h_mm 15.5 \
   --initial_alpha_deg 0 \
   --initial_beta_deg 0 \
@@ -531,7 +533,7 @@ wu_report.json
 
 目标图必须与输入 x/y 轨迹在位置、长度、笔画走向上基本对齐。该工具故意不允许 LM 移动 x/y，所以它只能用 H/α/β 修正局部笔触宽度、拖曳、方向细节和接触形态；不能把一套骨架变成另一套字形。若目标与轨迹骨架不一致，应先完成二维配准或更换匹配轨迹。
 
-LM 每一步都要构造图像残差对 CGL 姿态节点的 Jacobian，运行时间明显长于普通神经网络推理。实现采用逐列 JVP 控制显存；`order`、`optimization_size` 和 `render_stride` 共同决定速度与精度。
+LM 每一步都要构造图像残差对 CGL 姿态节点的 Jacobian，运行时间明显长于普通神经网络推理。6GB 显存默认使用 `finite_difference`：逐个扰动 CGL 变量并在 `torch.no_grad()` 下计算数值 Jacobian，不保留整字反向图。该方式与 Wang 论文的数值 Jacobian 路径一致，显存接近普通推理，但速度较慢。`autograd` 只建议在更大显存的 GPU 上使用。`order`、`optimization_size`、`render_stride` 和加密采样间距共同决定速度与精度。
 
 检查 `wu_trajectory.csv` 时必须满足：
 
