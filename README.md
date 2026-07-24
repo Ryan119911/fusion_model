@@ -1,11 +1,11 @@
-# Fusion Model：v6 结构优先整字生成
+# Fusion Model：v7 双向结构约束整字生成
 
 本仓库包含两条彼此独立的流程：
 
 - 单笔 B-BSMG：保留原有单笔训练与推理代码。
 - 整字 U-Net：输入完整汉字轨迹，一次生成完整 `128×128` 汉字结构。
 
-当前整字版本是 **v6 结构优先模型**。它只学习清晰的笔画结构 Mask，暂不学习书法
+当前整字版本是 **v7 双向结构约束模型**。它只学习清晰的笔画结构 Mask，暂不学习书法
 纹理、纸张纹理、拓片噪声或风格迁移。
 
 ```text
@@ -21,46 +21,46 @@ trajectories.csv 中的一条完整汉字轨迹
 完整二值结构 Mask
 ```
 
-v6 的目标是先回答一个明确问题：
+v7 的目标是先回答一个明确问题：
 
 > 模型能否根据未见汉字的完整轨迹，生成位置正确、边界清楚、不过度铺墨的完整字形？
 
 风格迁移不属于本版本范围。仅有轨迹而没有风格参考时，模型也无法唯一确定某位
 书法家的笔锋和墨色。
 
-## 1. v6 相对 v5 的变化
+## 1. v7 相对 v6 的变化
 
-v5 直接回归灰度书法图。训练目标混有扫描灰度、拓片颗粒和不同笔画粗细，模型容易
-输出数据集平均的模糊光带。v6 改为：
+v6 已解决灰度目标导致的模糊光带，但结果仍容易沿轨迹整体加粗。原因是旧筛选主要
+检查“轨迹是否落在目标中”，不能充分排除“目标包含额外结构”或“轨迹与目标骨架
+不一致”的配对。v7 改为：
 
-1. 对真实目标进行背景归一化、裁剪、繁简映射和轨迹配准。
-2. 将配准目标按阈值转换成二值结构 Mask。
-3. 删除小型孤立连通域，减少拓片噪点。
-4. 使用结构 Mask 重新执行双向质量检查。
-5. 使用结构损失训练，不再使用灰度 MSE/SSIM 作为整字主目标。
-6. 将固定的平滑 proximity 偏置改为较窄、可学习衰减的 logit 先验。
-7. 同时输出概率图和阈值化 Mask，并扫描验证集最佳阈值。
+1. 二值化后执行形态学开运算，再删除小型连通域，清除细碎拓片和扫描毛刺。
+2. 同时计算“目标骨架落入轨迹支撑区”和“轨迹靠近目标骨架”两项指标。
+3. 候选目标按配准分数与双向骨架分数共同排序，不再只依赖覆盖率。
+4. 新增 soft-clDice 拓扑损失，并加强边界、背景和墨量约束。
+5. `character_best.pt` 按结构评分保存，而不是按 composite loss 保存。
+6. 阈值扫描同时报告纯 IoU 最优阈值和兼顾边界、墨量的平衡阈值。
 
 当前格式：
 
 ```text
-NPZ format       character_spatial_v6
+NPZ format       character_spatial_v7
 target_mode      binary_structure_mask
-checkpoint       character_unet_v4
-preprocessing    clean_register_script_structure_v3
+checkpoint       character_unet_v5
+preprocessing    clean_register_script_structure_v4
 ```
 
 以下旧文件不兼容：
 
 ```text
 character_sequence_v1
-character_spatial_v2 / v3 / v4 / v5
+character_spatial_v2 / v3 / v4 / v5 / v6
 character_generator_v1
-character_unet_v2 / v3
+character_unet_v2 / v3 / v4
 单笔 bbsmg_best.pt
 ```
 
-v6 必须从原始轨迹和书法图重新构建数据，并从头训练。不能使用 v5 checkpoint
+v7 必须从原始轨迹和书法图重新构建数据，并从头训练。不能使用 v6 checkpoint
 `--resume` 或 `--init_character_checkpoint`。
 
 ## 2. Ubuntu 环境准备
@@ -114,15 +114,15 @@ configs/character_target_exclusions.json
 按照审计清单中的 `character`、`image_path` 和 `bbox` 添加新项，不要直接删除审计
 PNG，也不要删除整个汉字。
 
-## 4. 构建 v6 全字符楷书数据
+## 4. 构建 v7 全字符楷书数据
 
-不要覆盖 v5 文件：
+不要覆盖 v6 文件：
 
 ```bash
 python -u tools/build_character_pairs.py \
   --config configs/default.yaml \
   --trajectory_csv data/raw/trajectories.csv \
-  --output_npz data/processed/character_all_kaishu_structure_v6.npz \
+  --output_npz data/processed/character_all_kaishu_structure_v7.npz \
   --chirography 楷 \
   --require_real_target \
   --trajectory_padding 16 \
@@ -130,6 +130,10 @@ python -u tools/build_character_pairs.py \
   --target_script traditional \
   --structure_threshold 0.35 \
   --min_component_pixels 8 \
+  --opening_iterations 1 \
+  --skeleton_tolerance 5 \
+  --min_target_skeleton_in_support_fraction 0.70 \
+  --min_trajectory_near_target_skeleton_fraction 0.60 \
   --min_alignment_coverage 0.55 \
   --min_support_dice 0.45 \
   --max_outside_support_fraction 0.35 \
@@ -157,15 +161,17 @@ target sources: {'real': N}
 target quality filter: rejected=...
 manually excluded target candidates: 1
 trajectory/target coverage: mean=...
+target skeleton in trajectory support: mean=...
+trajectory near target skeleton: mean=...
 ```
 
 生成文件：
 
 ```text
-data/processed/character_all_kaishu_structure_v6.npz
-data/processed/character_all_kaishu_structure_v6.summary.json
-data/processed/character_all_kaishu_structure_v6.rejected.json
-data/processed/character_all_kaishu_structure_v6_audit/
+data/processed/character_all_kaishu_structure_v7.npz
+data/processed/character_all_kaishu_structure_v7.summary.json
+data/processed/character_all_kaishu_structure_v7.rejected.json
+data/processed/character_all_kaishu_structure_v7_audit/
   accepted/
   rejected/
   audit_manifest.json
@@ -177,7 +183,7 @@ data/processed/character_all_kaishu_structure_v6_audit/
 proximity
 配准前灰度目标
 配准后灰度目标
-v6 二值结构目标
+v7 净化后二值结构目标
 红色结构目标 / 绿色轨迹重叠
 ```
 
@@ -190,15 +196,15 @@ v6 二值结构目标
 
 不要为了增加数量直接降低 `0.55` 覆盖阈值。先检查字形映射、源图和候选选择。
 
-## 5. 从头训练 v6
+## 5. 从头训练 v7
 
 GTX 1660 6GB 建议：
 
 ```bash
 python -u tools/train_character.py \
   --config configs/default.yaml \
-  --npz_path data/processed/character_all_kaishu_structure_v6.npz \
-  --output_dir outputs/character_general_structure_v6 \
+  --npz_path data/processed/character_all_kaishu_structure_v7.npz \
+  --output_dir outputs/character_general_structure_v7 \
   --epochs 40 \
   --batch_size 4 \
   --val_ratio 0.1 \
@@ -217,6 +223,7 @@ python -u tools/train_character.py \
 weighted_bce       二值像素分类
 dice_loss          整体重叠
 tversky_loss       更强惩罚假阳性和过度铺墨
+cldice_loss         笔画骨架连通与拓扑
 boundary_loss      笔画边界
 background_loss    背景漏墨
 confidence_loss    灰色不确定区域
@@ -227,7 +234,7 @@ trajectory_loss    仅在目标确有笔画的中心线上施加弱约束
 输出：
 
 ```text
-outputs/character_general_structure_v6/
+outputs/character_general_structure_v7/
   character_best.pt
   character_last.pt
   character_epoch_*.pt
@@ -235,17 +242,19 @@ outputs/character_general_structure_v6/
   split_manifest.json
 ```
 
-正式评估始终使用 `character_best.pt`。增加 epoch 不等于效果更好；如果最佳 checkpoint
-很早出现，应优先检查验证指标和图像。
+正式评估始终使用 `character_best.pt`。v7 用
+`0.40×IoU + 0.30×Boundary F1 + 0.20×Dice + 0.10×墨量平衡` 选择最佳模型；
+每个 epoch 会在 `0.35–0.70` 中选择结构评分最高的阈值，避免固定 `0.5` 误选模型。
+ReduceLROnPlateau 仍只依据验证损失调整学习率。增加 epoch 不等于效果更好。
 
 ## 6. 验证集评估与阈值选择
 
 ```bash
 python -u tools/evaluate_character.py \
   --config configs/default.yaml \
-  --npz_path data/processed/character_all_kaishu_structure_v6.npz \
-  --checkpoint outputs/character_general_structure_v6/character_best.pt \
-  --output_dir outputs/eval_character_general_structure_v6 \
+  --npz_path data/processed/character_all_kaishu_structure_v7.npz \
+  --checkpoint outputs/character_general_structure_v7/character_best.pt \
+  --output_dir outputs/eval_character_general_structure_v7 \
   --split val \
   --batch_size 4 \
   --num_images 100 \
@@ -260,11 +269,13 @@ macro_metrics.dice_at_threshold
 macro_metrics.iou_at_threshold
 macro_metrics.boundary_f1
 macro_metrics.uncertain_fraction
-macro_metrics.ink_ratio
+macro_metrics.probability_ink_ratio
+macro_metrics.mask_ink_ratio
 background_mean
 trajectory_prediction_coverage
 trajectory_target_coverage
 best_threshold_by_macro_iou
+best_threshold_by_balanced_score
 ```
 
 理想方向：
@@ -273,7 +284,7 @@ best_threshold_by_macro_iou
 Dice / IoU / Boundary F1       越高越好
 uncertain_fraction             越低越好
 background_mean                越低越好
-ink_ratio                      接近 1
+mask_ink_ratio                 接近 1
 prediction/target coverage     差距缩小
 ```
 
@@ -295,8 +306,9 @@ metrics.csv
 per_character_metrics.csv
 ```
 
-从 `metrics.json -> best_threshold_by_macro_iou.threshold` 读取最佳阈值。最终部署和单字
-预测应使用同一个阈值，而不是默认永远使用 `0.5`。
+优先从 `metrics.json -> best_threshold_by_balanced_score.threshold` 读取部署阈值。它兼顾
+IoU、边界和二值墨量；`best_threshold_by_macro_iou` 只用于报告重叠率上限。最终部署和
+单字预测应使用同一个阈值，而不是默认永远使用 `0.5`。
 
 ## 7. 用冻结模型生成“武”字
 
@@ -306,10 +318,10 @@ per_character_metrics.csv
 python -u tools/predict_character.py \
   --config configs/default.yaml \
   --trajectory_csv data/raw/trajectories.csv \
-  --checkpoint outputs/character_general_structure_v6/character_best.pt \
+  --checkpoint outputs/character_general_structure_v7/character_best.pt \
   --character 武 \
   --target_image assets/targets/wu_kaishu_target.png \
-  --output_dir outputs/wu_structure_v6 \
+  --output_dir outputs/wu_structure_v7 \
   --output_stem wu_structure \
   --trajectory_padding 16 \
   --trajectory_width 3 \
@@ -346,7 +358,7 @@ wu_structure_metrics.json
 python -u tools/build_character_pairs.py \
   --config configs/default.yaml \
   --trajectory_csv data/raw/trajectories.csv \
-  --output_npz data/processed/yong_unseen_structure_v6.npz \
+  --output_npz data/processed/yong_unseen_structure_v7.npz \
   --character 永 \
   --chirography 楷 \
   --require_real_target \
@@ -355,6 +367,10 @@ python -u tools/build_character_pairs.py \
   --target_script traditional \
   --structure_threshold 0.35 \
   --min_component_pixels 8 \
+  --opening_iterations 1 \
+  --skeleton_tolerance 5 \
+  --min_target_skeleton_in_support_fraction 0.70 \
+  --min_trajectory_near_target_skeleton_fraction 0.60 \
   --min_alignment_coverage 0.55 \
   --exclude_candidates_json configs/character_target_exclusions.json
 ```
@@ -364,9 +380,9 @@ python -u tools/build_character_pairs.py \
 ```bash
 python -u tools/evaluate_character.py \
   --config configs/default.yaml \
-  --npz_path data/processed/yong_unseen_structure_v6.npz \
-  --checkpoint outputs/character_general_structure_v6/character_best.pt \
-  --output_dir outputs/yong_unseen_structure_v6 \
+  --npz_path data/processed/yong_unseen_structure_v7.npz \
+  --checkpoint outputs/character_general_structure_v7/character_best.pt \
+  --output_dir outputs/yong_unseen_structure_v7 \
   --split all \
   --character 永 \
   --batch_size 1 \
@@ -378,13 +394,13 @@ python -u tools/evaluate_character.py \
 
 ## 9. 继续训练与微调
 
-在完全相同的 v6 NPZ 上继续训练到总计 80 epoch：
+在完全相同的 v7 NPZ 上继续训练到总计 80 epoch：
 
 ```bash
 python -u tools/train_character.py \
   --config configs/default.yaml \
-  --npz_path data/processed/character_all_kaishu_structure_v6.npz \
-  --resume outputs/character_general_structure_v6/character_last.pt \
+  --npz_path data/processed/character_all_kaishu_structure_v7.npz \
+  --resume outputs/character_general_structure_v7/character_last.pt \
   --epochs 80 \
   --batch_size 4 \
   --val_ratio 0.1 \
@@ -397,7 +413,7 @@ python -u tools/train_character.py \
 `--epochs 80` 表示训练到总计 80 epoch，不是额外再训练 80 epoch。
 
 只针对“武”微调可以用于检查模型容量或制作单字演示，但它属于拟合实验，不能再用于
-证明泛化能力。微调也只能加载 v6 `character_unet_v4` checkpoint。
+证明泛化能力。微调也只能加载 v7 `character_unet_v5` checkpoint。
 
 ## 10. 常见问题
 
@@ -408,12 +424,12 @@ python -u tools/train_character.py \
 
 ### 提示 checkpoint 不兼容
 
-v6 不能加载 `character_unet_v3` 或 `bbsmg_best.pt`。从头训练 v6。
+v7 不能加载 `character_unet_v4` 或 `bbsmg_best.pt`。从头训练 v7。
 
 ### 输出概率图仍有灰色边缘
 
 概率图允许存在不确定值。先查看 `prediction_mask.png`，并使用验证集扫描得到的最佳
-阈值。若二值 Mask 仍明显偏粗，再根据 `ink_ratio`、`background_mean` 和 Boundary F1
+阈值。若二值 Mask 仍明显偏粗，再根据 `mask_ink_ratio`、`background_mean` 和 Boundary F1
 调整模型，而不是仅延长训练。
 
 ### 目标 Mask 丢失细笔画
@@ -436,9 +452,9 @@ batch_size 8 → 4 → 2
 
 不要修改输入尺寸或通道数，否则 checkpoint 与数据格式会不兼容。
 
-## 11. 不属于 v6 的内容
+## 11. 不属于 v7 的内容
 
-v6 不做：
+v7 不做：
 
 - 根据参考图迁移书法家风格；
 - 生成纸张、拓片和墨色纹理；
@@ -449,7 +465,7 @@ v6 不做：
 完成结构泛化后，风格迁移应作为独立的第二阶段：
 
 ```text
-v6 结构 Mask + 风格参考图 → 风格化书法图
+v7 结构 Mask + 风格参考图 → 风格化书法图
 ```
 
-该阶段不会与当前 v6 结构模型混在一起训练。
+该阶段不会与当前 v7 结构模型混在一起训练。

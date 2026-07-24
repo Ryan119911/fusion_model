@@ -63,8 +63,11 @@ def image_metrics(
         "iou_at_threshold": (intersection + 1e-6) / (union + 1e-6),
         "target_ink": float(target.mean()),
         "prediction_ink": float(prediction.mean()),
+        "target_mask_ink": float(target_binary.mean()),
         "prediction_mask_ink": float(pred_binary.mean()),
-        "ink_ratio": float(pred_binary.mean() / max(target.mean(), 1e-6)),
+        "mask_ink_ratio": float(
+            pred_binary.mean() / max(target_binary.mean(), 1e-6)
+        ),
         "boundary_f1": float(
             binary_boundary_f1(
                 prediction_tensor,
@@ -88,11 +91,11 @@ def main(args) -> None:
     checkpoint = torch.load(args.checkpoint, map_location=device)
     if checkpoint.get("format") != CHARACTER_CHECKPOINT_FORMAT:
         raise ValueError(
-            f"Expected {CHARACTER_CHECKPOINT_FORMAT}. v5 grayscale checkpoints and "
+            f"Expected {CHARACTER_CHECKPOINT_FORMAT}. Older character checkpoints and "
             "stroke-level B-BSMG checkpoints are incompatible."
         )
     if checkpoint.get("target_mode") != STRUCTURE_TARGET_MODE:
-        raise ValueError("Checkpoint is not a v6 binary structure model")
+        raise ValueError("Checkpoint is not a v7 binary structure model")
     model_config = checkpoint["model_config"]
     if tuple(checkpoint.get("channel_names", ())) != tuple(SPATIAL_CHANNEL_NAMES):
         raise ValueError("Checkpoint spatial channel schema is missing or incompatible")
@@ -158,6 +161,8 @@ def main(args) -> None:
         "target_mode": checkpoint.get("target_mode"),
         "structure_threshold": checkpoint.get("structure_threshold"),
         "min_component_pixels": checkpoint.get("min_component_pixels"),
+        "opening_iterations": checkpoint.get("opening_iterations"),
+        "skeleton_tolerance": checkpoint.get("skeleton_tolerance"),
         "prediction_threshold": args.threshold,
     }
     if args.target_image:
@@ -175,6 +180,7 @@ def main(args) -> None:
             aligned_gray,
             threshold=float(checkpoint.get("structure_threshold", 0.35)),
             min_component_pixels=int(checkpoint.get("min_component_pixels", 8)),
+            opening_iterations=int(checkpoint.get("opening_iterations", 1)),
         )
         difference = np.abs(prediction - target)
         mask_difference = np.abs(prediction_mask - target)

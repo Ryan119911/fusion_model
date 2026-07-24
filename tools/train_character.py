@@ -70,27 +70,72 @@ def binary_boundary_f1(
     return (2.0 * precision * recall + 1e-6) / (precision + recall + 1e-6)
 
 
+def compute_structure_quality(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    threshold: float,
+) -> Dict[str, torch.Tensor]:
+    pred_binary = predictions >= threshold
+    target_binary = targets >= 0.5
+    dims = (1, 2, 3)
+    intersection = (pred_binary & target_binary).sum(dim=dims).float()
+    union = (pred_binary | target_binary).sum(dim=dims).float()
+    pred_count = pred_binary.sum(dim=dims).float()
+    target_count = target_binary.sum(dim=dims).float()
+    dice = ((2.0 * intersection + 1e-6) / (pred_count + target_count + 1e-6)).mean()
+    iou = ((intersection + 1e-6) / (union + 1e-6)).mean()
+    boundary_f1 = binary_boundary_f1(
+        predictions, targets, threshold=threshold
+    ).mean()
+    mask_ink_ratio = (
+        pred_binary.float().mean(dim=dims)
+        / target_binary.float().mean(dim=dims).clamp_min(1e-6)
+    )
+    ink_balance = torch.exp(
+        -torch.abs(torch.log(mask_ink_ratio.clamp_min(1e-6)))
+    ).mean()
+    selection_score = (
+        0.40 * iou
+        + 0.30 * boundary_f1
+        + 0.20 * dice
+        + 0.10 * ink_balance
+    )
+    return {
+        "dice": dice,
+        "iou": iou,
+        "boundary_f1": boundary_f1,
+        "prediction_mask_ink": pred_binary.float().mean(),
+        "target_mask_ink": target_binary.float().mean(),
+        "mask_ink_ratio": mask_ink_ratio.mean(),
+        "ink_balance_score": ink_balance,
+        "selection_score": selection_score,
+    }
+
+
 class StructureMaskLoss(nn.Module):
-    """Binary structure objective that penalizes over-ink and uncertain gray haze."""
+    """Structure objective balancing topology, boundary accuracy, and ink amount."""
 
     def __init__(
         self,
         bce_weight: float = 1.0,
         dice_weight: float = 0.75,
-        tversky_weight: float = 0.5,
-        boundary_weight: float = 0.25,
-        background_weight: float = 0.5,
-        confidence_weight: float = 0.1,
-        ink_weight: float = 0.25,
-        trajectory_weight: float = 0.02,
-        bce_pos_weight: float = 1.5,
-        tversky_alpha: float = 0.7,
-        tversky_beta: float = 0.3,
+        tversky_weight: float = 0.75,
+        cldice_weight: float = 0.35,
+        boundary_weight: float = 0.5,
+        background_weight: float = 0.75,
+        confidence_weight: float = 0.2,
+        ink_weight: float = 0.5,
+        trajectory_weight: float = 0.01,
+        bce_pos_weight: float = 1.0,
+        tversky_alpha: float = 0.8,
+        tversky_beta: float = 0.2,
+        skeleton_iterations: int = 5,
     ):
         super().__init__()
         self.bce_weight = float(bce_weight)
         self.dice_weight = float(dice_weight)
         self.tversky_weight = float(tversky_weight)
+        self.cldice_weight = float(cldice_weight)
         self.boundary_weight = float(boundary_weight)
         self.background_weight = float(background_weight)
         self.confidence_weight = float(confidence_weight)
@@ -99,6 +144,7 @@ class StructureMaskLoss(nn.Module):
         self.bce_pos_weight = float(bce_pos_weight)
         self.tversky_alpha = float(tversky_alpha)
         self.tversky_beta = float(tversky_beta)
+        self.skeleton_iterations = int(skeleton_iterations)
         sobel_x = torch.tensor(
             [[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]]
         ).view(1, 1, 3, 3)
@@ -110,6 +156,45 @@ class StructureMaskLoss(nn.Module):
         grad_x = F.conv2d(values, self.sobel_x, padding=1)
         grad_y = F.conv2d(values, self.sobel_y, padding=1)
         return torch.sqrt(grad_x.square() + grad_y.square() + 1e-6) / 4.0
+
+    @staticmethod
+    def _soft_erode(values):
+        eroded_horizontal = -F.max_pool2d(
+            -values, kernel_size=(3, 1), stride=1, padding=(1, 0)
+        )
+        eroded_vertical = -F.max_pool2d(
+            -values, kernel_size=(1, 3), stride=1, padding=(0, 1)
+        )
+        return torch.minimum(eroded_horizontal, eroded_vertical)
+
+    @staticmethod
+    def _soft_dilate(values):
+        return F.max_pool2d(values, kernel_size=3, stride=1, padding=1)
+
+    def _soft_skeleton(self, values):
+        opened = self._soft_dilate(self._soft_erode(values))
+        skeleton = F.relu(values - opened)
+        for _ in range(self.skeleton_iterations):
+            values = self._soft_erode(values)
+            opened = self._soft_dilate(self._soft_erode(values))
+            delta = F.relu(values - opened)
+            skeleton = skeleton + F.relu(delta - skeleton * delta)
+        return skeleton
+
+    def _cldice_loss(self, preds, targets):
+        pred_skeleton = self._soft_skeleton(preds)
+        target_skeleton = self._soft_skeleton(targets)
+        dims = (1, 2, 3)
+        topology_precision = (
+            (pred_skeleton * targets).sum(dim=dims) + 1e-6
+        ) / (pred_skeleton.sum(dim=dims) + 1e-6)
+        topology_sensitivity = (
+            (target_skeleton * preds).sum(dim=dims) + 1e-6
+        ) / (target_skeleton.sum(dim=dims) + 1e-6)
+        cldice = (
+            2.0 * topology_precision * topology_sensitivity + 1e-6
+        ) / (topology_precision + topology_sensitivity + 1e-6)
+        return 1.0 - cldice.mean()
 
     def compute_components(self, preds, targets, inputs=None):
         preds = preds.clamp(1e-6, 1.0 - 1e-6)
@@ -135,6 +220,7 @@ class StructureMaskLoss(nn.Module):
                 + 1e-6
             )
         ).mean()
+        cldice_loss = self._cldice_loss(preds, targets)
         boundary_loss = F.l1_loss(
             self._edge_magnitude(preds),
             self._edge_magnitude(targets),
@@ -160,6 +246,7 @@ class StructureMaskLoss(nn.Module):
             "weighted_bce": weighted_bce,
             "dice_loss": dice_loss,
             "tversky_loss": tversky_loss,
+            "cldice_loss": cldice_loss,
             "boundary_loss": boundary_loss,
             "background_loss": background_loss,
             "confidence_loss": confidence_loss,
@@ -172,6 +259,7 @@ class StructureMaskLoss(nn.Module):
             self.bce_weight * components["weighted_bce"]
             + self.dice_weight * components["dice_loss"]
             + self.tversky_weight * components["tversky_loss"]
+            + self.cldice_weight * components["cldice_loss"]
             + self.boundary_weight * components["boundary_loss"]
             + self.background_weight * components["background_loss"]
             + self.confidence_weight * components["confidence_loss"]
@@ -196,27 +284,21 @@ def compute_batch_metrics(
 ) -> Dict[str, float]:
     components = criterion.compute_components(predictions, targets, inputs)
     total = criterion.combine_components(components)
-    pred_binary = predictions >= threshold
-    target_binary = targets >= 0.5
-    intersection = (pred_binary & target_binary).sum(dim=(1, 2, 3)).float()
-    union = (pred_binary | target_binary).sum(dim=(1, 2, 3)).float()
+    quality = compute_structure_quality(predictions, targets, threshold)
     values = {name: float(value.item()) for name, value in components.items()}
     values.update({
         "composite_loss": float(total.item()),
         "plain_mse": float(F.mse_loss(predictions, targets).item()),
         "mae": float(F.l1_loss(predictions, targets).item()),
-        "dice_at_threshold": float(
-            ((2.0 * intersection + 1e-6) /
-             (pred_binary.sum(dim=(1, 2, 3)).float()
-              + target_binary.sum(dim=(1, 2, 3)).float() + 1e-6)).mean().item()
-        ),
+        "dice_at_threshold": float(quality["dice"].item()),
         "binary_threshold": float(threshold),
-        "iou_at_threshold": float(
-            ((intersection + 1e-6) / (union + 1e-6)).mean().item()
-        ),
-        "boundary_f1": float(
-            binary_boundary_f1(predictions, targets, threshold=threshold).mean().item()
-        ),
+        "iou_at_threshold": float(quality["iou"].item()),
+        "boundary_f1": float(quality["boundary_f1"].item()),
+        "prediction_mask_ink": float(quality["prediction_mask_ink"].item()),
+        "target_mask_ink": float(quality["target_mask_ink"].item()),
+        "mask_ink_ratio": float(quality["mask_ink_ratio"].item()),
+        "ink_balance_score": float(quality["ink_balance_score"].item()),
+        "selection_score": float(quality["selection_score"].item()),
         "uncertain_fraction": float(
             ((predictions > 0.1) & (predictions < 0.9)).float().mean().item()
         ),
@@ -271,6 +353,18 @@ def validate(model, loader, criterion, device) -> Optional[Dict[str, float]]:
         return None
     model.eval()
     totals: Dict[str, float] = {}
+    selection_thresholds = (0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70)
+    quality_totals = {
+        threshold: {
+            "dice": 0.0,
+            "iou": 0.0,
+            "boundary_f1": 0.0,
+            "mask_ink_ratio": 0.0,
+            "ink_balance_score": 0.0,
+            "selection_score": 0.0,
+        }
+        for threshold in selection_thresholds
+    }
     count = 0
     for batch in loader:
         inputs = batch["inputs"].to(device)
@@ -280,8 +374,35 @@ def validate(model, loader, criterion, device) -> Optional[Dict[str, float]]:
         batch_size = inputs.shape[0]
         for name, value in values.items():
             totals[name] = totals.get(name, 0.0) + value * batch_size
+        for threshold in selection_thresholds:
+            quality = compute_structure_quality(predictions, targets, threshold)
+            for name in quality_totals[threshold]:
+                quality_totals[threshold][name] += (
+                    float(quality[name].item()) * batch_size
+                )
         count += batch_size
-    return {name: value / max(count, 1) for name, value in totals.items()}
+    result = {name: value / max(count, 1) for name, value in totals.items()}
+    threshold_rows = {
+        threshold: {
+            name: value / max(count, 1)
+            for name, value in values.items()
+        }
+        for threshold, values in quality_totals.items()
+    }
+    best_threshold, best_quality = max(
+        threshold_rows.items(),
+        key=lambda item: item[1]["selection_score"],
+    )
+    result.update({
+        "selection_threshold": float(best_threshold),
+        "selection_score": best_quality["selection_score"],
+        "selection_dice": best_quality["dice"],
+        "selection_iou": best_quality["iou"],
+        "selection_boundary_f1": best_quality["boundary_f1"],
+        "selection_mask_ink_ratio": best_quality["mask_ink_ratio"],
+        "selection_ink_balance_score": best_quality["ink_balance_score"],
+    })
+    return result
 
 
 def save_checkpoint(
@@ -292,7 +413,7 @@ def save_checkpoint(
     epoch: int,
     train_loss: float,
     val_metrics: Optional[Dict[str, float]],
-    best_val: float,
+    best_score: float,
     model_config: Dict[str, Any],
     channel_names,
     trajectory_padding,
@@ -300,6 +421,8 @@ def save_checkpoint(
     target_mode,
     structure_threshold,
     min_component_pixels,
+    opening_iterations,
+    skeleton_tolerance,
     train_indices,
     val_indices,
 ) -> None:
@@ -310,6 +433,8 @@ def save_checkpoint(
         "target_mode": target_mode,
         "structure_threshold": float(structure_threshold),
         "min_component_pixels": int(min_component_pixels),
+        "opening_iterations": int(opening_iterations),
+        "skeleton_tolerance": int(skeleton_tolerance),
         "epoch": epoch,
         "model_state": model.state_dict(),
         "optimizer_state": optimizer.state_dict(),
@@ -317,7 +442,10 @@ def save_checkpoint(
         "train_loss": train_loss,
         "val_metrics": val_metrics,
         "val_loss": val_metrics.get("composite_loss") if val_metrics else None,
-        "best_val": best_val,
+        "selection_score": (
+            val_metrics.get("selection_score") if val_metrics else -train_loss
+        ),
+        "best_score": best_score,
         "model_config": model_config,
         "channel_names": list(channel_names),
         "trajectory_padding": int(trajectory_padding),
@@ -377,7 +505,7 @@ def main(args) -> None:
     ):
         raise ValueError(
             f"--init_character_checkpoint requires {CHARACTER_CHECKPOINT_FORMAT}; "
-            "v6 must not initialize from grayscale-target checkpoints."
+            "v7 must not initialize from older or grayscale-target checkpoints."
         )
 
     dataset = CharacterTrainDataset(args.npz_path)
@@ -408,6 +536,20 @@ def main(args) -> None:
         ):
             raise ValueError(
                 f"{label} checkpoint component cleanup differs from this NPZ"
+            )
+        if (
+            int(checkpoint.get("opening_iterations", -1))
+            != dataset.opening_iterations
+        ):
+            raise ValueError(
+                f"{label} checkpoint morphology cleanup differs from this NPZ"
+            )
+        if (
+            int(checkpoint.get("skeleton_tolerance", -1))
+            != dataset.skeleton_tolerance
+        ):
+            raise ValueError(
+                f"{label} checkpoint skeleton tolerance differs from this NPZ"
             )
     model_config = asdict(cfg.character_generator)
     if resume_checkpoint and resume_checkpoint.get("model_config"):
@@ -497,14 +639,14 @@ def main(args) -> None:
     )
 
     start_epoch = 1
-    best_val = float("inf")
+    best_score = float("-inf")
     if resume_checkpoint is not None:
         model.load_state_dict(resume_checkpoint["model_state"])
         optimizer.load_state_dict(resume_checkpoint["optimizer_state"])
         if resume_checkpoint.get("scheduler_state"):
             scheduler.load_state_dict(resume_checkpoint["scheduler_state"])
         start_epoch = int(resume_checkpoint.get("epoch", 0)) + 1
-        best_val = float(resume_checkpoint.get("best_val", best_val))
+        best_score = float(resume_checkpoint.get("best_score", best_score))
         print(f"[RESUME] {args.resume}; start_epoch={start_epoch}")
 
     output_dir = Path(cfg.train.output_dir)
@@ -533,8 +675,11 @@ def main(args) -> None:
     for epoch in range(start_epoch, cfg.train.epochs + 1):
         train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device)
         val_metrics = validate(model, val_loader, criterion, device)
-        monitor = val_metrics["composite_loss"] if val_metrics else train_loss
-        scheduler.step(monitor)
+        loss_monitor = val_metrics["composite_loss"] if val_metrics else train_loss
+        selection_score = (
+            val_metrics["selection_score"] if val_metrics else -train_loss
+        )
+        scheduler.step(loss_monitor)
         learning_rate = float(optimizer.param_groups[0]["lr"])
         message = f"[Epoch {epoch:03d}] train_loss={train_loss:.6f}, lr={learning_rate:.8g}"
         if val_metrics:
@@ -554,9 +699,9 @@ def main(args) -> None:
             row.update({f"val_{name}": value for name, value in val_metrics.items()})
         append_metrics(output_dir / "training_metrics.csv", row)
 
-        is_best = monitor < best_val
+        is_best = selection_score > best_score
         if is_best:
-            best_val = monitor
+            best_score = selection_score
         save_args = (
             model,
             optimizer,
@@ -564,7 +709,7 @@ def main(args) -> None:
             epoch,
             train_loss,
             val_metrics,
-            best_val,
+            best_score,
             model_config,
             dataset.channel_names,
             dataset.trajectory_padding,
@@ -572,6 +717,8 @@ def main(args) -> None:
             dataset.target_mode,
             dataset.structure_threshold,
             dataset.min_component_pixels,
+            dataset.opening_iterations,
+            dataset.skeleton_tolerance,
             train_indices,
             val_indices,
         )

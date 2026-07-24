@@ -22,6 +22,7 @@ from utils.image_preprocessing import letterbox_character_image, load_character_
 from utils.structure_mask import (
     STRUCTURE_TARGET_MODE,
     build_structure_mask,
+    symmetric_structure_metrics,
 )
 
 
@@ -155,7 +156,32 @@ def target_quality_failures(
         failures.append("foreground_bbox_fill_above_threshold")
     if metrics["border_ink_fraction"] > thresholds["max_border_ink_fraction"]:
         failures.append("border_ink_above_threshold")
+    if (
+        metrics["target_skeleton_in_support_fraction"]
+        < thresholds["min_target_skeleton_in_support_fraction"]
+    ):
+        failures.append("target_skeleton_support_below_threshold")
+    if (
+        metrics["trajectory_near_target_skeleton_fraction"]
+        < thresholds["min_trajectory_near_target_skeleton_fraction"]
+    ):
+        failures.append("trajectory_target_skeleton_agreement_below_threshold")
     return failures
+
+
+def structure_alignment_metrics(
+    target: np.ndarray,
+    spatial_maps: np.ndarray,
+    skeleton_tolerance: int,
+) -> Dict[str, float]:
+    metrics = alignment_metrics(target, spatial_maps[0], spatial_maps[1])
+    metrics.update(symmetric_structure_metrics(
+        target,
+        spatial_maps[0],
+        spatial_maps[1],
+        skeleton_tolerance=skeleton_tolerance,
+    ))
+    return metrics
 
 
 def save_audit_panel(
@@ -190,6 +216,8 @@ def select_best_real_target(
     quality_thresholds: Dict[str, float],
     structure_threshold: float,
     min_component_pixels: int,
+    opening_iterations: int,
+    skeleton_tolerance: int,
     candidate_exclusions: List[Dict[str, Any]],
 ) -> Tuple[np.ndarray, Dict[str, Any], Dict[str, np.ndarray]]:
     """Clean candidates, register matches, and return the best structure mask."""
@@ -245,19 +273,30 @@ def select_best_real_target(
                 aligned_gray,
                 threshold=structure_threshold,
                 min_component_pixels=min_component_pixels,
+                opening_iterations=opening_iterations,
             )
         except ValueError:
             errors += 1
             continue
-        registered_metrics = alignment_metrics(
+        registered_metrics = structure_alignment_metrics(
             structure_target,
-            spatial_maps[0],
-            spatial_maps[1],
+            spatial_maps,
+            skeleton_tolerance=skeleton_tolerance,
         )
         failures = target_quality_failures(registered_metrics, quality_thresholds)
         if not failures:
             passing_registered_candidates += 1
-        rank = (not failures, float(registered_metrics["score"]))
+        geometry_score = (
+            0.50 * float(registered_metrics["score"])
+            + 0.25 * float(
+                registered_metrics["target_skeleton_in_support_fraction"]
+            )
+            + 0.25 * float(
+                registered_metrics["trajectory_near_target_skeleton_fraction"]
+            )
+        )
+        registered_metrics["structure_score"] = geometry_score
+        rank = (not failures, geometry_score)
         if best is None or rank > best[0]:
             best = (
                 rank,
@@ -295,10 +334,10 @@ def select_best_real_target(
         "excluded_candidates": excluded_candidates,
         "unregistered_alignment": raw_metrics,
         "structure_cleanup": structure_info,
-        "structure_alignment": alignment_metrics(
+        "structure_alignment": structure_alignment_metrics(
             structure_target,
-            spatial_maps[0],
-            spatial_maps[1],
+            spatial_maps,
+            skeleton_tolerance=skeleton_tolerance,
         ),
     }
     audit = {
@@ -324,6 +363,8 @@ def main(args) -> None:
         "max_target_ink_fraction",
         "max_foreground_bbox_fill_fraction",
         "max_border_ink_fraction",
+        "min_target_skeleton_in_support_fraction",
+        "min_trajectory_near_target_skeleton_fraction",
     ):
         value = float(getattr(args, name))
         if value < 0.0:
@@ -334,6 +375,8 @@ def main(args) -> None:
         "max_target_ink_fraction",
         "max_foreground_bbox_fill_fraction",
         "max_border_ink_fraction",
+        "min_target_skeleton_in_support_fraction",
+        "min_trajectory_near_target_skeleton_fraction",
     ):
         if float(getattr(args, name)) > 1.0:
             raise ValueError(f"--{name} must not exceed 1")
@@ -345,6 +388,10 @@ def main(args) -> None:
         raise ValueError("--structure_threshold must satisfy 0 < value < 1")
     if args.min_component_pixels < 0:
         raise ValueError("--min_component_pixels must be non-negative")
+    if args.opening_iterations < 0:
+        raise ValueError("--opening_iterations must be non-negative")
+    if args.skeleton_tolerance < 0:
+        raise ValueError("--skeleton_tolerance must be non-negative")
     cfg = load_config(args.config)
     ensure_dirs(cfg)
     if args.chirography is not None:
@@ -419,6 +466,8 @@ def main(args) -> None:
     metadata: List[Dict[str, Any]] = []
     source_counts: DefaultDict[str, int] = defaultdict(int)
     alignment_coverages: List[float] = []
+    target_skeleton_supports: List[float] = []
+    trajectory_skeleton_agreements: List[float] = []
     rejected_pairs: List[Dict[str, Any]] = []
     quality_thresholds = {
         "min_alignment_coverage": float(args.min_alignment_coverage),
@@ -431,6 +480,12 @@ def main(args) -> None:
             args.max_foreground_bbox_fill_fraction
         ),
         "max_border_ink_fraction": float(args.max_border_ink_fraction),
+        "min_target_skeleton_in_support_fraction": float(
+            args.min_target_skeleton_in_support_fraction
+        ),
+        "min_trajectory_near_target_skeleton_fraction": float(
+            args.min_trajectory_near_target_skeleton_fraction
+        ),
     }
     output_path = Path(args.output_npz)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -475,6 +530,7 @@ def main(args) -> None:
                 aligned_gray,
                 threshold=args.structure_threshold,
                 min_component_pixels=args.min_component_pixels,
+                opening_iterations=args.opening_iterations,
             )
             source_type = "external"
             source_info = {
@@ -501,6 +557,8 @@ def main(args) -> None:
                     quality_thresholds=quality_thresholds,
                     structure_threshold=args.structure_threshold,
                     min_component_pixels=args.min_component_pixels,
+                    opening_iterations=args.opening_iterations,
+                    skeleton_tolerance=args.skeleton_tolerance,
                     candidate_exclusions=candidate_exclusions,
                 )
             except ValueError as error:
@@ -535,6 +593,7 @@ def main(args) -> None:
                 "mode": STRUCTURE_TARGET_MODE,
                 "threshold": None,
                 "min_component_pixels": 0,
+                "opening_iterations": 0,
                 "foreground_pixels_before": int((target >= 0.5).sum()),
                 "foreground_pixels_after": int((target >= 0.5).sum()),
                 "foreground_fraction": float((target >= 0.5).mean()),
@@ -545,7 +604,11 @@ def main(args) -> None:
 
         centerline_mask = spatial_maps[0] >= 0.5
         trajectory_target_coverage = float((target[centerline_mask] >= 0.5).mean())
-        alignment = alignment_metrics(target, spatial_maps[0], spatial_maps[1])
+        alignment = structure_alignment_metrics(
+            target,
+            spatial_maps,
+            skeleton_tolerance=args.skeleton_tolerance,
+        )
         failures = (
             target_quality_failures(alignment, quality_thresholds)
             if source_type in {"real", "external"}
@@ -595,6 +658,12 @@ def main(args) -> None:
             skipped += 1
             continue
         alignment_coverages.append(trajectory_target_coverage)
+        target_skeleton_supports.append(
+            float(alignment["target_skeleton_in_support_fraction"])
+        )
+        trajectory_skeleton_agreements.append(
+            float(alignment["trajectory_near_target_skeleton_fraction"])
+        )
 
         # Float16 is sufficient for normalized conditioning/target maps and
         # keeps a full 128x128 six-channel corpus practical in host memory.
@@ -639,8 +708,21 @@ def main(args) -> None:
             "target_mode": STRUCTURE_TARGET_MODE,
             "structure_threshold": args.structure_threshold,
             "min_component_pixels": args.min_component_pixels,
+            "opening_iterations": args.opening_iterations,
+            "skeleton_tolerance": args.skeleton_tolerance,
             "candidate_exclusion_file": args.exclude_candidates_json,
             "excluded_target_candidates": excluded_candidate_count,
+            "accepted_alignment": {
+                "trajectory_target_coverage_mean": float(
+                    np.mean(alignment_coverages)
+                ) if alignment_coverages else None,
+                "target_skeleton_in_support_mean": float(
+                    np.mean(target_skeleton_supports)
+                ) if target_skeleton_supports else None,
+                "trajectory_near_target_skeleton_mean": float(
+                    np.mean(trajectory_skeleton_agreements)
+                ) if trajectory_skeleton_agreements else None,
+            },
         }, file, ensure_ascii=False, indent=2)
     if audit_manifest:
         audit_dir.mkdir(parents=True, exist_ok=True)
@@ -666,13 +748,15 @@ def main(args) -> None:
         format_version=np.asarray(CHARACTER_DATA_FORMAT),
         trajectory_padding=np.asarray(trajectory_padding, dtype=np.int32),
         trajectory_width=np.asarray(args.trajectory_width, dtype=np.int32),
-        preprocessing_version=np.asarray("clean_register_script_structure_v3"),
+        preprocessing_version=np.asarray("clean_register_script_structure_v4"),
         min_alignment_coverage=np.asarray(args.min_alignment_coverage, dtype=np.float32),
         target_script=np.asarray(args.target_script),
         quality_thresholds=np.asarray(json.dumps(quality_thresholds, sort_keys=True)),
         target_mode=np.asarray(STRUCTURE_TARGET_MODE),
         structure_threshold=np.asarray(args.structure_threshold, dtype=np.float32),
         min_component_pixels=np.asarray(args.min_component_pixels, dtype=np.int32),
+        opening_iterations=np.asarray(args.opening_iterations, dtype=np.int32),
+        skeleton_tolerance=np.asarray(args.skeleton_tolerance, dtype=np.int32),
     )
     print(f"[DONE] Character pairs saved to: {output_path}")
     print(
@@ -688,7 +772,9 @@ def main(args) -> None:
     print(
         f"[DONE] target mode: {STRUCTURE_TARGET_MODE}, "
         f"threshold={args.structure_threshold:.3f}, "
-        f"min_component_pixels={args.min_component_pixels}"
+        f"min_component_pixels={args.min_component_pixels}, "
+        f"opening_iterations={args.opening_iterations}, "
+        f"skeleton_tolerance={args.skeleton_tolerance}"
     )
     print(f"[DONE] target sources: {dict(source_counts)}; skipped={skipped}")
     print(
@@ -705,6 +791,18 @@ def main(args) -> None:
         f"mean={np.mean(alignment_coverages):.4f}, "
         f"median={np.median(alignment_coverages):.4f}, "
         f"min={np.min(alignment_coverages):.4f}"
+    )
+    print(
+        "[CHECK] target skeleton in trajectory support: "
+        f"mean={np.mean(target_skeleton_supports):.4f}, "
+        f"median={np.median(target_skeleton_supports):.4f}, "
+        f"min={np.min(target_skeleton_supports):.4f}"
+    )
+    print(
+        "[CHECK] trajectory near target skeleton: "
+        f"mean={np.mean(trajectory_skeleton_agreements):.4f}, "
+        f"median={np.median(trajectory_skeleton_agreements):.4f}, "
+        f"min={np.min(trajectory_skeleton_agreements):.4f}"
     )
 
 
@@ -745,6 +843,30 @@ if __name__ == "__main__":
         type=int,
         default=8,
         help="Remove isolated target-mask components smaller than this area",
+    )
+    parser.add_argument(
+        "--opening_iterations",
+        type=int,
+        default=1,
+        help="Binary opening passes used to remove thin rubbing/scan noise",
+    )
+    parser.add_argument(
+        "--skeleton_tolerance",
+        type=int,
+        default=5,
+        help="Pixel tolerance used for symmetric trajectory/target skeleton matching",
+    )
+    parser.add_argument(
+        "--min_target_skeleton_in_support_fraction",
+        type=float,
+        default=0.70,
+        help="Minimum target skeleton fraction covered by the trajectory support",
+    )
+    parser.add_argument(
+        "--min_trajectory_near_target_skeleton_fraction",
+        type=float,
+        default=0.60,
+        help="Minimum trajectory centerline fraction near the target skeleton",
     )
     parser.add_argument(
         "--exclude_candidates_json",

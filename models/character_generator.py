@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-CHARACTER_CHECKPOINT_FORMAT = "character_unet_v4"
+CHARACTER_CHECKPOINT_FORMAT = "character_unet_v5"
 
 
 def _group_count(channels: int) -> int:
@@ -104,7 +104,7 @@ class CharacterUNet(nn.Module):
         self.prior_channel = int(prior_channel)
         self.prior_threshold = float(prior_threshold)
         self.prior_sharpness = float(prior_sharpness)
-        # Unlike v3's fixed smooth proximity bias, v4 can learn to reduce this
+        # Unlike the old fixed smooth proximity bias, v5 can reduce this
         # gate when the structure supervision demands a narrower stroke.
         initial_gain = max(float(prior_strength), 1e-4)
         raw_gain = torch.log(torch.expm1(torch.tensor(initial_gain)))

@@ -10,7 +10,7 @@ from utils.character_features import SPATIAL_CHANNEL_NAMES
 from utils.structure_mask import STRUCTURE_TARGET_MODE
 
 
-CHARACTER_DATA_FORMAT = "character_spatial_v6"
+CHARACTER_DATA_FORMAT = "character_spatial_v7"
 
 
 class CharacterTrainDataset(Dataset):
@@ -33,7 +33,8 @@ class CharacterTrainDataset(Dataset):
         if data_format != CHARACTER_DATA_FORMAT:
             raise ValueError(
                 f"Unsupported character NPZ format {data_format!r}; expected "
-                f"{CHARACTER_DATA_FORMAT!r}. v6 requires binary structure-mask targets; "
+                f"{CHARACTER_DATA_FORMAT!r}. v7 requires morphologically cleaned, "
+                "skeleton-checked structure-mask targets; "
                 "older grayscale NPZ files must be rebuilt."
             )
 
@@ -95,6 +96,16 @@ class CharacterTrainDataset(Dataset):
             if "min_component_pixels" in data.files
             else 0
         )
+        self.opening_iterations = int(
+            np.asarray(data["opening_iterations"]).item()
+            if "opening_iterations" in data.files
+            else -1
+        )
+        self.skeleton_tolerance = int(
+            np.asarray(data["skeleton_tolerance"]).item()
+            if "skeleton_tolerance" in data.files
+            else -1
+        )
 
         if self.inputs.ndim != 4:
             raise ValueError(f"inputs must have shape [N,C,H,W], got {self.inputs.shape}")
@@ -123,7 +134,11 @@ class CharacterTrainDataset(Dataset):
                 f"Expected target_mode={STRUCTURE_TARGET_MODE!r}, got {self.target_mode!r}"
             )
         if not np.all(np.logical_or(self.targets == 0.0, self.targets == 1.0)):
-            raise ValueError("v6 structure targets must contain only binary 0/1 values")
+            raise ValueError("v7 structure targets must contain only binary 0/1 values")
+        if self.opening_iterations < 0 or self.skeleton_tolerance < 0:
+            raise ValueError(
+                "v7 NPZ is missing morphology/skeleton preprocessing metadata"
+            )
 
         print("[CHECK] spatial trajectory inputs shape:", self.inputs.shape)
         print("[CHECK] whole-character targets shape:", self.targets.shape)
@@ -137,7 +152,9 @@ class CharacterTrainDataset(Dataset):
         print(
             f"[CHECK] target mode: {self.target_mode}, "
             f"threshold={self.structure_threshold:.3f}, "
-            f"min_component_pixels={self.min_component_pixels}"
+            f"min_component_pixels={self.min_component_pixels}, "
+            f"opening_iterations={self.opening_iterations}, "
+            f"skeleton_tolerance={self.skeleton_tolerance}"
         )
 
     def __len__(self) -> int:

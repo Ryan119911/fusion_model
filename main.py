@@ -93,6 +93,12 @@ def cmd_build_character(args):
         "--target_script", args.target_script,
         "--structure_threshold", str(args.structure_threshold),
         "--min_component_pixels", str(args.min_component_pixels),
+        "--opening_iterations", str(args.opening_iterations),
+        "--skeleton_tolerance", str(args.skeleton_tolerance),
+        "--min_target_skeleton_in_support_fraction",
+        str(args.min_target_skeleton_in_support_fraction),
+        "--min_trajectory_near_target_skeleton_fraction",
+        str(args.min_trajectory_near_target_skeleton_fraction),
         "--min_alignment_coverage", str(args.min_alignment_coverage),
         "--audit_limit_per_status", str(args.audit_limit_per_status),
     ]
@@ -311,6 +317,14 @@ def build_parser():
     p6.add_argument("--target_script", choices=("preserve", "traditional", "simplified"), default="traditional")
     p6.add_argument("--structure_threshold", type=float, default=0.35)
     p6.add_argument("--min_component_pixels", type=int, default=8)
+    p6.add_argument("--opening_iterations", type=int, default=1)
+    p6.add_argument("--skeleton_tolerance", type=int, default=5)
+    p6.add_argument(
+        "--min_target_skeleton_in_support_fraction", type=float, default=0.70
+    )
+    p6.add_argument(
+        "--min_trajectory_near_target_skeleton_fraction", type=float, default=0.60
+    )
     p6.add_argument("--min_alignment_coverage", type=float, default=0.55)
     p6.add_argument("--exclude_candidates_json", default=None)
     p6.add_argument("--audit_limit_per_status", type=int, default=40)

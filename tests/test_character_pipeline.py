@@ -15,7 +15,11 @@ from utils.character_alignment import (
 from utils.character_features import SPATIAL_CHANNEL_NAMES, extract_character_spatial_maps
 from utils.image_preprocessing import letterbox_character_image
 from utils.character_script import CharacterScriptMapper
-from utils.structure_mask import STRUCTURE_TARGET_MODE, build_structure_mask
+from utils.structure_mask import (
+    STRUCTURE_TARGET_MODE,
+    build_structure_mask,
+    symmetric_structure_metrics,
+)
 from utils.types import (
     CharacterTrajectory,
     PointState,
@@ -76,7 +80,7 @@ class CharacterPipelineTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(output).all())
         self.assertFalse(any(isinstance(module, torch.nn.Transformer) for module in model.modules()))
 
-    def test_v6_proximity_prior_is_narrow_and_learnable(self):
+    def test_v7_proximity_prior_is_narrow_and_learnable(self):
         model = CharacterUNet(
             input_channels=6,
             base_channels=8,
@@ -140,7 +144,7 @@ class CharacterPipelineTest(unittest.TestCase):
         self.assertEqual(mapper.convert("丑"), "醜")
         self.assertEqual(mapper.convert("武"), "武")
 
-    def test_v6_quality_filter_rejects_dense_target_outside_trajectory(self):
+    def test_v7_quality_filter_rejects_dense_target_outside_trajectory(self):
         centerline = np.zeros((32, 32), dtype=np.float32)
         centerline[15:17, 5:27] = 1.0
         proximity = np.zeros_like(centerline)
@@ -148,6 +152,9 @@ class CharacterPipelineTest(unittest.TestCase):
         target = np.zeros_like(centerline)
         target[4:28, 4:28] = 1.0
         metrics = alignment_metrics(target, centerline, proximity)
+        metrics.update(
+            symmetric_structure_metrics(target, centerline, proximity)
+        )
         thresholds = {
             "min_alignment_coverage": 0.55,
             "min_support_dice": 0.45,
@@ -157,12 +164,14 @@ class CharacterPipelineTest(unittest.TestCase):
             "max_target_ink_fraction": 0.45,
             "max_foreground_bbox_fill_fraction": 0.55,
             "max_border_ink_fraction": 0.02,
+            "min_target_skeleton_in_support_fraction": 0.70,
+            "min_trajectory_near_target_skeleton_fraction": 0.60,
         }
         failures = target_quality_failures(metrics, thresholds)
         self.assertIn("outside_support_above_threshold", failures)
         self.assertIn("target_ink_above_threshold", failures)
 
-    def test_v6_structure_cleanup_is_binary_and_removes_speckles(self):
+    def test_v7_structure_cleanup_is_binary_and_removes_speckles(self):
         target = np.zeros((32, 32), dtype=np.float32)
         target[12:20, 8:24] = 0.9
         target[2, 2] = 1.0
@@ -176,9 +185,32 @@ class CharacterPipelineTest(unittest.TestCase):
         self.assertEqual(set(np.unique(mask)), {0.0, 1.0})
         self.assertEqual(float(mask[2, 2]), 0.0)
         self.assertEqual(float(mask[15, 15]), 1.0)
-        self.assertEqual(info["components_removed"], 2)
+        self.assertEqual(
+            info["foreground_pixels_before"] - info["foreground_pixels_after"],
+            2,
+        )
 
-    def test_v6_structure_loss_is_finite_and_penalizes_gray(self):
+    def test_v7_symmetric_skeleton_filter_detects_structure_mismatch(self):
+        centerline = np.zeros((32, 32), dtype=np.float32)
+        centerline[15:17, 4:28] = 1.0
+        proximity = np.zeros_like(centerline)
+        proximity[11:21, 2:30] = 1.0
+        aligned_target = np.zeros_like(centerline)
+        aligned_target[12:20, 3:29] = 1.0
+        mismatched_target = np.zeros_like(centerline)
+        mismatched_target[3:11, 3:29] = 1.0
+        aligned = symmetric_structure_metrics(
+            aligned_target, centerline, proximity, skeleton_tolerance=3
+        )
+        mismatched = symmetric_structure_metrics(
+            mismatched_target, centerline, proximity, skeleton_tolerance=3
+        )
+        self.assertGreater(
+            aligned["symmetric_skeleton_score"],
+            mismatched["symmetric_skeleton_score"],
+        )
+
+    def test_v7_structure_loss_is_finite_and_penalizes_gray(self):
         criterion = StructureMaskLoss()
         targets = torch.zeros(1, 1, 16, 16)
         targets[:, :, 6:10, 3:13] = 1.0

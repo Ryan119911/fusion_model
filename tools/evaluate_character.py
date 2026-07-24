@@ -74,6 +74,8 @@ def per_sample_metrics(
         ).float().mean(dim=dims),
         "target_ink": targets.mean(dim=dims),
         "prediction_ink": predictions.mean(dim=dims),
+        "target_mask_ink": target_binary.float().mean(dim=dims),
+        "prediction_mask_ink": pred_binary.float().mean(dim=dims),
         "background_mean": (predictions * background).sum(dim=dims)
         / background.sum(dim=dims).clamp_min(1.0),
         "trajectory_target_coverage": (target_binary & centerline).sum(dim=dims).float()
@@ -82,7 +84,15 @@ def per_sample_metrics(
         / centerline_count,
         "zero_baseline_mse": (targets ** 2).mean(dim=dims),
     }
-    values["ink_ratio"] = values["prediction_ink"] / values["target_ink"].clamp_min(1e-6)
+    values["probability_ink_ratio"] = (
+        values["prediction_ink"] / values["target_ink"].clamp_min(1e-6)
+    )
+    values["mask_ink_ratio"] = (
+        values["prediction_mask_ink"] / values["target_mask_ink"].clamp_min(1e-6)
+    )
+    values["ink_balance_score"] = torch.exp(
+        -torch.abs(torch.log(values["mask_ink_ratio"].clamp_min(1e-6)))
+    )
     return {name: value.detach().cpu().numpy() for name, value in values.items()}
 
 
@@ -104,7 +114,7 @@ def main(args) -> None:
     checkpoint = torch.load(args.checkpoint, map_location=device)
     if checkpoint.get("format") != CHARACTER_CHECKPOINT_FORMAT:
         raise ValueError(
-            f"Expected {CHARACTER_CHECKPOINT_FORMAT}. Rebuild the v6 structure NPZ "
+            f"Expected {CHARACTER_CHECKPOINT_FORMAT}. Rebuild the v7 structure NPZ "
             "and train the structure-first U-Net from scratch."
         )
     model_config = checkpoint.get("model_config")
@@ -128,6 +138,10 @@ def main(args) -> None:
         raise ValueError("Checkpoint and NPZ structure thresholds differ")
     if int(checkpoint.get("min_component_pixels", -1)) != dataset.min_component_pixels:
         raise ValueError("Checkpoint and NPZ component-cleanup settings differ")
+    if int(checkpoint.get("opening_iterations", -1)) != dataset.opening_iterations:
+        raise ValueError("Checkpoint and NPZ morphology-cleanup settings differ")
+    if int(checkpoint.get("skeleton_tolerance", -1)) != dataset.skeleton_tolerance:
+        raise ValueError("Checkpoint and NPZ skeleton tolerances differ")
     if tuple(checkpoint.get("channel_names", ())) != tuple(dataset.channel_names):
         raise ValueError("Checkpoint and NPZ spatial channel schemas differ")
     if int(checkpoint.get("trajectory_padding", -1)) != dataset.trajectory_padding:
@@ -169,7 +183,13 @@ def main(args) -> None:
     saved = 0
     thresholds = sorted({*parse_thresholds(args.thresholds), float(args.threshold)})
     threshold_totals = {
-        threshold: {"dice": 0.0, "iou": 0.0, "boundary_f1": 0.0}
+        threshold: {
+            "dice": 0.0,
+            "iou": 0.0,
+            "boundary_f1": 0.0,
+            "mask_ink_ratio": 0.0,
+            "ink_balance_score": 0.0,
+        }
         for threshold in thresholds
     }
 
@@ -220,6 +240,12 @@ def main(args) -> None:
                 )
                 threshold_totals[threshold]["boundary_f1"] += float(
                     sweep_values["boundary_f1"].sum()
+                )
+                threshold_totals[threshold]["mask_ink_ratio"] += float(
+                    sweep_values["mask_ink_ratio"].sum()
+                )
+                threshold_totals[threshold]["ink_balance_score"] += float(
+                    sweep_values["ink_balance_score"].sum()
                 )
             for name, value in values.items():
                 totals[name] = totals.get(name, 0.0) + value * batch_size
@@ -285,10 +311,21 @@ def main(args) -> None:
             "macro_dice": values["dice"] / count,
             "macro_iou": values["iou"] / count,
             "macro_boundary_f1": values["boundary_f1"] / count,
+            "macro_mask_ink_ratio": values["mask_ink_ratio"] / count,
+            "macro_ink_balance_score": values["ink_balance_score"] / count,
+            "balanced_score": (
+                0.40 * values["iou"]
+                + 0.30 * values["boundary_f1"]
+                + 0.20 * values["dice"]
+                + 0.10 * values["ink_balance_score"]
+            ) / count,
         }
         for threshold, values in threshold_totals.items()
     ]
     best_threshold = max(threshold_sweep, key=lambda row: row["macro_iou"])
+    best_balanced_threshold = max(
+        threshold_sweep, key=lambda row: row["balanced_score"]
+    )
     report = {
         "checkpoint": str(args.checkpoint),
         "npz_path": str(args.npz_path),
@@ -302,6 +339,7 @@ def main(args) -> None:
         "operating_threshold": args.threshold,
         "threshold_sweep": threshold_sweep,
         "best_threshold_by_macro_iou": best_threshold,
+        "best_threshold_by_balanced_score": best_balanced_threshold,
         "panel_order": [
             "trajectory",
             "target_structure",
@@ -336,12 +374,19 @@ def main(args) -> None:
         f"macro_dice={macro_metrics['dice_at_threshold']:.6f}, "
         f"macro_iou={macro_metrics['iou_at_threshold']:.6f}, "
         f"macro_boundary_f1={macro_metrics['boundary_f1']:.6f}, "
-        f"macro_ink_ratio={macro_metrics['ink_ratio']:.6f}"
+        f"macro_probability_ink_ratio={macro_metrics['probability_ink_ratio']:.6f}, "
+        f"macro_mask_ink_ratio={macro_metrics['mask_ink_ratio']:.6f}"
     )
     print(
         f"[THRESHOLD] best={best_threshold['threshold']:.2f}, "
         f"macro_iou={best_threshold['macro_iou']:.6f}, "
         f"macro_dice={best_threshold['macro_dice']:.6f}"
+    )
+    print(
+        f"[BALANCED THRESHOLD] best={best_balanced_threshold['threshold']:.2f}, "
+        f"score={best_balanced_threshold['balanced_score']:.6f}, "
+        f"macro_iou={best_balanced_threshold['macro_iou']:.6f}, "
+        f"mask_ink_ratio={best_balanced_threshold['macro_mask_ink_ratio']:.6f}"
     )
     print(f"[DONE] Reports and complete-character comparisons saved to: {output_dir}")
 
