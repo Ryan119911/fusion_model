@@ -83,9 +83,9 @@ def load_trajectory_csv(csv_path: str) -> List[CharacterTrajectory]:
     for sample_id, rows in grouped_rows.items():
         points = [row_to_point(r) for r in rows]
         character = None
+        meta = {"sample_id": sample_id}
         if len(rows) > 0 and rows[0].get("character"):
             character = str(rows[0]["character"])         
-            meta = {"sample_id": sample_id}
         samples.append(build_character_trajectory(points, character=character, meta=meta))
     return samples
 

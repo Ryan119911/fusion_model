@@ -1,0 +1,24 @@
+data:
+  root_dir: data
+  raw_dir: data/raw
+  processed_dir: data/processed
+  cache_dir: data/cache
+
+train:
+  output_dir: outputs/paper_bbsmg_v1
+  batch_size: 32
+  epochs: 50
+  lr: 0.0003
+  weight_decay: 0.000001
+  num_workers: 0
+  save_interval: 5
+  seed: 42
+  device: cuda
+
+bbsmg:
+  input_dim: 5
+  latent_dim: 256
+  base_channels: 64
+  out_channels: 1
+  image_size: 128
+  use_tanh: false

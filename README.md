@@ -342,3 +342,204 @@ v8 不做：
 ```text
 v8 轨迹忠实结构 Mask + 风格参考 → 风格化书法图
 ```
+
+## 11. 论文融合仿真原型：B-BSMG + Dynamic Brush + PSOC/LM
+
+这是一条与 v8 并行的新链路，不替换整字 U-Net。它用于从固定的二维轨迹和目标图像反演论文姿态参数：
+
+```text
+固定 x/y 轨迹
+  → CGL 节点表示 H/α/β
+  → 动态宽度、拖曳和笔尖偏移
+  → (Lt,Lh,Lr) 反解虚拟姿态
+  → 可微 B-BSMG 逐点渲染并集
+  → 图像残差
+  → LM 更新 H/α/β 节点
+```
+
+原型范围和单位固定为：
+
+```text
+H       11–20 mm
+alpha   0–10° = 0–0.174532925 rad
+beta    0–5°  = 0–0.087266463 rad
+gamma   0 rad（固定，不参与优化）
+```
+
+这里的 `alpha` 是倾角，`beta` 是纸面内旋转角，`gamma` 是当前轴对称笔刷模型不可观测的第三轴向角。CSV 中所有角度均输出弧度。`z` 暂存论文参数 `H`，单位 mm；它还不是机器人基坐标系中的 TCP z。
+
+代码使用 B-BSMG 论文给出的暂定回归式：
+
+```text
+Lt = 0.0672 H + 0.0263 alpha + 0.0191 beta + 0.0267
+Lh = 0.0196 H + 0.0039 alpha + 0.0073 beta + 0.0372
+Lr = 0.0239 H + 0.0061 alpha + 0.0096 beta + 0.1137
+```
+
+正向渲染中先按动态笔刷论文对宽度 `w=Lr` 和拖曳长度 `d=Lt+Lh` 做一阶惯性更新，再用带参考姿态正则的回归逆解得到 B-BSMG 的虚拟 `(H,alpha,beta)`。笔尖偏移采用受自由偏移与相邻点位移共同限制的 `min` 原型。轨迹切向角由固定 x/y 计算，不冒充第三姿态角。
+
+### 11.1 构建新的论文 B-BSMG 数据
+
+旧 `bbsmg_train_10d.npz` 的姿态列没有覆盖上述范围，不能用于这条反演链路。重新生成：
+
+```bash
+python -u tools/build_paper_bbsmg_dataset.py \
+  --output_npz data/processed/paper_bbsmg_v1.npz \
+  --count 50000 \
+  --image_size 128 \
+  --pixels_per_model_unit 20 \
+  --supersample 4 \
+  --anchor_margin 4 \
+  --seed 42
+```
+
+输出：
+
+```text
+data/processed/paper_bbsmg_v1.npz
+data/processed/paper_bbsmg_v1.summary.json
+```
+
+NPZ 输入严格为：
+
+```text
+[H_mm, alpha_rad, beta_rad, x0_px, y0_px]
+```
+
+目标是论文对称三次 Bézier B-BSM 的抗锯齿 `128×128` 笔触图。NPZ 内保存了特征名、单位、上下限和归一化尺度；训练和推理必须读取同一份尺度。
+
+### 11.2 训练论文参数化 B-BSMG
+
+```bash
+python -u tools/train_bbsmg.py \
+  --config configs/paper_bbsmg.yaml \
+  --npz_path data/processed/paper_bbsmg_v1.npz \
+  --output_dir outputs/paper_bbsmg_v1 \
+  --epochs 50 \
+  --val_ratio 0.1 \
+  --lr_factor 0.5 \
+  --lr_patience 3 \
+  --min_lr 0.000001
+```
+
+必须使用：
+
+```text
+outputs/paper_bbsmg_v1/bbsmg_best.pt
+```
+
+新 checkpoint 标记为 `paper_bbsmg_v1`、`input_dim=5`，并保存训练归一化。反演器会拒绝 10D checkpoint 或特征语义不匹配的 checkpoint。
+
+先评估单笔参数模型，再进行整字反演：
+
+```bash
+python -u tools/evaluate_bbsmg.py \
+  --config configs/paper_bbsmg.yaml \
+  --npz_path data/processed/paper_bbsmg_v1.npz \
+  --checkpoint outputs/paper_bbsmg_v1/bbsmg_best.pt \
+  --output_dir outputs/eval_paper_bbsmg_v1 \
+  --val_ratio 0.1 \
+  --num_images 40
+```
+
+### 11.3 先检查正向融合渲染
+
+用默认姿态运行 Dynamic Brush + B-BSMG：
+
+```bash
+python -u tools/render_paper_trajectory.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
+  --character 武 \
+  --h_mm 15.5 \
+  --alpha_deg 0 \
+  --beta_deg 0 \
+  --output_image outputs/wu_paper_forward/default_pose.png
+```
+
+反演完成后，也可以重新正向验证导出的弧度姿态：
+
+```bash
+python -u tools/render_paper_trajectory.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
+  --pose_csv outputs/wu_paper_inverse_v1/wu_trajectory.csv \
+  --character 武 \
+  --output_image outputs/wu_paper_forward/inverted_pose.png
+```
+
+每次正向运行还会生成同名 `.states.csv`，逐点记录虚拟姿态、`Lt/Lh/Lr`、动态偏移、x/y 切向角和实际接触画布坐标，用于后续标定审计。
+
+### 11.4 对“武”字执行固定 x/y 的 PSOC/LM 反演
+
+```bash
+python -u tools/invert_paper_trajectory.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --target_image assets/targets/wu_kaishu_target.png \
+  --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
+  --character 武 \
+  --output_dir outputs/wu_paper_inverse_v1 \
+  --output_stem wu \
+  --device cuda \
+  --padding 16 \
+  --order 3 \
+  --optimization_size 16 \
+  --max_steps 15 \
+  --damping 0.05 \
+  --initial_h_mm 15.5 \
+  --initial_alpha_deg 0 \
+  --initial_beta_deg 0
+```
+
+显存或速度不足时可以先做烟雾测试：
+
+```bash
+python -u tools/invert_paper_trajectory.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --target_image assets/targets/wu_kaishu_target.png \
+  --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
+  --character 武 \
+  --output_dir outputs/wu_paper_inverse_smoke \
+  --order 2 \
+  --optimization_size 8 \
+  --render_stride 2 \
+  --max_steps 2
+```
+
+正式结果包含：
+
+```text
+wu_trajectory.csv   原始 x/y + 反演 z(H)/alpha/beta + gamma=0
+wu_target.png
+wu_initial.png
+wu_rendered.png
+wu_diff.png
+wu_comparison.png
+wu_report.json
+```
+
+目标图必须与输入 x/y 轨迹在位置、长度、笔画走向上基本对齐。该工具故意不允许 LM 移动 x/y，所以它只能用 H/α/β 修正局部笔触宽度、拖曳、方向细节和接触形态；不能把一套骨架变成另一套字形。若目标与轨迹骨架不一致，应先完成二维配准或更换匹配轨迹。
+
+LM 每一步都要构造图像残差对 CGL 姿态节点的 Jacobian，运行时间明显长于普通神经网络推理。实现采用逐列 JVP 控制显存；`order`、`optimization_size` 和 `render_stride` 共同决定速度与精度。
+
+检查 `wu_trajectory.csv` 时必须满足：
+
+- `x/y` 与输入轨迹逐点完全一致；
+- `z` 位于 `[11,20]` mm；
+- `alpha` 位于 `[0,0.174532925]` rad；
+- `beta` 位于 `[0,0.087266463]` rad；
+- `gamma` 每行严格为 `0`；
+- `pose_frame=paper_model`、`prototype=paper_psoc_lm_v1`。
+
+### 11.5 当前原型不能直接下发机器人
+
+论文回归系数、`20 pixel/model-unit`、惯性系数和偏移比例目前都是仿真参数。真实执行前必须依次替换：
+
+1. 用真实毛笔采集 `(H,alpha,beta) → (Lt,Lh,Lr)` 标定数据并重拟合回归；
+2. 用连续书写数据拟合宽度、拖曳、偏移和惯性参数；
+3. 完成相机像素、纸面坐标、机器人基坐标和 TCP 的外参标定；
+4. 明确定义 `paper_model` 姿态到机器人控制器 Euler/四元数的旋转顺序；
+5. 加入关节限位、速度、加速度、碰撞和纸面接触力约束；
+6. 低速、离纸、单笔验证后才允许接触纸面。
+
+因此当前导出的六维序列是“论文纸面坐标系中的仿真反演结果”，不是可直接执行的机器人轨迹真值。

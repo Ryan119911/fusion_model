@@ -1,6 +1,7 @@
 # 中文注释：本文件命令行工具：训练 B-BSMG 笔触生成网络并保存检查点。
 import argparse
 import csv
+import json
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 import random
@@ -34,25 +35,45 @@ class BBSMGTrainDataset(Dataset):
         data = np.load(path, allow_pickle=True)
 
         self.inputs = data["inputs"].astype(np.float32)
+        target_dtype = data["targets"].dtype
         self.targets = data["targets"].astype(np.float32)
+        if np.issubdtype(target_dtype, np.integer):
+            self.targets /= float(np.iinfo(target_dtype).max)
 
         # 如果 targets 是 [N,H,W]，转成 [N,1,H,W]
         if self.targets.ndim == 3:
             self.targets = self.targets[:, None, :, :]
 
-        # 输入归一化：你现在是 5D 输入
-        h_max = max(float(np.nanmax(self.inputs[:, 0])), 1.0)
-        scales = np.ones((self.inputs.shape[1],), dtype=np.float32)
-        scales[0] = h_max
-        # Features after h/alpha/beta are all canvas-space geometry:
-        # x0, y0, x1, y1, dx, dy, length (or x0/y0 in legacy 5D data).
-        if self.inputs.shape[1] > 3:
-            scales[3:] = float(coordinate_scale)
-        self.input_normalization = {
-            "version": 1,
-            "input_dim": int(self.inputs.shape[1]),
-            "scales": scales.tolist(),
-        }
+        # Prefer explicit NPZ normalization; retain the legacy fallback.
+        metadata = {}
+        if "metadata_json" in data:
+            raw_metadata = data["metadata_json"]
+            raw_metadata = (
+                raw_metadata.item()
+                if getattr(raw_metadata, "ndim", 0) == 0
+                else raw_metadata.tolist()
+            )
+            metadata = json.loads(str(raw_metadata))
+        recorded_normalization = metadata.get("input_normalization")
+        if recorded_normalization is not None:
+            scales = np.asarray(
+                recorded_normalization["scales"], dtype=np.float32
+            )
+            if scales.shape != (self.inputs.shape[1],):
+                raise ValueError("NPZ input_normalization dimension is invalid")
+            self.input_normalization = dict(recorded_normalization)
+        else:
+            h_max = max(float(np.nanmax(self.inputs[:, 0])), 1.0)
+            scales = np.ones((self.inputs.shape[1],), dtype=np.float32)
+            scales[0] = h_max
+            # Preserve normalization for existing 10D/legacy 5D datasets.
+            if self.inputs.shape[1] > 3:
+                scales[3:] = float(coordinate_scale)
+            self.input_normalization = {
+                "version": 1,
+                "input_dim": int(self.inputs.shape[1]),
+                "scales": scales.tolist(),
+            }
         self.inputs = self.inputs / scales[None, :]
 
         print("[CHECK] inputs shape:", self.inputs.shape)
@@ -554,8 +575,25 @@ def append_metrics_csv(path: Path, epoch: int, train_loss: float, lr: float, val
 def save_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, scheduler, epoch: int, train_loss: float, val_metrics: Optional[Dict[str, float]], best_val: Optional[float], ckpt_path: str, input_normalization: Optional[Dict[str, Any]] = None) -> None:
     Path(ckpt_path).parent.mkdir(parents=True, exist_ok=True)
     val_loss = val_metrics.get("composite_loss") if val_metrics is not None else None
+    encoder_linears = [
+        module for module in model.encoder.net if isinstance(module, nn.Linear)
+    ]
+    model_config = {
+        "input_dim": int(encoder_linears[0].in_features),
+        "latent_dim": int(encoder_linears[-1].out_features),
+        "base_channels": int(model.decoder.fc.out_features // (8 * 8 * 8)),
+        "image_size": int(model.decoder.image_size),
+    }
+    checkpoint_format = (
+        "paper_bbsmg_v1"
+        if (input_normalization or {}).get("feature_names")
+        == ["H_mm", "alpha_rad", "beta_rad", "x0_px", "y0_px"]
+        else "bbsmg_legacy"
+    )
     torch.save({
+        "format": checkpoint_format,
         "epoch": epoch,
+        "model_config": model_config,
         "model_state": model.state_dict(),
         "optimizer_state": optimizer.state_dict(),
         "scheduler_state": scheduler.state_dict() if scheduler is not None else None,
