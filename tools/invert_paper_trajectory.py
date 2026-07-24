@@ -92,7 +92,7 @@ def save_pose_csv(sample, posture: np.ndarray, output_path: Path) -> None:
                     "z_unit": "mm",
                     "angle_unit": "rad",
                     "pose_frame": "paper_model",
-                    "prototype": "paper_psoc_lm_v2",
+                    "prototype": "paper_psoc_lm_v3",
                 }
             )
 
@@ -186,6 +186,7 @@ def main(args: argparse.Namespace) -> None:
         pixels_per_model_unit=args.pixels_per_model_unit,
         patch_floor=args.patch_floor,
         footprint_scale=args.footprint_scale,
+        render_max_step_px=args.render_max_step_px,
     )
     renderer = PaperFusionRenderer.from_checkpoint(
         args.bbsmg_ckpt,
@@ -249,7 +250,7 @@ def main(args: argparse.Namespace) -> None:
         output_dir / f"{stem}_comparison.png",
     )
     report = {
-        "format": "paper_psoc_lm_v2",
+        "format": "paper_psoc_lm_v3",
         "simulation_only": True,
         "character": sample.character,
         "sample_id": sample.meta.get("sample_id"),
@@ -265,6 +266,7 @@ def main(args: argparse.Namespace) -> None:
                 args.pixels_per_model_unit * args.footprint_scale
             ),
             "patch_floor": args.patch_floor,
+            "render_max_step_px": args.render_max_step_px,
         },
         "limits": {
             "H_mm": [11.0, 20.0],
@@ -354,5 +356,6 @@ if __name__ == "__main__":
     parser.add_argument("--offset_fraction", type=float, default=0.25)
     parser.add_argument("--pixels_per_model_unit", type=float, default=20.0)
     parser.add_argument("--patch_floor", type=float, default=0.05)
-    parser.add_argument("--footprint_scale", type=float, default=0.5)
+    parser.add_argument("--footprint_scale", type=float, default=0.35)
+    parser.add_argument("--render_max_step_px", type=float, default=2.0)
     main(parser.parse_args())

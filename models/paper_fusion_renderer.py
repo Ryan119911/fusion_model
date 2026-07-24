@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -30,7 +31,8 @@ class PaperDynamicConfig:
     pixels_per_model_unit: float = 20.0
     inverse_regularization: float = 1e-4
     patch_floor: float = 0.05
-    footprint_scale: float = 0.5
+    footprint_scale: float = 0.35
+    render_max_step_px: float = 2.0
 
 
 def _infer_model_config(state: Dict[str, torch.Tensor]) -> Dict[str, int]:
@@ -82,6 +84,8 @@ class PaperFusionRenderer(nn.Module):
             raise ValueError("drag_inertia must be in [0,1]")
         if self.dynamic.footprint_scale <= 0.0:
             raise ValueError("footprint_scale must be positive")
+        if self.dynamic.render_max_step_px <= 0.0:
+            raise ValueError("render_max_step_px must be positive")
         self.point_batch_size = int(point_batch_size)
 
     @classmethod
@@ -250,7 +254,12 @@ class PaperFusionRenderer(nn.Module):
                 device=posture.device,
             )
 
-        states = self.compute_dynamic_states(xy_canvas, posture, stroke_ids)
+        render_xy, render_posture, render_stroke_ids = (
+            self.densify_for_rendering(xy_canvas, posture, stroke_ids)
+        )
+        states = self.compute_dynamic_states(
+            render_xy, render_posture, render_stroke_ids
+        )
         virtual_posture = states["virtual_posture"]
         contact_xy = states["contact_xy"]
         heading = states["heading"]
@@ -278,6 +287,76 @@ class PaperFusionRenderer(nn.Module):
             )
             transmittance = transmittance * chunk_transmittance
         return (1.0 - transmittance).clamp(0.0, 1.0)
+
+    def densify_for_rendering(
+        self,
+        xy_canvas: torch.Tensor,
+        posture: torch.Tensor,
+        stroke_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Continuously sweep the footprint without changing exported x/y.
+
+        Segment counts depend only on the fixed x/y path. Posture remains
+        differentiable because every inserted pose is a linear interpolation
+        of the two original endpoint poses.
+        """
+        xy_parts = []
+        posture_parts = []
+        id_parts = []
+        max_step = float(self.dynamic.render_max_step_px)
+        for stroke_id in torch.unique_consecutive(stroke_ids):
+            indices = torch.nonzero(
+                stroke_ids == stroke_id, as_tuple=False
+            ).flatten()
+            points = xy_canvas[indices]
+            poses = posture[indices]
+            if len(indices) == 0:
+                continue
+            xy_parts.append(points[:1])
+            posture_parts.append(poses[:1])
+            id_parts.append(stroke_ids[indices[:1]])
+            for point_index in range(len(indices) - 1):
+                distance = float(
+                    torch.linalg.vector_norm(
+                        points[point_index + 1] - points[point_index]
+                    )
+                    .detach()
+                    .cpu()
+                )
+                steps = max(int(np.ceil(distance / max_step)), 1)
+                t = torch.arange(
+                    1,
+                    steps + 1,
+                    dtype=xy_canvas.dtype,
+                    device=xy_canvas.device,
+                ) / float(steps)
+                xy_parts.append(
+                    torch.lerp(
+                        points[point_index][None],
+                        points[point_index + 1][None],
+                        t[:, None],
+                    )
+                )
+                posture_parts.append(
+                    torch.lerp(
+                        poses[point_index][None],
+                        poses[point_index + 1][None],
+                        t[:, None],
+                    )
+                )
+                id_parts.append(
+                    torch.full(
+                        (steps,),
+                        int(stroke_id.item()),
+                        dtype=stroke_ids.dtype,
+                        device=stroke_ids.device,
+                    )
+                )
+        return (
+            torch.cat(xy_parts, dim=0),
+            torch.cat(posture_parts, dim=0),
+            torch.cat(id_parts, dim=0),
+        )
 
     def compute_dynamic_states(
         self,

@@ -169,6 +169,7 @@ def main(args: argparse.Namespace) -> None:
             pixels_per_model_unit=args.pixels_per_model_unit,
             patch_floor=args.patch_floor,
             footprint_scale=args.footprint_scale,
+            render_max_step_px=args.render_max_step_px,
         ),
         point_batch_size=args.point_batch_size,
     )
@@ -177,6 +178,9 @@ def main(args: argparse.Namespace) -> None:
         posture_tensor = torch.as_tensor(posture, device=device)
         stroke_tensor = torch.as_tensor(stroke_ids, device=device)
         states = renderer.compute_dynamic_states(
+            xy_tensor, posture_tensor, stroke_tensor
+        )
+        dense_xy, _, _ = renderer.densify_for_rendering(
             xy_tensor, posture_tensor, stroke_tensor
         )
         rendered = renderer(
@@ -205,6 +209,9 @@ def main(args: argparse.Namespace) -> None:
         "z_semantics": "H_mm",
         "gamma_rad": 0.0,
         "footprint_scale": args.footprint_scale,
+        "input_point_count": int(len(xy)),
+        "render_sample_count": int(len(dense_xy)),
+        "render_max_step_px": args.render_max_step_px,
     }
     output.with_suffix(".json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -238,6 +245,7 @@ if __name__ == "__main__":
     parser.add_argument("--offset_fraction", type=float, default=0.25)
     parser.add_argument("--pixels_per_model_unit", type=float, default=20.0)
     parser.add_argument("--patch_floor", type=float, default=0.05)
-    parser.add_argument("--footprint_scale", type=float, default=0.5)
+    parser.add_argument("--footprint_scale", type=float, default=0.35)
+    parser.add_argument("--render_max_step_px", type=float, default=2.0)
     parser.add_argument("--point_batch_size", type=int, default=128)
     main(parser.parse_args())

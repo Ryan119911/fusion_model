@@ -111,6 +111,35 @@ try:
             self.assertTrue(torch.all(posture >= lower))
             self.assertTrue(torch.all(posture <= upper))
 
+        def test_render_densification_preserves_endpoints_and_pose_gradient(self):
+            from types import SimpleNamespace
+
+            from models.paper_fusion_renderer import (
+                PaperDynamicConfig,
+                PaperFusionRenderer,
+            )
+
+            fake_renderer = SimpleNamespace(
+                dynamic=PaperDynamicConfig(render_max_step_px=1.5)
+            )
+            xy = torch.tensor([[0.0, 0.0], [6.0, 0.0]])
+            posture = torch.tensor(
+                [[11.0, 0.0, 0.0], [20.0, 0.1, 0.05]],
+                requires_grad=True,
+            )
+            stroke_ids = torch.tensor([0, 0])
+            dense_xy, dense_posture, dense_ids = (
+                PaperFusionRenderer.densify_for_rendering(
+                    fake_renderer, xy, posture, stroke_ids
+                )
+            )
+            self.assertEqual(len(dense_xy), 5)
+            torch.testing.assert_close(dense_xy[0], xy[0])
+            torch.testing.assert_close(dense_xy[-1], xy[-1])
+            self.assertTrue(torch.all(dense_ids == 0))
+            dense_posture.sum().backward()
+            self.assertTrue(torch.isfinite(posture.grad).all())
+
 except ImportError:
     pass
 

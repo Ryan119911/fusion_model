@@ -394,8 +394,8 @@ python -u tools/build_paper_bbsmg_dataset.py \
 ```
 
 `pixels_per_model_unit=20` 用于生成单笔训练图。整字正向融合默认再使用
-`footprint_scale=0.5`，即当前归一化整字画布中的有效比例为约
-`10 pixel/model-unit`。这是针对当前 128×128 目标与轨迹尺度的仿真桥接参数，
+`footprint_scale=0.35`，即当前归一化整字画布中的有效比例为约
+`7 pixel/model-unit`。这是针对当前 128×128 目标与轨迹尺度的仿真桥接参数，
 后续必须由真实相机与毛笔标定替换。
 
 输出：
@@ -459,7 +459,8 @@ python -u tools/render_paper_trajectory.py \
   --h_mm 15.5 \
   --alpha_deg 0 \
   --beta_deg 0 \
-  --footprint_scale 0.5 \
+  --footprint_scale 0.35 \
+  --render_max_step_px 2.0 \
   --output_image outputs/wu_paper_forward/default_pose.png
 ```
 
@@ -469,9 +470,10 @@ python -u tools/render_paper_trajectory.py \
 python -u tools/render_paper_trajectory.py \
   --trajectory_csv data/raw/trajectories.csv \
   --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
-  --pose_csv outputs/wu_paper_inverse_v2/wu_trajectory.csv \
+  --pose_csv outputs/wu_paper_inverse_v3/wu_trajectory.csv \
   --character 武 \
-  --footprint_scale 0.5 \
+  --footprint_scale 0.35 \
+  --render_max_step_px 2.0 \
   --output_image outputs/wu_paper_forward/inverted_pose.png
 ```
 
@@ -485,7 +487,7 @@ python -u tools/invert_paper_trajectory.py \
   --target_image assets/targets/wu_kaishu_target.png \
   --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
   --character 武 \
-  --output_dir outputs/wu_paper_inverse_v2 \
+  --output_dir outputs/wu_paper_inverse_v3 \
   --output_stem wu \
   --device cuda \
   --padding 16 \
@@ -496,7 +498,8 @@ python -u tools/invert_paper_trajectory.py \
   --initial_h_mm 15.5 \
   --initial_alpha_deg 0 \
   --initial_beta_deg 0 \
-  --footprint_scale 0.5
+  --footprint_scale 0.35 \
+  --render_max_step_px 2.0
 ```
 
 显存或速度不足时可以先做烟雾测试：
@@ -537,7 +540,7 @@ LM 每一步都要构造图像残差对 CGL 姿态节点的 Jacobian，运行时
 - `alpha` 位于 `[0,0.174532925]` rad；
 - `beta` 位于 `[0,0.087266463]` rad；
 - `gamma` 每行严格为 `0`；
-- `pose_frame=paper_model`、`prototype=paper_psoc_lm_v2`。
+- `pose_frame=paper_model`、`prototype=paper_psoc_lm_v3`。
 
 如果旧版 `paper_psoc_lm_v1` CSV 报姿态越界，可先显式裁剪并查看图像：
 
@@ -548,16 +551,19 @@ python -u tools/render_paper_trajectory.py \
   --pose_csv outputs/wu_paper_inverse_v1/wu_trajectory.csv \
   --character 武 \
   --clip_pose_limits \
-  --footprint_scale 0.5 \
+  --footprint_scale 0.35 \
+  --render_max_step_px 2.0 \
   --output_image outputs/wu_paper_forward/inverted_pose_legacy_clipped.png
 ```
 
-裁剪结果只用于诊断。正式 CSV 必须用 v2 反演器重新生成；v2 在每个轨迹采样点
-上对插值后的 CGL logits 使用 sigmoid，因此不会再发生节点之间的多项式越界。
+裁剪结果只用于诊断。正式 CSV 必须用 v3 反演器重新生成。v3 保留 v2 的
+逐点有界 sigmoid，并沿相邻固定 x/y 线段按不超过 2 px 的间距插入可微
+渲染样本，解决稀疏轨迹被渲染成离散印章点的问题。插值样本只进入正向渲染，
+导出的原始 x/y 点数与坐标不变。
 
 ### 11.5 当前原型不能直接下发机器人
 
-论文回归系数、`20 pixel/model-unit`、`footprint_scale=0.5`、惯性系数和偏移比例目前都是仿真参数。真实执行前必须依次替换：
+论文回归系数、`20 pixel/model-unit`、`footprint_scale=0.35`、惯性系数和偏移比例目前都是仿真参数。真实执行前必须依次替换：
 
 1. 用真实毛笔采集 `(H,alpha,beta) → (Lt,Lh,Lr)` 标定数据并重拟合回归；
 2. 用连续书写数据拟合宽度、拖曳、偏移和惯性参数；
