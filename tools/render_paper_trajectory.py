@@ -21,7 +21,9 @@ from models.paper_fusion_renderer import PaperDynamicConfig, PaperFusionRenderer
 from tools.invert_paper_trajectory import flatten_canvas_trajectory, pick_sample
 
 
-def load_pose_csv(path: str, sample) -> np.ndarray:
+def load_pose_csv(
+    path: str, sample, clip_pose_limits: bool = False
+) -> np.ndarray:
     by_key = {}
     with open(path, "r", encoding="utf-8-sig", newline="") as file:
         for row in csv.DictReader(file):
@@ -41,13 +43,27 @@ def load_pose_csv(path: str, sample) -> np.ndarray:
             raise ValueError(f"Pose CSV is missing stroke/point {key}")
         values.append(by_key[key])
     posture = np.asarray(values, dtype=np.float32)
-    if np.any(posture < PAPER_POSTURE_MIN) or np.any(
-        posture > PAPER_POSTURE_MAX
-    ):
+    tolerance = 1e-6
+    invalid = np.any(posture < PAPER_POSTURE_MIN - tolerance) or np.any(
+        posture > PAPER_POSTURE_MAX + tolerance
+    )
+    if invalid and not clip_pose_limits:
+        ranges = [
+            (float(posture[:, index].min()), float(posture[:, index].max()))
+            for index in range(3)
+        ]
         raise ValueError(
-            "Pose CSV exceeds H=11-20 mm, alpha=0-10 deg, beta=0-5 deg"
+            "Pose CSV exceeds H=11-20 mm, alpha=0-10 deg, beta=0-5 deg; "
+            f"actual ranges={ranges}. Re-run inversion with paper_psoc_lm_v2 "
+            "or pass --clip_pose_limits to inspect this legacy result."
         )
-    return posture
+    if invalid:
+        print(
+            "[WARN] Clipping legacy pose CSV to prototype limits. "
+            "Use this only for visual inspection; re-run inversion for a "
+            "physically valid result."
+        )
+    return np.clip(posture, PAPER_POSTURE_MIN, PAPER_POSTURE_MAX)
 
 
 def save_dynamic_states(sample, xy, posture, states, path: Path) -> None:
@@ -117,7 +133,11 @@ def main(args: argparse.Namespace) -> None:
         sample, args.image_size, args.padding
     )
     if args.pose_csv:
-        posture = load_pose_csv(args.pose_csv, sample)
+        posture = load_pose_csv(
+            args.pose_csv,
+            sample,
+            clip_pose_limits=args.clip_pose_limits,
+        )
         pose_source = args.pose_csv
     else:
         posture = np.tile(
@@ -148,6 +168,7 @@ def main(args: argparse.Namespace) -> None:
             offset_fraction=args.offset_fraction,
             pixels_per_model_unit=args.pixels_per_model_unit,
             patch_floor=args.patch_floor,
+            footprint_scale=args.footprint_scale,
         ),
         point_batch_size=args.point_batch_size,
     )
@@ -183,6 +204,7 @@ def main(args: argparse.Namespace) -> None:
         "angle_unit": "rad",
         "z_semantics": "H_mm",
         "gamma_rad": 0.0,
+        "footprint_scale": args.footprint_scale,
     }
     output.with_suffix(".json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -198,6 +220,7 @@ if __name__ == "__main__":
     parser.add_argument("--trajectory_csv", required=True)
     parser.add_argument("--bbsmg_ckpt", required=True)
     parser.add_argument("--pose_csv", default=None)
+    parser.add_argument("--clip_pose_limits", action="store_true")
     parser.add_argument("--character", default=None)
     parser.add_argument("--sample_id", default=None)
     parser.add_argument("--index", type=int, default=0)
@@ -215,5 +238,6 @@ if __name__ == "__main__":
     parser.add_argument("--offset_fraction", type=float, default=0.25)
     parser.add_argument("--pixels_per_model_unit", type=float, default=20.0)
     parser.add_argument("--patch_floor", type=float, default=0.05)
+    parser.add_argument("--footprint_scale", type=float, default=0.5)
     parser.add_argument("--point_batch_size", type=int, default=128)
     main(parser.parse_args())

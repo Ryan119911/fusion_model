@@ -99,18 +99,21 @@ class PaperPSOCLM:
         upper = torch.as_tensor(
             PAPER_POSTURE_MAX, dtype=decision.dtype, device=decision.device
         )
-        normalized_nodes = torch.sigmoid(
-            decision.view(len(matrices), 3, node_count)
-        )
+        node_logits = decision.view(len(matrices), 3, node_count)
+        normalized_nodes = torch.sigmoid(node_logits)
         normalized_points = torch.empty(
             (point_count, 3), dtype=decision.dtype, device=decision.device
         )
         for stroke_index, (matrix, indices) in enumerate(
             zip(matrices, point_indices)
         ):
-            values = matrix.to(dtype=decision.dtype) @ normalized_nodes[
-                stroke_index
-            ].T
+            # Interpolating already-bounded node values can overshoot between
+            # CGL points. Interpolate logits first, then map every trajectory
+            # point through sigmoid so the physical limits are guaranteed.
+            point_logits = (
+                matrix.to(dtype=decision.dtype) @ node_logits[stroke_index].T
+            )
+            values = torch.sigmoid(point_logits)
             normalized_points[
                 torch.as_tensor(indices, device=decision.device)
             ] = values

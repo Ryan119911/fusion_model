@@ -137,7 +137,7 @@ class SSIMLoss(nn.Module):
     结构相似性损失：让生成笔画在局部结构上更接近 target。
     输入要求: preds/targets shape = [B,1,H,W], range=[0,1]
     """
-    def __init__(self, window_size: int = 11, sigma: float = 1.5, eps: float = 1e-6):
+    def __init__(self, window_size: int = 11, sigma: float = 1.5, eps: float = 1e-12):
         super().__init__()
         self.window_size = window_size
         self.sigma = sigma
@@ -176,10 +176,14 @@ class SSIMLoss(nn.Module):
         sigma_y2 = F.conv2d(targets * targets, window, padding=padding) - mu_y2
         sigma_xy = F.conv2d(preds * targets, window, padding=padding) - mu_xy
 
-        ssim_map = (
-            (2.0 * mu_xy + c1) * (2.0 * sigma_xy + c2)
-            / ((mu_x2 + mu_y2 + c1) * (sigma_x2 + sigma_y2 + c2) + self.eps)
+        numerator = (2.0 * mu_xy + c1) * (2.0 * sigma_xy + c2)
+        denominator = (mu_x2 + mu_y2 + c1) * (
+            sigma_x2 + sigma_y2 + c2
         )
+        # c1/c2 already keep the denominator positive. A previous 1e-6
+        # additive epsilon was larger than c1*c2 (9e-8), so even identical
+        # black background scored only about 0.08 SSIM.
+        ssim_map = numerator / denominator.clamp_min(self.eps)
         ssim = ssim_map.mean().clamp(0.0, 1.0)
         return 1.0 - ssim
 

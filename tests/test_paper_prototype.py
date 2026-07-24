@@ -74,6 +74,43 @@ try:
                 atol=1e-6,
             )
 
+        def test_posture_is_bounded_between_cgl_nodes(self):
+            from optim.paper_psoc_lm import PaperPSOCLM
+
+            solver = object.__new__(PaperPSOCLM)
+            solver.order = 3
+            matrix = torch.as_tensor(
+                cgl_interpolation_matrix(order=3, num_samples=41)
+            )
+            # Alternating large logits provoke polynomial overshoot before
+            # sigmoid, but every decoded physical point must remain bounded.
+            decision = torch.tensor(
+                [
+                    -8.0,
+                    8.0,
+                    -8.0,
+                    8.0,
+                    8.0,
+                    -8.0,
+                    8.0,
+                    -8.0,
+                    -6.0,
+                    6.0,
+                    -6.0,
+                    6.0,
+                ]
+            )
+            posture, _ = solver._decode(
+                decision,
+                [matrix],
+                [np.arange(41)],
+                41,
+            )
+            lower = torch.tensor(PAPER_POSTURE_MIN)
+            upper = torch.tensor(PAPER_POSTURE_MAX)
+            self.assertTrue(torch.all(posture >= lower))
+            self.assertTrue(torch.all(posture <= upper))
+
 except ImportError:
     pass
 

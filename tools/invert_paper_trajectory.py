@@ -9,7 +9,7 @@ import sys
 
 import numpy as np
 import torch
-from PIL import Image, ImageOps, ImageDraw
+from PIL import Image, ImageOps, ImageDraw, ImageFilter
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -92,7 +92,7 @@ def save_pose_csv(sample, posture: np.ndarray, output_path: Path) -> None:
                     "z_unit": "mm",
                     "angle_unit": "rad",
                     "pose_frame": "paper_model",
-                    "prototype": "paper_psoc_lm_v1",
+                    "prototype": "paper_psoc_lm_v2",
                 }
             )
 
@@ -147,6 +147,23 @@ def binary_metrics(prediction: np.ndarray, target: np.ndarray) -> dict:
     }
 
 
+def trajectory_target_coverage(
+    xy_canvas: np.ndarray,
+    target: np.ndarray,
+    tolerance_px: int = 5,
+) -> float:
+    mask = Image.fromarray(
+        ((target >= 0.5).astype(np.uint8) * 255), mode="L"
+    )
+    kernel = max(2 * int(tolerance_px) + 1, 3)
+    if kernel % 2 == 0:
+        kernel += 1
+    support = np.asarray(mask.filter(ImageFilter.MaxFilter(kernel))) > 0
+    x = np.clip(np.rint(xy_canvas[:, 0]).astype(np.int64), 0, target.shape[1] - 1)
+    y = np.clip(np.rint(xy_canvas[:, 1]).astype(np.int64), 0, target.shape[0] - 1)
+    return float(support[y, x].mean())
+
+
 def main(args: argparse.Namespace) -> None:
     device = torch.device(
         args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu"
@@ -168,6 +185,7 @@ def main(args: argparse.Namespace) -> None:
         offset_fraction=args.offset_fraction,
         pixels_per_model_unit=args.pixels_per_model_unit,
         patch_floor=args.patch_floor,
+        footprint_scale=args.footprint_scale,
     )
     renderer = PaperFusionRenderer.from_checkpoint(
         args.bbsmg_ckpt,
@@ -231,7 +249,7 @@ def main(args: argparse.Namespace) -> None:
         output_dir / f"{stem}_comparison.png",
     )
     report = {
-        "format": "paper_psoc_lm_v1",
+        "format": "paper_psoc_lm_v2",
         "simulation_only": True,
         "character": sample.character,
         "sample_id": sample.meta.get("sample_id"),
@@ -240,6 +258,14 @@ def main(args: argparse.Namespace) -> None:
         "optimized_fields": ["z_as_H_mm", "alpha_rad", "beta_rad"],
         "gamma_rad": 0.0,
         "pose_frame": "paper_model",
+        "forward_calibration": {
+            "pixels_per_model_unit": args.pixels_per_model_unit,
+            "footprint_scale": args.footprint_scale,
+            "effective_pixels_per_model_unit": (
+                args.pixels_per_model_unit * args.footprint_scale
+            ),
+            "patch_floor": args.patch_floor,
+        },
         "limits": {
             "H_mm": [11.0, 20.0],
             "alpha_rad": [0.0, float(np.deg2rad(10.0))],
@@ -271,6 +297,9 @@ def main(args: argparse.Namespace) -> None:
             "history": result.history,
         },
         "metrics": binary_metrics(result.rendered_image, target),
+        "trajectory_target_coverage_at_5px": trajectory_target_coverage(
+            xy_canvas, target, tolerance_px=5
+        ),
         "warning": (
             "Prototype paper-frame pose only; do not command a real robot before "
             "brush/camera/TCP/frame calibration and safety validation."
@@ -288,6 +317,10 @@ def main(args: argparse.Namespace) -> None:
     )
     for key, value in report["metrics"].items():
         print(f"{key}: {value:.6f}")
+    print(
+        "trajectory_target_coverage_at_5px: "
+        f"{report['trajectory_target_coverage_at_5px']:.6f}"
+    )
     print(f"[DONE] outputs: {output_dir}")
 
 
@@ -321,4 +354,5 @@ if __name__ == "__main__":
     parser.add_argument("--offset_fraction", type=float, default=0.25)
     parser.add_argument("--pixels_per_model_unit", type=float, default=20.0)
     parser.add_argument("--patch_floor", type=float, default=0.05)
+    parser.add_argument("--footprint_scale", type=float, default=0.5)
     main(parser.parse_args())

@@ -30,6 +30,7 @@ class PaperDynamicConfig:
     pixels_per_model_unit: float = 20.0
     inverse_regularization: float = 1e-4
     patch_floor: float = 0.05
+    footprint_scale: float = 0.5
 
 
 def _infer_model_config(state: Dict[str, torch.Tensor]) -> Dict[str, int]:
@@ -79,6 +80,8 @@ class PaperFusionRenderer(nn.Module):
             raise ValueError("width_inertia must be in [0,1]")
         if not 0.0 <= self.dynamic.drag_inertia <= 1.0:
             raise ValueError("drag_inertia must be in [0,1]")
+        if self.dynamic.footprint_scale <= 0.0:
+            raise ValueError("footprint_scale must be positive")
         self.point_batch_size = int(point_batch_size)
 
     @classmethod
@@ -204,8 +207,15 @@ class PaperFusionRenderer(nn.Module):
         dy = yy[None] - centers_px[:, 1, None, None]
         cosine = torch.cos(angles)[:, None, None]
         sine = torch.sin(angles)[:, None, None]
-        source_x = cosine * dx + sine * dy + centers_px[:, 0, None, None]
-        source_y = -sine * dx + cosine * dy + centers_px[:, 1, None, None]
+        scale = float(self.dynamic.footprint_scale)
+        source_x = (
+            (cosine * dx + sine * dy) / scale
+            + centers_px[:, 0, None, None]
+        )
+        source_y = (
+            (-sine * dx + cosine * dy) / scale
+            + centers_px[:, 1, None, None]
+        )
         grid = torch.stack(
             [
                 2.0 * source_x / max(width - 1, 1) - 1.0,
@@ -282,13 +292,17 @@ class PaperFusionRenderer(nn.Module):
         free_offset = self.dynamic.offset_fraction * (
             geometry[:, 0] + geometry[:, 1]
         )
-        held_offset = step_length / float(self.dynamic.pixels_per_model_unit)
+        effective_scale = (
+            float(self.dynamic.pixels_per_model_unit)
+            * float(self.dynamic.footprint_scale)
+        )
+        held_offset = step_length / effective_scale
         offset = torch.minimum(free_offset, held_offset)
         direction = torch.stack([torch.cos(heading), torch.sin(heading)], dim=-1)
         contact_xy = (
             xy_canvas
             - offset[:, None]
-            * float(self.dynamic.pixels_per_model_unit)
+            * effective_scale
             * direction
         )
         return {
