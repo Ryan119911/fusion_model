@@ -376,6 +376,13 @@ Lh = 0.0196 H + 0.0039 alpha + 0.0073 beta + 0.0372
 Lr = 0.0239 H + 0.0061 alpha + 0.0096 beta + 0.1137
 ```
 
+论文正文明确写明 `alpha/beta represent the radian`，因此当前 v1 数据和检查点按
+弧度代入上式；但同一论文的实验采样和图 9 又以 `0°/5°/10°` 展示角度，按系数
+量级观察也存在“回归时实际使用角度数值”的可能。这是论文内部的单位歧义，不应
+在已有检查点上静默切换。当前版本会用独立正则和 Jacobian 敏感度报告暴露该问题；
+后续如测试 degree-fitted 假设，必须另建数据版本、从头训练检查点并与 radian
+版本做 A/B 对照。无论内部标定采用何种基底，对外 CSV 始终输出弧度。
+
 正向渲染中先按动态笔刷论文对宽度 `w=Lr` 和拖曳长度 `d=Lt+Lh` 做一阶惯性更新，再用带参考姿态正则的回归逆解得到 B-BSMG 的虚拟 `(H,alpha,beta)`。笔尖偏移采用受自由偏移与相邻点位移共同限制的 `min` 原型。轨迹切向角由固定 x/y 计算，不冒充第三姿态角。
 
 ### 11.1 构建新的论文 B-BSMG 数据
@@ -470,9 +477,9 @@ python -u tools/render_paper_trajectory.py \
 python -u tools/render_paper_trajectory.py \
   --trajectory_csv data/raw/trajectories.csv \
   --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
-  --pose_csv outputs/wu_paper_inverse_v3/wu_trajectory.csv \
+  --pose_csv outputs/wu_paper_inverse_v4/wu_trajectory.csv \
   --character 武 \
-  --footprint_scale 0.35 \
+  --footprint_scale 0.22 \
   --render_max_step_px 2.0 \
   --output_image outputs/wu_paper_forward/inverted_pose.png
 ```
@@ -487,7 +494,7 @@ python -u tools/invert_paper_trajectory.py \
   --target_image assets/targets/wu_kaishu_target.png \
   --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
   --character 武 \
-  --output_dir outputs/wu_paper_inverse_v3 \
+  --output_dir outputs/wu_paper_inverse_v4 \
   --output_stem wu \
   --device cuda \
   --padding 16 \
@@ -497,10 +504,16 @@ python -u tools/invert_paper_trajectory.py \
   --damping 0.05 \
   --jacobian_mode finite_difference \
   --finite_difference_eps 0.01 \
+  --h_prior_weight 0.001 \
+  --alpha_prior_weight 0.05 \
+  --beta_prior_weight 0.05 \
+  --h_smoothness_weight 0.02 \
+  --alpha_smoothness_weight 0.10 \
+  --beta_smoothness_weight 0.10 \
   --initial_h_mm 15.5 \
   --initial_alpha_deg 0 \
   --initial_beta_deg 0 \
-  --footprint_scale 0.35 \
+  --footprint_scale 0.22 \
   --render_max_step_px 2.0
 ```
 
@@ -542,7 +555,7 @@ LM 每一步都要构造图像残差对 CGL 姿态节点的 Jacobian，运行时
 - `alpha` 位于 `[0,0.174532925]` rad；
 - `beta` 位于 `[0,0.087266463]` rad；
 - `gamma` 每行严格为 `0`；
-- `pose_frame=paper_model`、`prototype=paper_psoc_lm_v3`。
+- `pose_frame=paper_model`、`prototype=paper_psoc_lm_v4`。
 
 如果旧版 `paper_psoc_lm_v1` CSV 报姿态越界，可先显式裁剪并查看图像：
 
@@ -558,10 +571,15 @@ python -u tools/render_paper_trajectory.py \
   --output_image outputs/wu_paper_forward/inverted_pose_legacy_clipped.png
 ```
 
-裁剪结果只用于诊断。正式 CSV 必须用 v3 反演器重新生成。v3 保留 v2 的
+裁剪结果只用于诊断。正式 CSV 必须用 v4 反演器重新生成。v4 保留 v3 的
 逐点有界 sigmoid，并沿相邻固定 x/y 线段按不超过 2 px 的间距插入可微
 渲染样本，解决稀疏轨迹被渲染成离散印章点的问题。插值样本只进入正向渲染，
-导出的原始 x/y 点数与坐标不变。
+导出的原始 x/y 点数与坐标不变。v4 进一步为 H、alpha、beta 分别设置先验和
+平滑权重：H 保持弱约束，图像辨识能力较弱的 alpha/beta 使用更强约束，避免
+角度大量贴到物理上下限。`wu_report.json` 的
+`lm.diagnostics.image_jacobian_sensitivity` 会报告三类变量对图像的相对敏感度，
+`bound_fraction_within_1pct` 会报告接近上下限的点比例。当前 alpha/beta 应视为
+带先验的仿真估计值，不能当作真实机器人姿态真值。
 
 ### 11.5 当前原型不能直接下发机器人
 

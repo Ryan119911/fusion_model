@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Sequence
+from typing import Any, Dict, List, Sequence
 
 import numpy as np
 import torch
@@ -44,6 +44,7 @@ class PaperLMResult:
     final_cost: float
     message: str
     history: Dict[str, List[float]] = field(default_factory=dict)
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
 
 
 class PaperPSOCLM:
@@ -54,8 +55,8 @@ class PaperPSOCLM:
         renderer: PaperFusionRenderer,
         order: int = 3,
         optimization_size: int = 16,
-        smoothness_weight: float = 0.02,
-        posture_prior_weight: float = 0.001,
+        smoothness_weights: Sequence[float] = (0.02, 0.10, 0.10),
+        posture_prior_weights: Sequence[float] = (0.001, 0.05, 0.05),
         render_stride: int = 1,
         jacobian_mode: str = "finite_difference",
         finite_difference_eps: float = 1e-2,
@@ -67,8 +68,12 @@ class PaperPSOCLM:
         self.renderer = renderer
         self.order = int(order)
         self.optimization_size = int(optimization_size)
-        self.smoothness_weight = float(smoothness_weight)
-        self.posture_prior_weight = float(posture_prior_weight)
+        self.smoothness_weights = self._validate_field_weights(
+            smoothness_weights, "smoothness_weights"
+        )
+        self.posture_prior_weights = self._validate_field_weights(
+            posture_prior_weights, "posture_prior_weights"
+        )
         self.render_stride = max(int(render_stride), 1)
         if jacobian_mode not in {"finite_difference", "autograd"}:
             raise ValueError(
@@ -78,6 +83,17 @@ class PaperPSOCLM:
             raise ValueError("finite_difference_eps must be positive")
         self.jacobian_mode = jacobian_mode
         self.finite_difference_eps = float(finite_difference_eps)
+
+    @staticmethod
+    def _validate_field_weights(
+        values: Sequence[float], name: str
+    ) -> np.ndarray:
+        weights = np.asarray(values, dtype=np.float32)
+        if weights.shape != (3,):
+            raise ValueError(f"{name} must contain H/alpha/beta weights")
+        if not np.all(np.isfinite(weights)) or np.any(weights < 0):
+            raise ValueError(f"{name} must be finite and non-negative")
+        return weights
 
     @property
     def device(self) -> torch.device:
@@ -200,6 +216,16 @@ class PaperPSOCLM:
         prior = torch.sigmoid(decision.detach()).view(
             len(matrices), 3, self.order + 1
         )
+        smoothness_weights = torch.as_tensor(
+            self.smoothness_weights,
+            dtype=decision.dtype,
+            device=decision.device,
+        ).view(1, 3, 1)
+        posture_prior_weights = torch.as_tensor(
+            self.posture_prior_weights,
+            dtype=decision.dtype,
+            device=decision.device,
+        ).view(1, 3, 1)
 
         def residual_fn(vector: torch.Tensor) -> torch.Tensor:
             posture, nodes = self._decode(
@@ -220,16 +246,18 @@ class PaperPSOCLM:
             residuals = [
                 ((rendered_small - target_small) * torch.sqrt(weights)).flatten()
             ]
-            if self.smoothness_weight > 0:
-                for stroke_nodes in nodes:
-                    residuals.append(
-                        np.sqrt(self.smoothness_weight)
-                        * (stroke_nodes[:, 1:] - stroke_nodes[:, :-1]).flatten()
-                    )
-            if self.posture_prior_weight > 0:
+            if bool(torch.any(smoothness_weights > 0)):
                 residuals.append(
-                    np.sqrt(self.posture_prior_weight)
-                    * (nodes - prior).flatten()
+                    (
+                        torch.sqrt(smoothness_weights)
+                        * (nodes[:, :, 1:] - nodes[:, :, :-1])
+                    ).flatten()
+                )
+            if bool(torch.any(posture_prior_weights > 0)):
+                residuals.append(
+                    (
+                        torch.sqrt(posture_prior_weights) * (nodes - prior)
+                    ).flatten()
                 )
             return torch.cat(residuals)
 
@@ -276,6 +304,8 @@ class PaperPSOCLM:
         success = False
         message = "Maximum steps reached"
         completed_steps = 0
+        last_jacobian = None
+        last_decision = decision.detach()
 
         for step in range(1, int(max_steps) + 1):
             decision = decision.detach()
@@ -290,6 +320,8 @@ class PaperPSOCLM:
                 jacobian = finite_difference_jacobian(decision, residual)
             else:
                 jacobian = autograd_jacobian(decision)
+            last_jacobian = jacobian
+            last_decision = decision.detach()
             gradient = jacobian.T @ residual
             if float(torch.linalg.vector_norm(gradient, ord=float("inf"))) < 1e-6:
                 success = True
@@ -340,8 +372,59 @@ class PaperPSOCLM:
                 decision.detach(), matrices, point_indices, len(xy)
             )
             rendered = self.renderer(xy, posture, ids)[0, 0]
+        diagnostics: Dict[str, Any] = {
+            "regularization": {
+                "field_order": ["H", "alpha", "beta"],
+                "smoothness_weights": self.smoothness_weights.tolist(),
+                "posture_prior_weights": self.posture_prior_weights.tolist(),
+            }
+        }
+        if last_jacobian is not None:
+            # Use only image residual rows. Dividing out the sigmoid derivative
+            # reports sensitivity per unit of normalized physical range instead
+            # of sensitivity to the unconstrained optimization logit.
+            pixel_rows = self.optimization_size * self.optimization_size
+            pixel_jacobian = last_jacobian[:pixel_rows]
+            column_norms = torch.linalg.vector_norm(
+                pixel_jacobian, dim=0
+            ).view(len(matrices), 3, self.order + 1)
+            normalized_nodes = torch.sigmoid(last_decision).view(
+                len(matrices), 3, self.order + 1
+            )
+            sigmoid_slope = (
+                normalized_nodes * (1.0 - normalized_nodes)
+            ).clamp_min(1e-4)
+            normalized_sensitivity = column_norms / sigmoid_slope
+            field_means = normalized_sensitivity.mean(dim=(0, 2))
+            max_mean = float(field_means.max().clamp_min(1e-12))
+            sensitivity = {}
+            for field_index, field_name in enumerate(("H", "alpha", "beta")):
+                values = normalized_sensitivity[:, field_index, :]
+                sensitivity[field_name] = {
+                    "mean_l2_per_normalized_range": float(values.mean()),
+                    "median_l2_per_normalized_range": float(values.median()),
+                    "max_l2_per_normalized_range": float(values.max()),
+                    "relative_mean": float(field_means[field_index]) / max_mean,
+                }
+            diagnostics["image_jacobian_sensitivity"] = sensitivity
+
+        posture_np = posture.cpu().numpy()
+        normalized_posture = (posture_np - PAPER_POSTURE_MIN) / (
+            PAPER_POSTURE_MAX - PAPER_POSTURE_MIN
+        )
+        diagnostics["bound_fraction_within_1pct"] = {
+            field_name: {
+                "lower": float(
+                    np.mean(normalized_posture[:, field_index] <= 0.01)
+                ),
+                "upper": float(
+                    np.mean(normalized_posture[:, field_index] >= 0.99)
+                ),
+            }
+            for field_index, field_name in enumerate(("H", "alpha", "beta"))
+        }
         return PaperLMResult(
-            posture=posture.cpu().numpy(),
+            posture=posture_np,
             rendered_image=rendered.cpu().numpy(),
             success=success,
             steps=completed_steps,
@@ -349,4 +432,5 @@ class PaperPSOCLM:
             final_cost=current_cost,
             message=message,
             history=history,
+            diagnostics=diagnostics,
         )

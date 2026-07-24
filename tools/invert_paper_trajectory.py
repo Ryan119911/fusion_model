@@ -92,7 +92,7 @@ def save_pose_csv(sample, posture: np.ndarray, output_path: Path) -> None:
                     "z_unit": "mm",
                     "angle_unit": "rad",
                     "pose_frame": "paper_model",
-                    "prototype": "paper_psoc_lm_v3",
+                    "prototype": "paper_psoc_lm_v4",
                 }
             )
 
@@ -217,8 +217,16 @@ def main(args: argparse.Namespace) -> None:
         renderer,
         order=args.order,
         optimization_size=args.optimization_size,
-        smoothness_weight=args.smoothness_weight,
-        posture_prior_weight=args.posture_prior_weight,
+        smoothness_weights=(
+            args.h_smoothness_weight,
+            args.alpha_smoothness_weight,
+            args.beta_smoothness_weight,
+        ),
+        posture_prior_weights=(
+            args.h_prior_weight,
+            args.alpha_prior_weight,
+            args.beta_prior_weight,
+        ),
         render_stride=args.render_stride,
         jacobian_mode=args.jacobian_mode,
         finite_difference_eps=args.finite_difference_eps,
@@ -252,7 +260,7 @@ def main(args: argparse.Namespace) -> None:
         output_dir / f"{stem}_comparison.png",
     )
     report = {
-        "format": "paper_psoc_lm_v3",
+        "format": "paper_psoc_lm_v4",
         "simulation_only": True,
         "character": sample.character,
         "sample_id": sample.meta.get("sample_id"),
@@ -261,6 +269,12 @@ def main(args: argparse.Namespace) -> None:
         "optimized_fields": ["z_as_H_mm", "alpha_rad", "beta_rad"],
         "gamma_rad": 0.0,
         "pose_frame": "paper_model",
+        "regression_angle_basis": "paper_declared_radian",
+        "regression_unit_note": (
+            "The paper text declares radians, while its sampled angle levels "
+            "and coefficient magnitudes may indicate degree-valued fitting. "
+            "This checkpoint follows the declared-radian v1 dataset."
+        ),
         "forward_calibration": {
             "pixels_per_model_unit": args.pixels_per_model_unit,
             "footprint_scale": args.footprint_scale,
@@ -301,6 +315,7 @@ def main(args: argparse.Namespace) -> None:
             "history": result.history,
             "jacobian_mode": args.jacobian_mode,
             "finite_difference_eps": args.finite_difference_eps,
+            "diagnostics": result.diagnostics,
         },
         "metrics": binary_metrics(result.rendered_image, target),
         "trajectory_target_coverage_at_5px": trajectory_target_coverage(
@@ -327,6 +342,20 @@ def main(args: argparse.Namespace) -> None:
         "trajectory_target_coverage_at_5px: "
         f"{report['trajectory_target_coverage_at_5px']:.6f}"
     )
+    sensitivity = result.diagnostics.get("image_jacobian_sensitivity", {})
+    for field_name in ("H", "alpha", "beta"):
+        if field_name in sensitivity:
+            print(
+                f"[SENSITIVITY] {field_name}: "
+                f"relative_mean={sensitivity[field_name]['relative_mean']:.6f}"
+            )
+    for field_name, fractions in result.diagnostics[
+        "bound_fraction_within_1pct"
+    ].items():
+        print(
+            f"[BOUNDS] {field_name}: lower={fractions['lower']:.6f}, "
+            f"upper={fractions['upper']:.6f}"
+        )
     print(f"[DONE] outputs: {output_dir}")
 
 
@@ -350,8 +379,12 @@ if __name__ == "__main__":
     parser.add_argument("--render_stride", type=int, default=1)
     parser.add_argument("--point_batch_size", type=int, default=128)
     parser.add_argument("--pixel_weight", type=float, default=3.0)
-    parser.add_argument("--smoothness_weight", type=float, default=0.02)
-    parser.add_argument("--posture_prior_weight", type=float, default=0.001)
+    parser.add_argument("--h_smoothness_weight", type=float, default=0.02)
+    parser.add_argument("--alpha_smoothness_weight", type=float, default=0.10)
+    parser.add_argument("--beta_smoothness_weight", type=float, default=0.10)
+    parser.add_argument("--h_prior_weight", type=float, default=0.001)
+    parser.add_argument("--alpha_prior_weight", type=float, default=0.05)
+    parser.add_argument("--beta_prior_weight", type=float, default=0.05)
     parser.add_argument(
         "--jacobian_mode",
         choices=["finite_difference", "autograd"],
@@ -366,6 +399,6 @@ if __name__ == "__main__":
     parser.add_argument("--offset_fraction", type=float, default=0.25)
     parser.add_argument("--pixels_per_model_unit", type=float, default=20.0)
     parser.add_argument("--patch_floor", type=float, default=0.05)
-    parser.add_argument("--footprint_scale", type=float, default=0.35)
+    parser.add_argument("--footprint_scale", type=float, default=0.22)
     parser.add_argument("--render_max_step_px", type=float, default=2.0)
     main(parser.parse_args())
