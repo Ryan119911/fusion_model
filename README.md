@@ -512,7 +512,9 @@ done
 ```
 
 每张图旁边的 JSON 都会记录 `target_metrics`。以 IoU、Dice、墨迹比例和肉眼结构
-共同选择尺度；`0.20` 只是根据面积比给出的首选起点。
+共同选择尺度；`0.20` 只是根据面积比给出的扫描起点。当前“武”字实测中
+`0.22` 的 Dice、IoU 和墨迹比例最好，因此下面的正式反演使用 `0.22`。更换
+目标、轨迹、毛笔模型或相机尺度后必须重新扫描。
 
 ### 11.3 先检查正向融合渲染
 
@@ -669,7 +671,7 @@ python -u tools/invert_paper_trajectory.py \
   --initial_h_mm 15.5 \
   --initial_alpha_deg 0 \
   --initial_beta_deg 0 \
-  --footprint_scale 0.20 \
+  --footprint_scale 0.22 \
   --render_max_step_px 2.0
 ```
 
