@@ -102,6 +102,7 @@ class PaperBBSMTests(unittest.TestCase):
 
 try:
     import torch  # noqa: F401
+    import torch.nn as nn
 
     from optim.paper_psoc_lm import cgl_interpolation_matrix
 
@@ -179,6 +180,43 @@ try:
             self.assertTrue(torch.all(dense_ids == 0))
             dense_posture.sum().backward()
             self.assertTrue(torch.isfinite(posture.grad).all())
+
+        def test_observability_gate_fixes_unobservable_angles(self):
+            from optim.paper_psoc_lm import PaperPSOCLM
+
+            class HeightOnlyRenderer(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.bbsmg = nn.Linear(1, 1, bias=False)
+
+                def forward(self, xy, posture, stroke_ids):
+                    value = torch.sigmoid((posture[:, 0].mean() - 15.5) / 2.0)
+                    return value.expand(1, 1, 8, 8)
+
+            solver = PaperPSOCLM(
+                HeightOnlyRenderer(),
+                order=1,
+                optimization_size=8,
+                field_mode="auto",
+                min_relative_median_sensitivity=0.35,
+            )
+            result = solver.optimize(
+                xy_canvas=np.asarray(
+                    [[1.0, 1.0], [3.0, 3.0], [5.0, 5.0]],
+                    dtype=np.float32,
+                ),
+                stroke_ids=np.zeros(3, dtype=np.int64),
+                target_image=np.full((8, 8), 0.8, dtype=np.float32),
+                max_steps=1,
+            )
+            gate = result.diagnostics["observability_gate"]
+            self.assertEqual(gate["optimized_fields"], ["H"])
+            self.assertEqual(gate["fixed_fields"], ["alpha", "beta"])
+            np.testing.assert_allclose(result.posture[:, 1:], 0.0, atol=0.0)
+            self.assertEqual(
+                result.diagnostics["field_decisions"]["alpha"]["source"],
+                "initial_default",
+            )
 
 except ImportError:
     pass

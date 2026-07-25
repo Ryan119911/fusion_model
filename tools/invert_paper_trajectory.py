@@ -54,6 +54,7 @@ def save_pose_csv(
     posture: np.ndarray,
     output_path: Path,
     regression_angle_basis: str,
+    field_decisions: dict,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fields = [
@@ -73,6 +74,14 @@ def save_pose_csv(
         "pose_frame",
         "prototype",
         "regression_angle_basis",
+        "z_source",
+        "z_confidence",
+        "alpha_source",
+        "alpha_confidence",
+        "beta_source",
+        "beta_confidence",
+        "gamma_source",
+        "gamma_confidence",
     ]
     points = sample.all_points()
     if len(points) != len(posture):
@@ -98,8 +107,16 @@ def save_pose_csv(
                     "z_unit": "mm",
                     "angle_unit": "rad",
                     "pose_frame": "paper_model",
-                    "prototype": "paper_psoc_lm_v5_ab",
+                    "prototype": "paper_psoc_lm_v6_observability_gated",
                     "regression_angle_basis": regression_angle_basis,
+                    "z_source": field_decisions["H"]["source"],
+                    "z_confidence": field_decisions["H"]["confidence"],
+                    "alpha_source": field_decisions["alpha"]["source"],
+                    "alpha_confidence": field_decisions["alpha"]["confidence"],
+                    "beta_source": field_decisions["beta"]["source"],
+                    "beta_confidence": field_decisions["beta"]["confidence"],
+                    "gamma_source": field_decisions["gamma"]["source"],
+                    "gamma_confidence": field_decisions["gamma"]["confidence"],
                 }
             )
 
@@ -237,6 +254,10 @@ def main(args: argparse.Namespace) -> None:
         render_stride=args.render_stride,
         jacobian_mode=args.jacobian_mode,
         finite_difference_eps=args.finite_difference_eps,
+        field_mode=args.field_mode,
+        min_relative_median_sensitivity=(
+            args.min_relative_median_sensitivity
+        ),
     )
     result = solver.optimize(
         xy_canvas,
@@ -258,6 +279,7 @@ def main(args: argparse.Namespace) -> None:
         result.posture,
         output_dir / f"{stem}_trajectory.csv",
         renderer.regression_angle_basis,
+        result.diagnostics["field_decisions"],
     )
     save_gray(target, output_dir / f"{stem}_target.png")
     save_gray(initial_render, output_dir / f"{stem}_initial.png")
@@ -272,13 +294,20 @@ def main(args: argparse.Namespace) -> None:
         output_dir / f"{stem}_comparison.png",
     )
     report = {
-        "format": "paper_psoc_lm_v5_ab",
+        "format": "paper_psoc_lm_v6_observability_gated",
         "simulation_only": True,
         "character": sample.character,
         "sample_id": sample.meta.get("sample_id"),
         "fixed_xy": True,
         "xy_max_abs_change": 0.0,
-        "optimized_fields": ["z_as_H_mm", "alpha_rad", "beta_rad"],
+        "optimized_fields": result.diagnostics["observability_gate"][
+            "optimized_fields"
+        ],
+        "fixed_fields": result.diagnostics["observability_gate"][
+            "fixed_fields"
+        ]
+        + ["gamma"],
+        "field_decisions": result.diagnostics["field_decisions"],
         "gamma_rad": 0.0,
         "pose_frame": "paper_model",
         "regression_angle_basis": renderer.regression_angle_basis,
@@ -340,8 +369,10 @@ def main(args: argparse.Namespace) -> None:
     (output_dir / f"{stem}_report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    optimized = report["optimized_fields"]
+    fixed = report["fixed_fields"]
     print(
-        f"[DONE] fixed x/y, optimized H/alpha/beta; gamma=0 rad on {device}"
+        f"[DONE] fixed x/y; optimized={optimized}; fixed={fixed} on {device}"
     )
     print(
         f"[LM] success={result.success}, steps={result.steps}, "
@@ -353,7 +384,9 @@ def main(args: argparse.Namespace) -> None:
         "trajectory_target_coverage_at_5px: "
         f"{report['trajectory_target_coverage_at_5px']:.6f}"
     )
-    sensitivity = result.diagnostics.get("image_jacobian_sensitivity", {})
+    sensitivity = result.diagnostics["observability_gate"].get(
+        "initial_image_jacobian_sensitivity", {}
+    ) or result.diagnostics.get("image_jacobian_sensitivity", {})
     for field_name in ("H", "alpha", "beta"):
         if field_name in sensitivity:
             print(
@@ -404,6 +437,20 @@ if __name__ == "__main__":
         default="finite_difference",
     )
     parser.add_argument("--finite_difference_eps", type=float, default=0.01)
+    parser.add_argument(
+        "--field_mode",
+        choices=["auto", "all", "h_only"],
+        default="auto",
+        help=(
+            "auto audits all posture fields once and optimizes only observable "
+            "ones; all reproduces unconstrained A/B runs; h_only skips audit"
+        ),
+    )
+    parser.add_argument(
+        "--min_relative_median_sensitivity",
+        type=float,
+        default=0.35,
+    )
     parser.add_argument("--initial_h_mm", type=float, default=15.5)
     parser.add_argument("--initial_alpha_deg", type=float, default=0.0)
     parser.add_argument("--initial_beta_deg", type=float, default=0.0)

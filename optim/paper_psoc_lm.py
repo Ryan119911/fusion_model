@@ -50,6 +50,8 @@ class PaperLMResult:
 class PaperPSOCLM:
     """Optimize H/alpha/beta CGL nodes while holding x/y exactly fixed."""
 
+    FIELD_NAMES = ("H", "alpha", "beta")
+
     def __init__(
         self,
         renderer: PaperFusionRenderer,
@@ -60,6 +62,8 @@ class PaperPSOCLM:
         render_stride: int = 1,
         jacobian_mode: str = "finite_difference",
         finite_difference_eps: float = 1e-2,
+        field_mode: str = "auto",
+        min_relative_median_sensitivity: float = 0.35,
     ):
         if order < 1:
             raise ValueError("order must be >= 1")
@@ -81,8 +85,18 @@ class PaperPSOCLM:
             )
         if finite_difference_eps <= 0:
             raise ValueError("finite_difference_eps must be positive")
+        if field_mode not in {"auto", "all", "h_only"}:
+            raise ValueError("field_mode must be 'auto', 'all', or 'h_only'")
+        if not 0.0 <= min_relative_median_sensitivity <= 1.0:
+            raise ValueError(
+                "min_relative_median_sensitivity must be in [0,1]"
+            )
         self.jacobian_mode = jacobian_mode
         self.finite_difference_eps = float(finite_difference_eps)
+        self.field_mode = field_mode
+        self.min_relative_median_sensitivity = float(
+            min_relative_median_sensitivity
+        )
 
     @staticmethod
     def _validate_field_weights(
@@ -199,12 +213,14 @@ class PaperPSOCLM:
                 "Initial posture is outside H=11-20 mm, alpha=0-10 deg, "
                 "beta=0-5 deg"
             )
-        normalized = (initial - PAPER_POSTURE_MIN) / (
+        normalized_initial = (initial - PAPER_POSTURE_MIN) / (
             PAPER_POSTURE_MAX - PAPER_POSTURE_MIN
         )
         # A value exactly on a bound has zero useful logistic derivative.
-        normalized = np.clip(normalized, 0.02, 0.98)
-        logits = np.log(normalized / (1.0 - normalized))
+        normalized_for_audit = np.clip(normalized_initial, 0.02, 0.98)
+        logits = np.log(
+            normalized_for_audit / (1.0 - normalized_for_audit)
+        )
         decision = torch.as_tensor(
             np.tile(
                 logits[None, :, None],
@@ -213,8 +229,28 @@ class PaperPSOCLM:
             dtype=torch.float32,
             device=self.device,
         )
-        prior = torch.sigmoid(decision.detach()).view(
-            len(matrices), 3, self.order + 1
+        prior = torch.as_tensor(
+            np.tile(
+                normalized_initial[None, :, None],
+                (len(matrices), 1, self.order + 1),
+            ),
+            dtype=decision.dtype,
+            device=decision.device,
+        )
+        node_count = self.order + 1
+        layout = np.arange(decision.numel(), dtype=np.int64).reshape(
+            len(matrices), 3, node_count
+        )
+        field_columns = {
+            field_name: torch.as_tensor(
+                layout[:, field_index, :].reshape(-1),
+                dtype=torch.long,
+                device=decision.device,
+            )
+            for field_index, field_name in enumerate(self.FIELD_NAMES)
+        }
+        all_columns = torch.arange(
+            decision.numel(), dtype=torch.long, device=decision.device
         )
         smoothness_weights = torch.as_tensor(
             self.smoothness_weights,
@@ -267,12 +303,16 @@ class PaperPSOCLM:
                 return 0.5 * float(torch.dot(residual, residual).item())
 
         def finite_difference_jacobian(
-            vector: torch.Tensor, base_residual: torch.Tensor
+            vector: torch.Tensor,
+            base_residual: torch.Tensor,
+            columns_to_evaluate: torch.Tensor,
         ) -> torch.Tensor:
             """Memory-bounded numerical Jacobian, matching the Wang LM flow."""
             columns = []
+            total = int(columns_to_evaluate.numel())
             with torch.no_grad():
-                for column in range(vector.numel()):
+                for offset, column_tensor in enumerate(columns_to_evaluate):
+                    column = int(column_tensor)
                     step = self.finite_difference_eps * (
                         1.0 + abs(float(vector[column]))
                     )
@@ -282,20 +322,129 @@ class PaperPSOCLM:
                         residual_fn(trial) - base_residual
                     ) / step
                     columns.append(derivative)
-                    if (column + 1) % 10 == 0 or column + 1 == vector.numel():
+                    if (offset + 1) % 10 == 0 or offset + 1 == total:
                         print(
-                            f"[JACOBIAN] column {column + 1}/"
-                            f"{vector.numel()}",
+                            f"[JACOBIAN] column {offset + 1}/{total}",
                             flush=True,
                         )
             return torch.stack(columns, dim=1)
 
-        def autograd_jacobian(vector: torch.Tensor) -> torch.Tensor:
+        def autograd_jacobian(
+            vector: torch.Tensor, columns_to_evaluate: torch.Tensor
+        ) -> torch.Tensor:
             """Optional high-memory path for GPUs with substantially more VRAM."""
             differentiable = vector.detach().requires_grad_(True)
-            return torch.autograd.functional.jacobian(
+            full = torch.autograd.functional.jacobian(
                 residual_fn, differentiable, vectorize=False
             ).detach()
+            return full[:, columns_to_evaluate]
+
+        def summarize_sensitivity(
+            jacobian: torch.Tensor,
+            columns_evaluated: torch.Tensor,
+            vector: torch.Tensor,
+        ) -> Dict[str, Dict[str, float]]:
+            """Summarize image sensitivity for the evaluated decision columns."""
+            pixel_rows = self.optimization_size * self.optimization_size
+            column_norms = torch.linalg.vector_norm(
+                jacobian[:pixel_rows], dim=0
+            )
+            normalized_nodes = torch.sigmoid(vector)
+            sigmoid_slope = (
+                normalized_nodes * (1.0 - normalized_nodes)
+            ).clamp_min(1e-4)
+            sensitivity: Dict[str, Dict[str, float]] = {}
+            medians = {}
+            means = {}
+            values_by_field = {}
+            for field_name in self.FIELD_NAMES:
+                member_mask = torch.isin(
+                    columns_evaluated, field_columns[field_name]
+                )
+                if not bool(torch.any(member_mask)):
+                    continue
+                selected_columns = columns_evaluated[member_mask]
+                values = (
+                    column_norms[member_mask]
+                    / sigmoid_slope[selected_columns]
+                )
+                values_by_field[field_name] = values
+                medians[field_name] = values.median()
+                means[field_name] = values.mean()
+            max_median = max(
+                float(value) for value in medians.values()
+            ) if medians else 1.0
+            max_mean = max(
+                float(value) for value in means.values()
+            ) if means else 1.0
+            max_median = max(max_median, 1e-12)
+            max_mean = max(max_mean, 1e-12)
+            for field_name, values in values_by_field.items():
+                sensitivity[field_name] = {
+                    "mean_l2_per_normalized_range": float(values.mean()),
+                    "median_l2_per_normalized_range": float(values.median()),
+                    "max_l2_per_normalized_range": float(values.max()),
+                    "relative_mean": float(means[field_name]) / max_mean,
+                    "relative_median": (
+                        float(medians[field_name]) / max_median
+                    ),
+                }
+            return sensitivity
+
+        def columns_for_fields(field_names: Sequence[str]) -> torch.Tensor:
+            return torch.cat([field_columns[name] for name in field_names])
+
+        def fix_inactive_fields(
+            vector: torch.Tensor, active_field_names: Sequence[str]
+        ) -> torch.Tensor:
+            fixed = vector.clone()
+            active = set(active_field_names)
+            bounded = np.clip(normalized_initial, 1e-7, 1.0 - 1e-7)
+            fixed_logits = np.log(bounded / (1.0 - bounded))
+            for field_index, field_name in enumerate(self.FIELD_NAMES):
+                if field_name in active:
+                    continue
+                fixed[field_columns[field_name]] = float(
+                    fixed_logits[field_index]
+                )
+            return fixed
+
+        audit_sensitivity: Dict[str, Dict[str, float]] = {}
+        if self.field_mode == "auto":
+            with torch.no_grad():
+                audit_residual = residual_fn(decision)
+            print(
+                "[OBSERVABILITY] auditing H/alpha/beta before gated LM",
+                flush=True,
+            )
+            if self.jacobian_mode == "finite_difference":
+                audit_jacobian = finite_difference_jacobian(
+                    decision, audit_residual, all_columns
+                )
+            else:
+                audit_jacobian = autograd_jacobian(decision, all_columns)
+            audit_sensitivity = summarize_sensitivity(
+                audit_jacobian, all_columns, decision
+            )
+            active_fields = ["H"]
+            for field_name in ("alpha", "beta"):
+                relative = audit_sensitivity[field_name][
+                    "relative_median"
+                ]
+                if relative >= self.min_relative_median_sensitivity:
+                    active_fields.append(field_name)
+            print(
+                "[OBSERVABILITY] active_fields="
+                f"{','.join(active_fields)}, threshold="
+                f"{self.min_relative_median_sensitivity:.3f}",
+                flush=True,
+            )
+        elif self.field_mode == "h_only":
+            active_fields = ["H"]
+        else:
+            active_fields = list(self.FIELD_NAMES)
+        decision = fix_inactive_fields(decision, active_fields)
+        active_columns = columns_for_fields(active_fields)
 
         current_cost = evaluate_cost(decision)
         initial_cost = current_cost
@@ -306,6 +455,7 @@ class PaperPSOCLM:
         completed_steps = 0
         last_jacobian = None
         last_decision = decision.detach()
+        last_columns = active_columns
 
         for step in range(1, int(max_steps) + 1):
             decision = decision.detach()
@@ -313,15 +463,19 @@ class PaperPSOCLM:
                 residual = residual_fn(decision)
             print(
                 f"[JACOBIAN {step:03d}] mode={self.jacobian_mode}, "
-                f"variables={decision.numel()}, residuals={residual.numel()}",
+                f"active_variables={active_columns.numel()}/"
+                f"{decision.numel()}, residuals={residual.numel()}",
                 flush=True,
             )
             if self.jacobian_mode == "finite_difference":
-                jacobian = finite_difference_jacobian(decision, residual)
+                jacobian = finite_difference_jacobian(
+                    decision, residual, active_columns
+                )
             else:
-                jacobian = autograd_jacobian(decision)
+                jacobian = autograd_jacobian(decision, active_columns)
             last_jacobian = jacobian
             last_decision = decision.detach()
+            last_columns = active_columns
             gradient = jacobian.T @ residual
             if float(torch.linalg.vector_norm(gradient, ord=float("inf"))) < 1e-6:
                 success = True
@@ -336,13 +490,19 @@ class PaperPSOCLM:
             except RuntimeError:
                 delta = torch.linalg.lstsq(system, -gradient[:, None]).solution[:, 0]
             if float(torch.linalg.vector_norm(delta)) < 1e-5 * (
-                float(torch.linalg.vector_norm(decision.detach())) + 1e-5
+                float(
+                    torch.linalg.vector_norm(
+                        decision.detach()[active_columns]
+                    )
+                )
+                + 1e-5
             ):
                 success = True
                 message = "Step tolerance reached"
                 completed_steps = step - 1
                 break
-            trial = decision.detach() + delta.detach()
+            trial = decision.detach().clone()
+            trial[active_columns] += delta.detach()
             trial_cost = evaluate_cost(trial)
             if np.isfinite(trial_cost) and trial_cost < current_cost:
                 improvement = current_cost - trial_cost
@@ -371,52 +531,35 @@ class PaperPSOCLM:
             posture, _ = self._decode(
                 decision.detach(), matrices, point_indices, len(xy)
             )
+            for field_index, field_name in enumerate(self.FIELD_NAMES):
+                if field_name not in active_fields:
+                    posture[:, field_index] = float(initial[field_index])
             rendered = self.renderer(xy, posture, ids)[0, 0]
         diagnostics: Dict[str, Any] = {
             "regularization": {
-                "field_order": ["H", "alpha", "beta"],
+                "field_order": list(self.FIELD_NAMES),
                 "smoothness_weights": self.smoothness_weights.tolist(),
                 "posture_prior_weights": self.posture_prior_weights.tolist(),
-            }
+            },
+            "observability_gate": {
+                "mode": self.field_mode,
+                "min_relative_median_sensitivity": (
+                    self.min_relative_median_sensitivity
+                ),
+                "optimized_fields": list(active_fields),
+                "fixed_fields": [
+                    name for name in self.FIELD_NAMES
+                    if name not in active_fields
+                ],
+                "initial_image_jacobian_sensitivity": audit_sensitivity,
+            },
         }
         if last_jacobian is not None:
-            # Use only image residual rows. Dividing out the sigmoid derivative
-            # reports sensitivity per unit of normalized physical range instead
-            # of sensitivity to the unconstrained optimization logit.
-            pixel_rows = self.optimization_size * self.optimization_size
-            pixel_jacobian = last_jacobian[:pixel_rows]
-            column_norms = torch.linalg.vector_norm(
-                pixel_jacobian, dim=0
-            ).view(len(matrices), 3, self.order + 1)
-            normalized_nodes = torch.sigmoid(last_decision).view(
-                len(matrices), 3, self.order + 1
+            diagnostics["image_jacobian_sensitivity"] = (
+                summarize_sensitivity(
+                    last_jacobian, last_columns, last_decision
+                )
             )
-            sigmoid_slope = (
-                normalized_nodes * (1.0 - normalized_nodes)
-            ).clamp_min(1e-4)
-            normalized_sensitivity = column_norms / sigmoid_slope
-            field_means = normalized_sensitivity.mean(dim=(0, 2))
-            field_medians = torch.stack(
-                [
-                    normalized_sensitivity[:, field_index, :].median()
-                    for field_index in range(3)
-                ]
-            )
-            max_mean = float(field_means.max().clamp_min(1e-12))
-            max_median = float(field_medians.max().clamp_min(1e-12))
-            sensitivity = {}
-            for field_index, field_name in enumerate(("H", "alpha", "beta")):
-                values = normalized_sensitivity[:, field_index, :]
-                sensitivity[field_name] = {
-                    "mean_l2_per_normalized_range": float(values.mean()),
-                    "median_l2_per_normalized_range": float(values.median()),
-                    "max_l2_per_normalized_range": float(values.max()),
-                    "relative_mean": float(field_means[field_index]) / max_mean,
-                    "relative_median": (
-                        float(field_medians[field_index]) / max_median
-                    ),
-                }
-            diagnostics["image_jacobian_sensitivity"] = sensitivity
 
         posture_np = posture.cpu().numpy()
         normalized_posture = (posture_np - PAPER_POSTURE_MIN) / (
@@ -433,6 +576,47 @@ class PaperPSOCLM:
             }
             for field_index, field_name in enumerate(("H", "alpha", "beta"))
         }
+        decisions = {}
+        source_sensitivity = (
+            audit_sensitivity
+            or diagnostics.get("image_jacobian_sensitivity", {})
+        )
+        for field_name in self.FIELD_NAMES:
+            optimized = field_name in active_fields
+            boundary = diagnostics["bound_fraction_within_1pct"][field_name]
+            boundary_total = boundary["lower"] + boundary["upper"]
+            relative = source_sensitivity.get(field_name, {}).get(
+                "relative_median"
+            )
+            if not optimized:
+                confidence = "low"
+                reason = "fixed_below_observability_threshold"
+            elif boundary_total > 0.25:
+                confidence = "low"
+                reason = "optimized_but_boundary_saturated"
+            elif field_name == "H":
+                confidence = "medium_simulation"
+                reason = "optimized_observable_simulation_parameter"
+            else:
+                confidence = "medium_simulation"
+                reason = "optimized_above_observability_threshold"
+            decisions[field_name] = {
+                "optimized": optimized,
+                "source": "lm_optimized" if optimized else "initial_default",
+                "confidence": confidence,
+                "reason": reason,
+                "initial_relative_median_sensitivity": relative,
+                "boundary_fraction": boundary_total,
+            }
+        decisions["gamma"] = {
+            "optimized": False,
+            "source": "fixed_model_default",
+            "confidence": "low",
+            "reason": "unobservable_in_axisymmetric_brush_model",
+            "initial_relative_median_sensitivity": None,
+            "boundary_fraction": 0.0,
+        }
+        diagnostics["field_decisions"] = decisions
         return PaperLMResult(
             posture=posture_np,
             rendered_image=rendered.cpu().numpy(),

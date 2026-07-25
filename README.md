@@ -617,7 +617,7 @@ LM 每一步都要构造图像残差对 CGL 姿态节点的 Jacobian，运行时
 - `alpha` 位于 `[0,0.174532925]` rad；
 - `beta` 位于 `[0,0.087266463]` rad；
 - `gamma` 每行严格为 `0`；
-- `pose_frame=paper_model`、`prototype=paper_psoc_lm_v5_ab`；
+- `pose_frame=paper_model`、`prototype=paper_psoc_lm_v6_observability_gated`；
 - `regression_angle_basis` 必须与所用 checkpoint 一致。
 
 如果旧版 `paper_psoc_lm_v1` CSV 报姿态越界，可先显式裁剪并查看图像：
@@ -634,7 +634,7 @@ python -u tools/render_paper_trajectory.py \
   --output_image outputs/wu_paper_forward/inverted_pose_legacy_clipped.png
 ```
 
-裁剪结果只用于诊断。正式 CSV 必须用 v5 反演器重新生成。v5 保留 v4 的
+裁剪结果只用于诊断。正式 CSV 必须用 v6 反演器重新生成。v6 保留 v5 的
 逐点有界 sigmoid，并沿相邻固定 x/y 线段按不超过 2 px 的间距插入可微
 渲染样本，解决稀疏轨迹被渲染成离散印章点的问题。插值样本只进入正向渲染，
 导出的原始 x/y 点数与坐标不变。v5 为 H、alpha、beta 分别设置先验和
@@ -679,7 +679,54 @@ A/B 判断不能只看最终 loss。优先比较 `dice_at_0.5`、`iou_at_0.5`、
 `relative_median`、alpha/beta 的 `bound_fraction_within_1pct`，以及实际对比图。
 degree-fitted 只有在图像指标不下降、角度贴边显著减少且中位敏感度提高时才保留。
 
-### 11.5 当前原型不能直接下发机器人
+当前“武”字 A/B 中，degree-fitted 的 Dice/IoU 均低于 radian v1，beta 贴边比例
+也更高，因此默认仍保留论文正文声明的 radian v1；degree-fitted 只作为论文单位
+歧义实验留档。
+
+### 11.5 v6 可观测性门控反演
+
+单幅二值字形无法可靠恢复所有三维姿态。v6 默认先计算一次完整 Jacobian，以各
+字段“归一化物理范围内的中位图像敏感度”做门控。H 始终参与优化；alpha/beta
+只有达到相对阈值才进入后续 LM，未通过的字段严格保持命令行默认值：
+
+```bash
+python -u tools/invert_paper_trajectory.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --target_image assets/targets/wu_kaishu_target.png \
+  --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
+  --character 武 \
+  --output_dir outputs/wu_paper_inverse_v6_gated \
+  --output_stem wu \
+  --device cuda \
+  --padding 16 \
+  --order 3 \
+  --optimization_size 16 \
+  --max_steps 20 \
+  --damping 0.05 \
+  --jacobian_mode finite_difference \
+  --finite_difference_eps 0.01 \
+  --field_mode auto \
+  --min_relative_median_sensitivity 0.35 \
+  --h_prior_weight 0.001 \
+  --alpha_prior_weight 0.05 \
+  --beta_prior_weight 0.05 \
+  --h_smoothness_weight 0.02 \
+  --alpha_smoothness_weight 0.10 \
+  --beta_smoothness_weight 0.10 \
+  --initial_h_mm 15.5 \
+  --initial_alpha_deg 0 \
+  --initial_beta_deg 0 \
+  --footprint_scale 0.22 \
+  --render_max_step_px 2.0
+```
+
+`auto` 会先审计全部字段，之后通常只需计算被保留字段的 Jacobian。也可用
+`--field_mode all` 重现 v5 全变量 A/B，或用 `--field_mode h_only` 跳过审计并
+强制只优化 H。正式结果的 JSON 会记录 `observability_gate` 和
+`field_decisions`；CSV 每行增加 `z/alpha/beta/gamma_source` 与对应
+`*_confidence`。`medium_simulation` 只表示仿真内部可辨识，仍不等于机器人真值。
+
+### 11.6 当前原型不能直接下发机器人
 
 论文回归系数、`20 pixel/model-unit`、`footprint_scale=0.22`、惯性系数和偏移比例目前都是仿真参数。真实执行前必须依次替换：
 
