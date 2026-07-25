@@ -11,6 +11,15 @@ from models.paper_bbsm import (
     posture_to_geometry_numpy,
     render_bbsm_mask,
 )
+from models.paper_calibration import (
+    WANG2020_DRAG_COEFFICIENTS,
+    WANG2020_OFFSET_COEFFICIENTS,
+    WANG2020_PROFILE,
+    WANG2020_WIDTH_COEFFICIENTS,
+    bbsm_h_to_wang_height_numpy,
+    paper_calibration_metadata,
+    wang2020_curves_numpy,
+)
 from tools.build_paper_bbsmg_dataset import build_dataset
 
 
@@ -99,6 +108,49 @@ class PaperBBSMTests(unittest.TestCase):
         )
         self.assertEqual(metadata["units"]["alpha"], "rad")
 
+    def test_wang_figure4_digitization_is_versioned_and_bounded(self):
+        heights = bbsm_h_to_wang_height_numpy(
+            np.asarray([11.0, 15.5, 20.0], dtype=np.float32)
+        )
+        np.testing.assert_allclose(heights, [0.0, 0.75, 1.5], atol=1e-6)
+        curves = wang2020_curves_numpy(heights)
+        self.assertTrue(np.all(curves["width_cm"] >= 0.0))
+        self.assertTrue(np.all(curves["drag_cm"] > 0.0))
+        self.assertTrue(np.all(curves["offset_cm"] >= 0.0))
+        # The plotted offset fit has the local maximum described in the text.
+        self.assertGreater(curves["offset_cm"][1], curves["offset_cm"][2])
+        metadata = paper_calibration_metadata()
+        self.assertEqual(metadata["profile"], WANG2020_PROFILE)
+        self.assertIsNone(
+            metadata["unreported_values"][
+                "wang_polynomial_author_coefficients"
+            ]
+        )
+        self.assertEqual(
+            tuple(
+                metadata["figure4_digitized_approximation"][
+                    "width_coefficients"
+                ]
+            ),
+            WANG2020_WIDTH_COEFFICIENTS,
+        )
+        self.assertEqual(
+            tuple(
+                metadata["figure4_digitized_approximation"][
+                    "drag_coefficients"
+                ]
+            ),
+            WANG2020_DRAG_COEFFICIENTS,
+        )
+        self.assertEqual(
+            tuple(
+                metadata["figure4_digitized_approximation"][
+                    "offset_coefficients"
+                ]
+            ),
+            WANG2020_OFFSET_COEFFICIENTS,
+        )
+
 
 try:
     import torch  # noqa: F401
@@ -179,6 +231,44 @@ try:
             torch.testing.assert_close(dense_xy[-1], xy[-1])
             self.assertTrue(torch.all(dense_ids == 0))
             dense_posture.sum().backward()
+            self.assertTrue(torch.isfinite(posture.grad).all())
+
+        def test_wang_root_sticks_then_snaps(self):
+            from models.paper_fusion_renderer import (
+                PaperDynamicConfig,
+                PaperFusionRenderer,
+            )
+
+            renderer = object.__new__(PaperFusionRenderer)
+            nn.Module.__init__(renderer)
+            renderer.regression_angle_basis = "paper_declared_radian"
+            renderer.dynamic = PaperDynamicConfig(
+                calibration_profile=WANG2020_PROFILE,
+                footprint_scale=0.22,
+            )
+            xy = torch.tensor(
+                [[10.0, 10.0], [11.0, 10.0], [40.0, 10.0]]
+            )
+            posture = torch.tensor(
+                [[15.5, 0.0, 0.0]] * 3, requires_grad=True
+            )
+            states = renderer.compute_dynamic_states(
+                xy, posture, torch.zeros(3, dtype=torch.long)
+            )
+            # Friction holds the first root for the short movement.
+            torch.testing.assert_close(
+                states["contact_xy"][0], states["contact_xy"][1], atol=1e-5, rtol=0
+            )
+            # The long movement exceeds free offset and snaps the root.
+            self.assertGreater(
+                float(
+                    torch.linalg.vector_norm(
+                        states["contact_xy"][2] - states["contact_xy"][1]
+                    )
+                ),
+                1.0,
+            )
+            states["contact_xy"].sum().backward()
             self.assertTrue(torch.isfinite(posture.grad).all())
 
         def test_observability_gate_fixes_unobservable_angles(self):

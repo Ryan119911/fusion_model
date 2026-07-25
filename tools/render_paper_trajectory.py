@@ -17,6 +17,11 @@ if str(ROOT) not in sys.path:
 
 from datasets.trajectory_dataset import load_trajectory_csv
 from models.paper_bbsm import PAPER_POSTURE_MAX, PAPER_POSTURE_MIN
+from models.paper_calibration import (
+    DYNAMIC_PROFILES,
+    WANG2020_PROFILE,
+    paper_calibration_metadata,
+)
 from models.paper_fusion_renderer import PaperDynamicConfig, PaperFusionRenderer
 from optim.trajectory_optimizer import load_target_image
 from tools.invert_paper_trajectory import (
@@ -76,6 +81,10 @@ def save_dynamic_states(sample, xy, posture, states, path: Path) -> None:
     virtual = states["virtual_posture"].cpu().numpy()
     geometry = states["geometry"].cpu().numpy()
     heading = states["heading"].cpu().numpy()
+    trajectory_heading = states["trajectory_heading"].cpu().numpy()
+    offset_ratio = states["offset_ratio"].cpu().numpy()
+    free_offset = states["free_offset_model_unit"].cpu().numpy()
+    held_offset = states["held_offset_model_unit"].cpu().numpy()
     offset = states["offset_model_unit"].cpu().numpy()
     contact = states["contact_xy"].cpu().numpy()
     fields = [
@@ -92,8 +101,12 @@ def save_dynamic_states(sample, xy, posture, states, path: Path) -> None:
         "Lt",
         "Lh",
         "Lr",
+        "offset_drag_ratio",
+        "free_offset_model_unit",
+        "held_offset_model_unit",
         "offset_model_unit",
-        "theta_xy_rad",
+        "trajectory_theta_rad",
+        "brush_theta_rad",
         "contact_x_px",
         "contact_y_px",
     ]
@@ -116,8 +129,14 @@ def save_dynamic_states(sample, xy, posture, states, path: Path) -> None:
                     "Lt": repr(float(geometry[index, 0])),
                     "Lh": repr(float(geometry[index, 1])),
                     "Lr": repr(float(geometry[index, 2])),
+                    "offset_drag_ratio": repr(float(offset_ratio[index])),
+                    "free_offset_model_unit": repr(float(free_offset[index])),
+                    "held_offset_model_unit": repr(float(held_offset[index])),
                     "offset_model_unit": repr(float(offset[index])),
-                    "theta_xy_rad": repr(float(heading[index])),
+                    "trajectory_theta_rad": repr(
+                        float(trajectory_heading[index])
+                    ),
+                    "brush_theta_rad": repr(float(heading[index])),
                     "contact_x_px": repr(float(contact[index, 0])),
                     "contact_y_px": repr(float(contact[index, 1])),
                 }
@@ -170,6 +189,7 @@ def main(args: argparse.Namespace) -> None:
         dynamic=PaperDynamicConfig(
             width_inertia=args.width_inertia,
             drag_inertia=args.drag_inertia,
+            calibration_profile=args.dynamic_profile,
             offset_fraction=args.offset_fraction,
             pixels_per_model_unit=args.pixels_per_model_unit,
             patch_floor=args.patch_floor,
@@ -203,7 +223,7 @@ def main(args: argparse.Namespace) -> None:
         sample, xy, posture, states, output.with_suffix(".states.csv")
     )
     report = {
-        "format": "paper_forward_renderer_v2",
+        "format": "paper_forward_renderer_v3_wang2020",
         "simulation_only": True,
         "character": sample.character,
         "sample_id": sample.meta.get("sample_id"),
@@ -214,6 +234,8 @@ def main(args: argparse.Namespace) -> None:
         "z_semantics": "H_mm",
         "gamma_rad": 0.0,
         "regression_angle_basis": renderer.regression_angle_basis,
+        "dynamic_profile": args.dynamic_profile,
+        "paper_calibration": paper_calibration_metadata(args.dynamic_profile),
         "footprint_scale": args.footprint_scale,
         "input_point_count": int(len(xy)),
         "render_sample_count": int(len(dense_xy)),
@@ -259,7 +281,17 @@ if __name__ == "__main__":
     parser.add_argument("--beta_deg", type=float, default=0.0)
     parser.add_argument("--width_inertia", type=float, default=0.02)
     parser.add_argument("--drag_inertia", type=float, default=0.02)
-    parser.add_argument("--offset_fraction", type=float, default=0.25)
+    parser.add_argument(
+        "--dynamic_profile",
+        choices=DYNAMIC_PROFILES,
+        default=WANG2020_PROFILE,
+    )
+    parser.add_argument(
+        "--offset_fraction",
+        type=float,
+        default=0.25,
+        help="used only when dynamic_profile=legacy_fraction_v1",
+    )
     parser.add_argument("--pixels_per_model_unit", type=float, default=20.0)
     parser.add_argument("--patch_floor", type=float, default=0.05)
     parser.add_argument("--footprint_scale", type=float, default=0.22)

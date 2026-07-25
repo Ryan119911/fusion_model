@@ -383,7 +383,10 @@ Lr = 0.0239 H + 0.0061 alpha + 0.0096 beta + 0.1137
 后续如测试 degree-fitted 假设，必须另建数据版本、从头训练检查点并与 radian
 版本做 A/B 对照。无论内部标定采用何种基底，对外 CSV 始终输出弧度。
 
-正向渲染中先按动态笔刷论文对宽度 `w=Lr` 和拖曳长度 `d=Lt+Lh` 做一阶惯性更新，再用带参考姿态正则的回归逆解得到 B-BSMG 的虚拟 `(H,alpha,beta)`。笔尖偏移采用受自由偏移与相邻点位移共同限制的 `min` 原型。轨迹切向角由固定 x/y 计算，不冒充第三姿态角。
+正向渲染中按动态笔刷论文对完整宽度 `w=2Lr` 和拖曳长度
+`d=Lt+Lh` 做一阶惯性更新，再用带参考姿态正则的回归逆解得到 B-BSMG
+的虚拟 `(H,alpha,beta)`。v7 的笔尖偏移和方向使用保存笔根的摩擦状态更新；
+轨迹切向角与动态笔刷方向分别记录，二者都不冒充第三姿态角。
 
 ### 11.1 构建新的论文 B-BSMG 数据
 
@@ -732,7 +735,9 @@ python -u tools/invert_paper_trajectory.py \
 
 ### 11.6 当前原型不能直接下发机器人
 
-论文回归系数、`20 pixel/model-unit`、`footprint_scale=0.22`、惯性系数和偏移比例目前都是仿真参数。真实执行前必须依次替换：
+论文回归系数和 `Kw=Kd=0.02` 来自论文，Figure 4 曲线来自数字化近似；
+`20 pixel/model-unit`、`footprint_scale=0.22` 与跨论文尺度桥梁仍是仿真参数。
+真实执行前必须依次替换：
 
 1. 用真实毛笔采集 `(H,alpha,beta) → (Lt,Lh,Lr)` 标定数据并重拟合回归；
 2. 用连续书写数据拟合宽度、拖曳、偏移和惯性参数；
@@ -742,3 +747,89 @@ python -u tools/invert_paper_trajectory.py \
 6. 低速、离纸、单笔验证后才允许接触纸面。
 
 因此当前导出的六维序列是“论文纸面坐标系中的仿真反演结果”，不是可直接执行的机器人轨迹真值。
+
+### 11.7 v7：使用论文数据的动态笔刷与阶数搜索
+
+v7 把 v6 中人为设定的 `offset_fraction=0.25` 默认路径替换为 Wang 等（2020）
+的动态笔刷数据：
+
+- `Kw=Kd=0.02` 是论文正文给出的精确实验值；
+- `Width(z)`、`Drag(z)`、`Offset(z)` 的作者多项式系数没有在正文或表格中公布；
+- 本仓库从论文 Figure 4 的橙色拟合曲线数字化得到一组近似系数，并以
+  `wang2020_figure4_digitized_v1` 单独版本化；
+- B-BSMG 的 `H=11–20 mm` 线性映射到 Figure 4 的 `z=0–1.5 cm` 只是一条
+  归一化范围桥梁，不是机器人 z 标定；
+- 两篇论文使用的毛笔不同，因此把 Wang 的 `Width/Drag` 曲线进度重映射到
+  B-BSMG 的端点尺寸，并以无量纲 `Offset(z)/Drag(z)` 传递偏移；绝不把
+  Figure 4 的绝对 cm 静默当作 B-BSM 模型单位。
+
+正向状态更新现按 Wang Eq. (1)、(6)–(9) 保存笔根。短距离运动时笔根受摩擦保持，
+超过自由偏移后再弹回；`.states.csv` 会同时输出自由偏移、保持偏移、实际偏移、
+轨迹切向角和动态笔刷角。论文数据、数字化误差和论文未报告的参数都会写入输出
+JSON 的 `paper_calibration`，对应代码在
+`models/paper_calibration.py`。
+
+先在 Ubuntu 上运行新的正向基线：
+
+```bash
+python -u tools/render_paper_trajectory.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --target_image assets/targets/wu_kaishu_target.png \
+  --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
+  --character 武 \
+  --h_mm 15.5 \
+  --alpha_deg 0 \
+  --beta_deg 0 \
+  --dynamic_profile wang2020_figure4_digitized_v1 \
+  --footprint_scale 0.22 \
+  --render_max_step_px 2.0 \
+  --output_image outputs/wu_paper_forward_v7/default_pose.png
+```
+
+先查看 `default_pose.png`、同名 JSON 和 `.states.csv`。新偏移模型会改变接触根位置，
+所以不要把 v6 与 v7 的 LM loss 直接比较；应比较同一目标下的 MSE、Dice、IoU、
+接触位置和最终对比图。
+
+显存和运行时间允许时，再按论文报告的 CGL 阶数 `3–8` 做完整字符级搜索：
+
+```bash
+python -u tools/invert_paper_trajectory.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --target_image assets/targets/wu_kaishu_target.png \
+  --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
+  --character 武 \
+  --output_dir outputs/wu_paper_inverse_v7_wang \
+  --output_stem wu \
+  --device cuda \
+  --padding 16 \
+  --search_orders \
+  --order_min 3 \
+  --order_max 8 \
+  --optimization_size 16 \
+  --max_steps 20 \
+  --damping 0.05 \
+  --jacobian_mode finite_difference \
+  --finite_difference_eps 0.01 \
+  --field_mode h_only \
+  --dynamic_profile wang2020_figure4_digitized_v1 \
+  --h_prior_weight 0.001 \
+  --alpha_prior_weight 0.05 \
+  --beta_prior_weight 0.05 \
+  --h_smoothness_weight 0.02 \
+  --alpha_smoothness_weight 0.10 \
+  --beta_smoothness_weight 0.10 \
+  --initial_h_mm 15.5 \
+  --initial_alpha_deg 0 \
+  --initial_beta_deg 0 \
+  --footprint_scale 0.22 \
+  --render_max_step_px 2.0
+```
+
+Wang 论文是“每个分解笔画分别测试 3–8 阶”；当前目标图只有整字而没有逐笔目标，
+所以 v7 采用“整字共享一个阶数，依次比较 3–8 阶”的近似，并把每个候选的 cost、
+MSE、Dice 和 IoU 写入 `psoc_order_search.candidates`。完整搜索约等于执行 6 次反演。
+先做功能检查时去掉 `--search_orders`，使用 `--order 3 --max_steps 2`。
+
+论文 Eq. (19) 的末端抬笔权重 `beta_k` 没有公开。代码提供
+`--terminal_lift_weight` 和 `--terminal_lift_nodes`，但默认权重严格为 `0`，
+不会把人为数值伪装成论文数据。只有完成真实毛笔标定或明确进行仿真消融时才应设置。

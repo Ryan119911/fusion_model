@@ -24,12 +24,20 @@ from models.paper_bbsm import (
     geometry_to_posture_torch,
     posture_to_geometry_torch,
 )
+from models.paper_calibration import (
+    DYNAMIC_PROFILES,
+    LEGACY_OFFSET_PROFILE,
+    WANG2020_PROFILE,
+    wang2020_dimension_progress_torch,
+    wang2020_offset_drag_ratio_torch,
+)
 
 
 @dataclass(frozen=True)
 class PaperDynamicConfig:
     width_inertia: float = 0.02
     drag_inertia: float = 0.02
+    calibration_profile: str = WANG2020_PROFILE
     offset_fraction: float = 0.25
     pixels_per_model_unit: float = 20.0
     inverse_regularization: float = 1e-4
@@ -93,6 +101,13 @@ class PaperFusionRenderer(nn.Module):
             raise ValueError("width_inertia must be in [0,1]")
         if not 0.0 <= self.dynamic.drag_inertia <= 1.0:
             raise ValueError("drag_inertia must be in [0,1]")
+        if self.dynamic.calibration_profile not in DYNAMIC_PROFILES:
+            raise ValueError(
+                "calibration_profile must be one of "
+                f"{DYNAMIC_PROFILES}, got {self.dynamic.calibration_profile!r}"
+            )
+        if self.dynamic.offset_fraction < 0.0:
+            raise ValueError("offset_fraction must be non-negative")
         if self.dynamic.footprint_scale <= 0.0:
             raise ValueError("footprint_scale must be positive")
         if self.dynamic.render_max_step_px <= 0.0:
@@ -201,27 +216,8 @@ class PaperFusionRenderer(nn.Module):
         posture: torch.Tensor,
         stroke_ids: torch.Tensor,
     ) -> torch.Tensor:
-        """Apply paper-style first-order width/drag dynamics."""
-        instant = posture_to_geometry_torch(
-            posture, angle_basis=self.regression_angle_basis
-        )
-        result = torch.empty_like(instant)
-        kw = float(self.dynamic.width_inertia)
-        kd = float(self.dynamic.drag_inertia)
-        for stroke_id in torch.unique_consecutive(stroke_ids):
-            indices = torch.nonzero(stroke_ids == stroke_id, as_tuple=False).flatten()
-            previous_width = instant[indices[0], 2]
-            previous_drag = instant[indices[0], 0] + instant[indices[0], 1]
-            for index in indices:
-                current = instant[index]
-                width = previous_width * kw + current[2] * (1.0 - kw)
-                drag_target = current[0] + current[1]
-                drag = previous_drag * kd + drag_target * (1.0 - kd)
-                heel_ratio = current[1] / (drag_target + 1e-8)
-                result[index] = torch.stack(
-                    [drag * (1.0 - heel_ratio), drag * heel_ratio, width]
-                )
-                previous_width, previous_drag = width, drag
+        """Apply Wang Eq. (6)/(7) dynamics to B-BSM footprint geometry."""
+        result = self._dynamic_geometry(posture, stroke_ids)
         virtual = geometry_to_posture_torch(
             result,
             reference=posture,
@@ -229,6 +225,86 @@ class PaperFusionRenderer(nn.Module):
             angle_basis=self.regression_angle_basis,
         )
         return clamp_posture_torch(virtual)
+
+    def _dynamic_geometry(
+        self,
+        posture: torch.Tensor,
+        stroke_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return dynamic ``(Lt,Lh,Lr)`` while carrying state across strokes.
+
+        Wang et al. condition a stroke on the final brush state of the previous
+        stroke.  Width and drag therefore remain stateful across the complete
+        character.  The first sample starts from zero deformation, and the
+        reported K=0.02 makes the first update almost instantaneous.
+        """
+        instant = posture_to_geometry_torch(
+            posture, angle_basis=self.regression_angle_basis
+        )
+        if self.dynamic.calibration_profile == WANG2020_PROFILE:
+            zero_angle_posture = torch.stack(
+                [
+                    posture[:, 0],
+                    torch.zeros_like(posture[:, 1]),
+                    torch.zeros_like(posture[:, 2]),
+                ],
+                dim=-1,
+            )
+            zero_angle_geometry = posture_to_geometry_torch(
+                zero_angle_posture,
+                angle_basis=self.regression_angle_basis,
+            )
+            endpoints = torch.as_tensor(
+                [[11.0, 0.0, 0.0], [20.0, 0.0, 0.0]],
+                dtype=posture.dtype,
+                device=posture.device,
+            )
+            endpoint_geometry = posture_to_geometry_torch(
+                endpoints, angle_basis=self.regression_angle_basis
+            )
+            progress = wang2020_dimension_progress_torch(posture[:, 0])
+            endpoint_drag = endpoint_geometry[:, 0] + endpoint_geometry[:, 1]
+            mapped_drag = endpoint_drag[0] + progress["drag_progress"] * (
+                endpoint_drag[1] - endpoint_drag[0]
+            )
+            mapped_half_width = endpoint_geometry[0, 2] + progress[
+                "width_progress"
+            ] * (endpoint_geometry[1, 2] - endpoint_geometry[0, 2])
+            angle_delta = instant - zero_angle_geometry
+            drag_targets = (
+                mapped_drag + angle_delta[:, 0] + angle_delta[:, 1]
+            ).clamp_min(1e-6)
+            half_width_targets = (
+                mapped_half_width + angle_delta[:, 2]
+            ).clamp_min(1e-6)
+        else:
+            drag_targets = instant[:, 0] + instant[:, 1]
+            half_width_targets = instant[:, 2]
+        kw = float(self.dynamic.width_inertia)
+        kd = float(self.dynamic.drag_inertia)
+        previous_width = torch.zeros_like(instant[0, 2])
+        previous_drag = torch.zeros_like(instant[0, 0])
+        result = []
+        for index in range(len(instant)):
+            current = instant[index]
+            # B-BSM Lr is the half-width; Wang w is the full mark width.
+            width_target = 2.0 * half_width_targets[index]
+            drag_target = drag_targets[index]
+            width = previous_width * kw + width_target * (1.0 - kw)
+            drag = previous_drag * kd + drag_target * (1.0 - kd)
+            instant_drag = current[0] + current[1]
+            heel_ratio = current[1] / (instant_drag + 1e-8)
+            result.append(
+                torch.stack(
+                    [
+                        drag * (1.0 - heel_ratio),
+                        drag * heel_ratio,
+                        0.5 * width,
+                    ]
+                )
+            )
+            previous_width, previous_drag = width, drag
+        return torch.stack(result, dim=0)
 
     def _rotate_about(
         self,
@@ -399,33 +475,113 @@ class PaperFusionRenderer(nn.Module):
         posture: torch.Tensor,
         stroke_ids: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
-        """Expose the paper dynamic state bridge for calibration diagnostics."""
-        heading, step_length = self.trajectory_heading(xy_canvas, stroke_ids)
-        virtual_posture = self.dynamic_posture(posture, stroke_ids)
-        geometry = posture_to_geometry_torch(
-            virtual_posture, angle_basis=self.regression_angle_basis
+        """Apply Wang Eq. (1), (6)-(9) and expose every dynamic state.
+
+        The contact root remains fixed while the handle displacement is below
+        the free offset and snaps to the free-offset boundary afterwards.
+        At a stroke transition the previous deformation/orientation is carried
+        over, but the root is rebased at the new handle location because the
+        unobserved pen-up motion is not part of the input trajectory.
+        """
+        tangent_heading, step_length = self.trajectory_heading(
+            xy_canvas, stroke_ids
         )
-        free_offset = self.dynamic.offset_fraction * (
-            geometry[:, 0] + geometry[:, 1]
+        geometry = self._dynamic_geometry(posture, stroke_ids)
+        virtual_posture = geometry_to_posture_torch(
+            geometry,
+            reference=posture,
+            regularization=self.dynamic.inverse_regularization,
+            angle_basis=self.regression_angle_basis,
         )
+        virtual_posture = clamp_posture_torch(virtual_posture)
+        dynamic_drag = geometry[:, 0] + geometry[:, 1]
+        if self.dynamic.calibration_profile == WANG2020_PROFILE:
+            offset_ratio = wang2020_offset_drag_ratio_torch(posture[:, 0])
+            free_offset = offset_ratio * dynamic_drag
+        elif self.dynamic.calibration_profile == LEGACY_OFFSET_PROFILE:
+            offset_ratio = torch.full_like(
+                dynamic_drag, float(self.dynamic.offset_fraction)
+            )
+            free_offset = offset_ratio * dynamic_drag
+        else:  # Constructor validation keeps this branch unreachable.
+            raise RuntimeError(
+                f"Unsupported dynamic profile {self.dynamic.calibration_profile!r}"
+            )
         effective_scale = (
             float(self.dynamic.pixels_per_model_unit)
             * float(self.dynamic.footprint_scale)
         )
-        held_offset = step_length / effective_scale
-        offset = torch.minimum(free_offset, held_offset)
-        direction = torch.stack([torch.cos(heading), torch.sin(heading)], dim=-1)
-        contact_xy = (
-            xy_canvas
-            - offset[:, None]
-            * effective_scale
-            * direction
-        )
+        offsets = []
+        held_offsets = []
+        headings = []
+        roots = []
+        previous_offset = torch.zeros_like(free_offset[0])
+        previous_heading = tangent_heading[0]
+        previous_root = xy_canvas[0]
+        previous_stroke = stroke_ids[0]
+        eps = torch.finfo(xy_canvas.dtype).eps
+        for index in range(len(xy_canvas)):
+            is_first = index == 0
+            is_new_stroke = (
+                not is_first
+                and bool((stroke_ids[index] != previous_stroke).detach().cpu())
+            )
+            if is_first or is_new_stroke:
+                if is_new_stroke:
+                    previous_root = (
+                        xy_canvas[index]
+                        - previous_offset
+                        * effective_scale
+                        * torch.stack(
+                            [
+                                torch.cos(previous_heading),
+                                torch.sin(previous_heading),
+                            ]
+                        )
+                    )
+                held = previous_offset
+                current_offset = torch.minimum(free_offset[index], held)
+                current_heading = previous_heading
+            else:
+                root_to_handle = xy_canvas[index] - previous_root
+                held = (
+                    torch.linalg.vector_norm(root_to_handle) / effective_scale
+                )
+                current_offset = torch.minimum(free_offset[index], held)
+                candidate_heading = torch.atan2(
+                    root_to_handle[1], root_to_handle[0]
+                )
+                current_heading = torch.where(
+                    held > eps, candidate_heading, previous_heading
+                )
+            direction = torch.stack(
+                [torch.cos(current_heading), torch.sin(current_heading)]
+            )
+            current_root = (
+                xy_canvas[index]
+                - current_offset * effective_scale * direction
+            )
+            offsets.append(current_offset)
+            held_offsets.append(held)
+            headings.append(current_heading)
+            roots.append(current_root)
+            previous_offset = current_offset
+            previous_heading = current_heading
+            previous_root = current_root
+            previous_stroke = stroke_ids[index]
+        offset = torch.stack(offsets)
+        held_offset = torch.stack(held_offsets)
+        heading = torch.stack(headings)
+        contact_xy = torch.stack(roots)
         return {
             "heading": heading,
+            "trajectory_heading": tangent_heading,
             "step_length_px": step_length,
             "virtual_posture": virtual_posture,
             "geometry": geometry,
+            "offset_ratio": offset_ratio,
+            "free_offset_model_unit": free_offset,
+            "held_offset_model_unit": held_offset,
             "offset_model_unit": offset,
             "contact_xy": contact_xy,
         }

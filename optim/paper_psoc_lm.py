@@ -64,6 +64,8 @@ class PaperPSOCLM:
         finite_difference_eps: float = 1e-2,
         field_mode: str = "auto",
         min_relative_median_sensitivity: float = 0.45,
+        terminal_lift_weight: float = 0.0,
+        terminal_lift_nodes: int = 1,
     ):
         if order < 1:
             raise ValueError("order must be >= 1")
@@ -97,6 +99,12 @@ class PaperPSOCLM:
         self.min_relative_median_sensitivity = float(
             min_relative_median_sensitivity
         )
+        if terminal_lift_weight < 0:
+            raise ValueError("terminal_lift_weight must be non-negative")
+        if terminal_lift_nodes < 1:
+            raise ValueError("terminal_lift_nodes must be >= 1")
+        self.terminal_lift_weight = float(terminal_lift_weight)
+        self.terminal_lift_nodes = int(terminal_lift_nodes)
 
     @staticmethod
     def _validate_field_weights(
@@ -293,6 +301,16 @@ class PaperPSOCLM:
                 residuals.append(
                     (
                         torch.sqrt(posture_prior_weights) * (nodes - prior)
+                    ).flatten()
+                )
+            if self.terminal_lift_weight > 0:
+                tail = min(self.terminal_lift_nodes, nodes.shape[-1])
+                # Wang Eq. (19) penalizes terminal z so the brush tends to
+                # lift.  In this bridge, normalized H=0 is H_min=11 mm.
+                terminal_h = nodes[:, 0, -tail:]
+                residuals.append(
+                    (
+                        self.terminal_lift_weight**0.5 * terminal_h
                     ).flatten()
                 )
             return torch.cat(residuals)
@@ -540,6 +558,13 @@ class PaperPSOCLM:
                 "field_order": list(self.FIELD_NAMES),
                 "smoothness_weights": self.smoothness_weights.tolist(),
                 "posture_prior_weights": self.posture_prior_weights.tolist(),
+                "terminal_lift_weight": self.terminal_lift_weight,
+                "terminal_lift_nodes": self.terminal_lift_nodes,
+                "terminal_lift_weight_source": (
+                    "user_simulation_setting"
+                    if self.terminal_lift_weight > 0
+                    else "disabled_paper_did_not_report_beta_k"
+                ),
             },
             "observability_gate": {
                 "mode": self.field_mode,

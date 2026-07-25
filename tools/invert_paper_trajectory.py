@@ -17,6 +17,11 @@ if str(ROOT) not in sys.path:
 
 from datasets.trajectory_dataset import load_trajectory_csv
 from models.geometry import normalize_trajectory_xy
+from models.paper_calibration import (
+    DYNAMIC_PROFILES,
+    WANG2020_PROFILE,
+    paper_calibration_metadata,
+)
 from models.paper_fusion_renderer import PaperDynamicConfig, PaperFusionRenderer
 from optim.paper_psoc_lm import PaperPSOCLM
 from optim.trajectory_optimizer import load_target_image
@@ -107,7 +112,7 @@ def save_pose_csv(
                     "z_unit": "mm",
                     "angle_unit": "rad",
                     "pose_frame": "paper_model",
-                    "prototype": "paper_psoc_lm_v6_observability_gated",
+                    "prototype": "paper_psoc_lm_v7_wang2020_calibrated",
                     "regression_angle_basis": regression_angle_basis,
                     "z_source": field_decisions["H"]["source"],
                     "z_confidence": field_decisions["H"]["confidence"],
@@ -206,6 +211,7 @@ def main(args: argparse.Namespace) -> None:
     dynamic = PaperDynamicConfig(
         width_inertia=args.width_inertia,
         drag_inertia=args.drag_inertia,
+        calibration_profile=args.dynamic_profile,
         offset_fraction=args.offset_fraction,
         pixels_per_model_unit=args.pixels_per_model_unit,
         patch_floor=args.patch_floor,
@@ -237,38 +243,79 @@ def main(args: argparse.Namespace) -> None:
             torch.as_tensor(stroke_ids, device=device),
         )[0, 0].cpu().numpy()
 
-    solver = PaperPSOCLM(
-        renderer,
-        order=args.order,
-        optimization_size=args.optimization_size,
-        smoothness_weights=(
-            args.h_smoothness_weight,
-            args.alpha_smoothness_weight,
-            args.beta_smoothness_weight,
-        ),
-        posture_prior_weights=(
-            args.h_prior_weight,
-            args.alpha_prior_weight,
-            args.beta_prior_weight,
-        ),
-        render_stride=args.render_stride,
-        jacobian_mode=args.jacobian_mode,
-        finite_difference_eps=args.finite_difference_eps,
-        field_mode=args.field_mode,
-        min_relative_median_sensitivity=(
-            args.min_relative_median_sensitivity
-        ),
+    orders = (
+        list(range(args.order_min, args.order_max + 1))
+        if args.search_orders
+        else [args.order]
     )
-    result = solver.optimize(
-        xy_canvas,
-        stroke_ids,
-        target,
-        initial_h_mm=args.initial_h_mm,
-        initial_alpha_rad=float(np.deg2rad(args.initial_alpha_deg)),
-        initial_beta_rad=float(np.deg2rad(args.initial_beta_deg)),
-        damping=args.damping,
-        max_steps=args.max_steps,
-        pixel_weight=args.pixel_weight,
+    if not orders or min(orders) < 1:
+        raise ValueError("PSOC orders must be positive")
+    if args.search_orders and (args.order_min < 3 or args.order_max > 8):
+        raise ValueError("Paper order search must stay within orders 3 through 8")
+    if args.order_min > args.order_max:
+        raise ValueError("order_min must not exceed order_max")
+    candidates = []
+    result = None
+    selected_order = None
+    for order in orders:
+        print(f"[ORDER SEARCH] optimizing CGL order={order}", flush=True)
+        solver = PaperPSOCLM(
+            renderer,
+            order=order,
+            optimization_size=args.optimization_size,
+            smoothness_weights=(
+                args.h_smoothness_weight,
+                args.alpha_smoothness_weight,
+                args.beta_smoothness_weight,
+            ),
+            posture_prior_weights=(
+                args.h_prior_weight,
+                args.alpha_prior_weight,
+                args.beta_prior_weight,
+            ),
+            render_stride=args.render_stride,
+            jacobian_mode=args.jacobian_mode,
+            finite_difference_eps=args.finite_difference_eps,
+            field_mode=args.field_mode,
+            min_relative_median_sensitivity=(
+                args.min_relative_median_sensitivity
+            ),
+            terminal_lift_weight=args.terminal_lift_weight,
+            terminal_lift_nodes=args.terminal_lift_nodes,
+        )
+        candidate = solver.optimize(
+            xy_canvas,
+            stroke_ids,
+            target,
+            initial_h_mm=args.initial_h_mm,
+            initial_alpha_rad=float(np.deg2rad(args.initial_alpha_deg)),
+            initial_beta_rad=float(np.deg2rad(args.initial_beta_deg)),
+            damping=args.damping,
+            max_steps=args.max_steps,
+            pixel_weight=args.pixel_weight,
+        )
+        candidate_metrics = binary_metrics(candidate.rendered_image, target)
+        candidates.append(
+            {
+                "order": order,
+                "success": candidate.success,
+                "steps": candidate.steps,
+                "initial_cost": candidate.initial_cost,
+                "final_cost": candidate.final_cost,
+                "plain_mse": candidate_metrics["plain_mse"],
+                "dice_at_0.5": candidate_metrics["dice_at_0.5"],
+                "iou_at_0.5": candidate_metrics["iou_at_0.5"],
+            }
+        )
+        if result is None or candidate.final_cost < result.final_cost:
+            result = candidate
+            selected_order = order
+    if result is None or selected_order is None:
+        raise RuntimeError("PSOC order search produced no candidate result")
+    print(
+        f"[ORDER SEARCH] selected order={selected_order}, "
+        f"cost={result.final_cost:.6f}",
+        flush=True,
     )
 
     output_dir = Path(args.output_dir)
@@ -294,7 +341,7 @@ def main(args: argparse.Namespace) -> None:
         output_dir / f"{stem}_comparison.png",
     )
     report = {
-        "format": "paper_psoc_lm_v6_observability_gated",
+        "format": "paper_psoc_lm_v7_wang2020_calibrated",
         "simulation_only": True,
         "character": sample.character,
         "sample_id": sample.meta.get("sample_id"),
@@ -311,11 +358,16 @@ def main(args: argparse.Namespace) -> None:
         "gamma_rad": 0.0,
         "pose_frame": "paper_model",
         "regression_angle_basis": renderer.regression_angle_basis,
+        "dynamic_profile": args.dynamic_profile,
+        "paper_calibration": paper_calibration_metadata(args.dynamic_profile),
         "regression_unit_note": (
             "External and CSV angles are radians. The internal regression "
             f"basis is checkpoint-defined as {renderer.regression_angle_basis!r}."
         ),
         "forward_calibration": {
+            "dynamic_profile": args.dynamic_profile,
+            "width_inertia_Kw": args.width_inertia,
+            "drag_inertia_Kd": args.drag_inertia,
             "pixels_per_model_unit": args.pixels_per_model_unit,
             "footprint_scale": args.footprint_scale,
             "effective_pixels_per_model_unit": (
@@ -330,7 +382,23 @@ def main(args: argparse.Namespace) -> None:
             "beta_rad": [0.0, float(np.deg2rad(5.0))],
             "gamma_rad": [0.0, 0.0],
         },
-        "psoc_order": args.order,
+        "psoc_order": selected_order,
+        "psoc_order_search": {
+            "enabled": args.search_orders,
+            "orders": orders,
+            "selection_metric": "final_regularized_lm_cost",
+            "scope": (
+                "character_global_approximation"
+                if args.search_orders
+                else "fixed_order"
+            ),
+            "candidates": candidates,
+            "paper_note": (
+                "Wang et al. search orders 3-8 per decomposed stroke. "
+                "This tool uses a complete-character target, so it compares "
+                "one shared order at a time."
+            ),
+        },
         "optimized_range": {
             "H_mm": [
                 float(result.posture[:, 0].min()),
@@ -419,6 +487,16 @@ if __name__ == "__main__":
     parser.add_argument("--image_size", type=int, default=128)
     parser.add_argument("--padding", type=int, default=16)
     parser.add_argument("--order", type=int, default=3)
+    parser.add_argument(
+        "--search_orders",
+        action="store_true",
+        help=(
+            "compare the paper-reported CGL orders from order_min through "
+            "order_max and retain the lowest regularized LM cost"
+        ),
+    )
+    parser.add_argument("--order_min", type=int, default=3)
+    parser.add_argument("--order_max", type=int, default=8)
     parser.add_argument("--max_steps", type=int, default=15)
     parser.add_argument("--damping", type=float, default=0.05)
     parser.add_argument("--optimization_size", type=int, default=16)
@@ -431,6 +509,16 @@ if __name__ == "__main__":
     parser.add_argument("--h_prior_weight", type=float, default=0.001)
     parser.add_argument("--alpha_prior_weight", type=float, default=0.05)
     parser.add_argument("--beta_prior_weight", type=float, default=0.05)
+    parser.add_argument(
+        "--terminal_lift_weight",
+        type=float,
+        default=0.0,
+        help=(
+            "optional Wang Eq. (19) terminal H regularizer; default is zero "
+            "because the paper does not report beta_k"
+        ),
+    )
+    parser.add_argument("--terminal_lift_nodes", type=int, default=1)
     parser.add_argument(
         "--jacobian_mode",
         choices=["finite_difference", "autograd"],
@@ -456,7 +544,17 @@ if __name__ == "__main__":
     parser.add_argument("--initial_beta_deg", type=float, default=0.0)
     parser.add_argument("--width_inertia", type=float, default=0.02)
     parser.add_argument("--drag_inertia", type=float, default=0.02)
-    parser.add_argument("--offset_fraction", type=float, default=0.25)
+    parser.add_argument(
+        "--dynamic_profile",
+        choices=DYNAMIC_PROFILES,
+        default=WANG2020_PROFILE,
+    )
+    parser.add_argument(
+        "--offset_fraction",
+        type=float,
+        default=0.25,
+        help="used only when dynamic_profile=legacy_fraction_v1",
+    )
     parser.add_argument("--pixels_per_model_unit", type=float, default=20.0)
     parser.add_argument("--patch_floor", type=float, default=0.05)
     parser.add_argument("--footprint_scale", type=float, default=0.22)
