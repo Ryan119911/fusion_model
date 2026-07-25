@@ -195,6 +195,10 @@ def main(args: argparse.Namespace) -> None:
             pixels_per_model_unit=args.pixels_per_model_unit,
             patch_floor=args.patch_floor,
             footprint_scale=args.footprint_scale,
+            footprint_longitudinal_scale=(
+                args.footprint_longitudinal_scale
+            ),
+            footprint_transverse_scale=args.footprint_transverse_scale,
             render_max_step_px=args.render_max_step_px,
         ),
         point_batch_size=args.point_batch_size,
@@ -242,6 +246,10 @@ def main(args: argparse.Namespace) -> None:
         "offset_transfer_scale": args.offset_transfer_scale,
         "paper_calibration": paper_calibration_metadata(args.dynamic_profile),
         "footprint_scale": args.footprint_scale,
+        "footprint_longitudinal_scale": (
+            renderer.dynamic.longitudinal_scale
+        ),
+        "footprint_transverse_scale": renderer.dynamic.transverse_scale,
         "input_point_count": int(len(xy)),
         "render_sample_count": int(len(dense_xy)),
         "render_max_step_px": args.render_max_step_px,
@@ -325,6 +333,18 @@ if __name__ == "__main__":
     parser.add_argument("--pixels_per_model_unit", type=float, default=20.0)
     parser.add_argument("--patch_floor", type=float, default=0.05)
     parser.add_argument("--footprint_scale", type=float, default=0.22)
+    parser.add_argument(
+        "--footprint_longitudinal_scale",
+        type=float,
+        default=None,
+        help="local along-stroke scale; defaults to footprint_scale",
+    )
+    parser.add_argument(
+        "--footprint_transverse_scale",
+        type=float,
+        default=None,
+        help="local cross-stroke width scale; defaults to footprint_scale",
+    )
     parser.add_argument("--render_max_step_px", type=float, default=2.0)
     parser.add_argument("--point_batch_size", type=int, default=128)
     main(parser.parse_args())

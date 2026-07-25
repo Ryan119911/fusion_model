@@ -233,6 +233,20 @@ try:
             dense_posture.sum().backward()
             self.assertTrue(torch.isfinite(posture.grad).all())
 
+        def test_anisotropic_footprint_scale_keeps_legacy_fallback(self):
+            from models.paper_fusion_renderer import PaperDynamicConfig
+
+            legacy = PaperDynamicConfig(footprint_scale=0.22)
+            self.assertAlmostEqual(legacy.longitudinal_scale, 0.22)
+            self.assertAlmostEqual(legacy.transverse_scale, 0.22)
+            anisotropic = PaperDynamicConfig(
+                footprint_scale=0.22,
+                footprint_longitudinal_scale=0.21,
+                footprint_transverse_scale=0.26,
+            )
+            self.assertAlmostEqual(anisotropic.longitudinal_scale, 0.21)
+            self.assertAlmostEqual(anisotropic.transverse_scale, 0.26)
+
         def test_wang_root_sticks_then_snaps(self):
             from models.paper_fusion_renderer import (
                 PaperDynamicConfig,

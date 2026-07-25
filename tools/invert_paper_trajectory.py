@@ -217,6 +217,8 @@ def main(args: argparse.Namespace) -> None:
         pixels_per_model_unit=args.pixels_per_model_unit,
         patch_floor=args.patch_floor,
         footprint_scale=args.footprint_scale,
+        footprint_longitudinal_scale=args.footprint_longitudinal_scale,
+        footprint_transverse_scale=args.footprint_transverse_scale,
         render_max_step_px=args.render_max_step_px,
     )
     renderer = PaperFusionRenderer.from_checkpoint(
@@ -393,8 +395,13 @@ def main(args: argparse.Namespace) -> None:
             "drag_inertia_Kd": args.drag_inertia,
             "pixels_per_model_unit": args.pixels_per_model_unit,
             "footprint_scale": args.footprint_scale,
+            "footprint_longitudinal_scale": (
+                renderer.dynamic.longitudinal_scale
+            ),
+            "footprint_transverse_scale": renderer.dynamic.transverse_scale,
             "effective_pixels_per_model_unit": (
-                args.pixels_per_model_unit * args.footprint_scale
+                args.pixels_per_model_unit
+                * renderer.dynamic.longitudinal_scale
             ),
             "patch_floor": args.patch_floor,
             "render_max_step_px": args.render_max_step_px,
@@ -594,5 +601,17 @@ if __name__ == "__main__":
     parser.add_argument("--pixels_per_model_unit", type=float, default=20.0)
     parser.add_argument("--patch_floor", type=float, default=0.05)
     parser.add_argument("--footprint_scale", type=float, default=0.22)
+    parser.add_argument(
+        "--footprint_longitudinal_scale",
+        type=float,
+        default=None,
+        help="local along-stroke scale; defaults to footprint_scale",
+    )
+    parser.add_argument(
+        "--footprint_transverse_scale",
+        type=float,
+        default=None,
+        help="local cross-stroke width scale; defaults to footprint_scale",
+    )
     parser.add_argument("--render_max_step_px", type=float, default=2.0)
     main(parser.parse_args())

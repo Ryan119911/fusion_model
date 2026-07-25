@@ -44,7 +44,25 @@ class PaperDynamicConfig:
     inverse_regularization: float = 1e-4
     patch_floor: float = 0.05
     footprint_scale: float = 0.22
+    footprint_longitudinal_scale: float | None = None
+    footprint_transverse_scale: float | None = None
     render_max_step_px: float = 2.0
+
+    @property
+    def longitudinal_scale(self) -> float:
+        return float(
+            self.footprint_scale
+            if self.footprint_longitudinal_scale is None
+            else self.footprint_longitudinal_scale
+        )
+
+    @property
+    def transverse_scale(self) -> float:
+        return float(
+            self.footprint_scale
+            if self.footprint_transverse_scale is None
+            else self.footprint_transverse_scale
+        )
 
 
 def _infer_model_config(state: Dict[str, torch.Tensor]) -> Dict[str, int]:
@@ -113,6 +131,10 @@ class PaperFusionRenderer(nn.Module):
             raise ValueError("offset_transfer_scale must be non-negative")
         if self.dynamic.footprint_scale <= 0.0:
             raise ValueError("footprint_scale must be positive")
+        if self.dynamic.longitudinal_scale <= 0.0:
+            raise ValueError("footprint_longitudinal_scale must be positive")
+        if self.dynamic.transverse_scale <= 0.0:
+            raise ValueError("footprint_transverse_scale must be positive")
         if self.dynamic.render_max_step_px <= 0.0:
             raise ValueError("render_max_step_px must be positive")
         self.point_batch_size = int(point_batch_size)
@@ -325,13 +347,14 @@ class PaperFusionRenderer(nn.Module):
         dy = yy[None] - centers_px[:, 1, None, None]
         cosine = torch.cos(angles)[:, None, None]
         sine = torch.sin(angles)[:, None, None]
-        scale = float(self.dynamic.footprint_scale)
+        longitudinal_scale = self.dynamic.longitudinal_scale
+        transverse_scale = self.dynamic.transverse_scale
         source_x = (
-            (cosine * dx + sine * dy) / scale
+            (cosine * dx + sine * dy) / longitudinal_scale
             + centers_px[:, 0, None, None]
         )
         source_y = (
-            (-sine * dx + cosine * dy) / scale
+            (-sine * dx + cosine * dy) / transverse_scale
             + centers_px[:, 1, None, None]
         )
         grid = torch.stack(
@@ -515,7 +538,7 @@ class PaperFusionRenderer(nn.Module):
             )
         effective_scale = (
             float(self.dynamic.pixels_per_model_unit)
-            * float(self.dynamic.footprint_scale)
+            * self.dynamic.longitudinal_scale
         )
         offsets = []
         held_offsets = []

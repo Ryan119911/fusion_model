@@ -887,3 +887,18 @@ lm.diagnostics.checkpoint_selection.returned_best_checkpoint
 `lm.final_cost` 现在对应被返回 checkpoint 的正则化 cost；优化循环最后一步的 cost
 保存在 `terminal_regularized_cost`。因此可以安全增加 `max_steps`，较差的后续迭代
 不会再覆盖先前更好的全分辨率结果。
+
+### 11.9 各向异性笔触尺度：只加粗，不加长
+
+原 `footprint_scale` 同时缩放笔触局部坐标的纵向长度和横向宽度。“武”字实测中，
+从 `0.22` 增大到 `0.24` 后，预测墨迹率由 `0.08954` 提高到 `0.10425`，接近目标
+`0.10547`；但笔画端点也被拉长，Dice 从 `0.49578` 降至 `0.48196`。因此新增：
+
+```text
+--footprint_longitudinal_scale   沿轨迹方向的长度尺度
+--footprint_transverse_scale     垂直轨迹方向的宽度尺度
+```
+
+两者未指定时都回退到 `--footprint_scale`，旧命令和旧结果保持兼容。动态 Offset
+仍沿笔画方向计算，因此像素换算使用纵向尺度。当前仿真建议先固定纵向 `0.22`，
+单独扫描横向尺度；这只是 B-BSMG 图像桥梁标定，不是机器人毛笔物理尺寸。
