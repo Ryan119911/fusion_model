@@ -38,6 +38,7 @@ class PaperDynamicConfig:
     width_inertia: float = 0.02
     drag_inertia: float = 0.02
     calibration_profile: str = WANG2020_PROFILE
+    offset_transfer_scale: float = 1.0
     offset_fraction: float = 0.25
     pixels_per_model_unit: float = 20.0
     inverse_regularization: float = 1e-4
@@ -108,6 +109,8 @@ class PaperFusionRenderer(nn.Module):
             )
         if self.dynamic.offset_fraction < 0.0:
             raise ValueError("offset_fraction must be non-negative")
+        if self.dynamic.offset_transfer_scale < 0.0:
+            raise ValueError("offset_transfer_scale must be non-negative")
         if self.dynamic.footprint_scale <= 0.0:
             raise ValueError("footprint_scale must be positive")
         if self.dynamic.render_max_step_px <= 0.0:
@@ -497,6 +500,9 @@ class PaperFusionRenderer(nn.Module):
         dynamic_drag = geometry[:, 0] + geometry[:, 1]
         if self.dynamic.calibration_profile == WANG2020_PROFILE:
             offset_ratio = wang2020_offset_drag_ratio_torch(posture[:, 0])
+            offset_ratio = (
+                offset_ratio * float(self.dynamic.offset_transfer_scale)
+            )
             free_offset = offset_ratio * dynamic_drag
         elif self.dynamic.calibration_profile == LEGACY_OFFSET_PROFILE:
             offset_ratio = torch.full_like(

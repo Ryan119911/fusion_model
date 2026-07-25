@@ -212,6 +212,7 @@ def main(args: argparse.Namespace) -> None:
         width_inertia=args.width_inertia,
         drag_inertia=args.drag_inertia,
         calibration_profile=args.dynamic_profile,
+        offset_transfer_scale=args.offset_transfer_scale,
         offset_fraction=args.offset_fraction,
         pixels_per_model_unit=args.pixels_per_model_unit,
         patch_floor=args.patch_floor,
@@ -255,8 +256,10 @@ def main(args: argparse.Namespace) -> None:
     if args.order_min > args.order_max:
         raise ValueError("order_min must not exceed order_max")
     candidates = []
+    candidate_results = []
     result = None
     selected_order = None
+    selected_mse = float("inf")
     for order in orders:
         print(f"[ORDER SEARCH] optimizing CGL order={order}", flush=True)
         solver = PaperPSOCLM(
@@ -307,20 +310,38 @@ def main(args: argparse.Namespace) -> None:
                 "iou_at_0.5": candidate_metrics["iou_at_0.5"],
             }
         )
-        if result is None or candidate.final_cost < result.final_cost:
+        candidate_results.append((order, candidate))
+        if candidate_metrics["plain_mse"] < selected_mse:
             result = candidate
             selected_order = order
+            selected_mse = candidate_metrics["plain_mse"]
     if result is None or selected_order is None:
         raise RuntimeError("PSOC order search produced no candidate result")
     print(
         f"[ORDER SEARCH] selected order={selected_order}, "
-        f"cost={result.final_cost:.6f}",
+        f"plain_mse={selected_mse:.6f}, cost={result.final_cost:.6f}",
         flush=True,
     )
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = args.output_stem or f"{sample.character or 'sample'}_paper_inverse"
+    if args.search_orders:
+        candidate_dir = output_dir / "order_candidates"
+        candidate_dir.mkdir(parents=True, exist_ok=True)
+        for order, candidate in candidate_results:
+            candidate_stem = f"{stem}_order_{order}"
+            save_gray(
+                candidate.rendered_image,
+                candidate_dir / f"{candidate_stem}_rendered.png",
+            )
+            save_pose_csv(
+                sample,
+                candidate.posture,
+                candidate_dir / f"{candidate_stem}_trajectory.csv",
+                renderer.regression_angle_basis,
+                candidate.diagnostics["field_decisions"],
+            )
     save_pose_csv(
         sample,
         result.posture,
@@ -359,6 +380,7 @@ def main(args: argparse.Namespace) -> None:
         "pose_frame": "paper_model",
         "regression_angle_basis": renderer.regression_angle_basis,
         "dynamic_profile": args.dynamic_profile,
+        "offset_transfer_scale": args.offset_transfer_scale,
         "paper_calibration": paper_calibration_metadata(args.dynamic_profile),
         "regression_unit_note": (
             "External and CSV angles are radians. The internal regression "
@@ -366,6 +388,7 @@ def main(args: argparse.Namespace) -> None:
         ),
         "forward_calibration": {
             "dynamic_profile": args.dynamic_profile,
+            "offset_transfer_scale": args.offset_transfer_scale,
             "width_inertia_Kw": args.width_inertia,
             "drag_inertia_Kd": args.drag_inertia,
             "pixels_per_model_unit": args.pixels_per_model_unit,
@@ -386,7 +409,9 @@ def main(args: argparse.Namespace) -> None:
         "psoc_order_search": {
             "enabled": args.search_orders,
             "orders": orders,
-            "selection_metric": "final_regularized_lm_cost",
+            "selection_metric": "plain_full_resolution_mse",
+            "selected_order": selected_order,
+            "selected_value": selected_mse,
             "scope": (
                 "character_global_approximation"
                 if args.search_orders
@@ -396,7 +421,9 @@ def main(args: argparse.Namespace) -> None:
             "paper_note": (
                 "Wang et al. search orders 3-8 per decomposed stroke. "
                 "This tool uses a complete-character target, so it compares "
-                "one shared order at a time."
+                "one shared order at a time. Cross-order selection uses only "
+                "full-resolution image MSE because regularization residual "
+                "counts change with CGL node count."
             ),
         },
         "optimized_range": {
@@ -548,6 +575,15 @@ if __name__ == "__main__":
         "--dynamic_profile",
         choices=DYNAMIC_PROFILES,
         default=WANG2020_PROFILE,
+    )
+    parser.add_argument(
+        "--offset_transfer_scale",
+        type=float,
+        default=1.0,
+        help=(
+            "cross-paper scale applied to the digitized Offset/Drag ratio; "
+            "use the value selected by forward A/B scanning"
+        ),
     )
     parser.add_argument(
         "--offset_fraction",

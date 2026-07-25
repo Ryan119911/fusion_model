@@ -781,6 +781,7 @@ python -u tools/render_paper_trajectory.py \
   --alpha_deg 0 \
   --beta_deg 0 \
   --dynamic_profile wang2020_figure4_digitized_v1 \
+  --offset_transfer_scale 1.0 \
   --footprint_scale 0.22 \
   --render_max_step_px 2.0 \
   --output_image outputs/wu_paper_forward_v7/default_pose.png
@@ -790,9 +791,35 @@ python -u tools/render_paper_trajectory.py \
 所以不要把 v6 与 v7 的 LM loss 直接比较；应比较同一目标下的 MSE、Dice、IoU、
 接触位置和最终对比图。
 
-显存和运行时间允许时，再按论文报告的 CGL 阶数 `3–8` 做完整字符级搜索：
+本次“武”字实测表明直接传递 `Offset/Drag`（尺度 `1.0`）会带来约 `6.35 px`
+的平均接触根位移。由于两篇论文的毛笔和 B-BSMG 锚点定义并不相同，必须先扫描
+这条跨论文传递尺度，不能直接把 `1.0` 当作真实标定：
 
 ```bash
+for OFFSET_SCALE in 0.0 0.25 0.5 0.75 1.0; do
+  python -u tools/render_paper_trajectory.py \
+    --trajectory_csv data/raw/trajectories.csv \
+    --target_image assets/targets/wu_kaishu_target.png \
+    --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
+    --character 武 \
+    --h_mm 15.5 \
+    --alpha_deg 0 \
+    --beta_deg 0 \
+    --dynamic_profile wang2020_figure4_digitized_v1 \
+    --offset_transfer_scale "${OFFSET_SCALE}" \
+    --footprint_scale 0.22 \
+    --output_image \
+      "outputs/wu_paper_offset_scan_v7/offset_${OFFSET_SCALE}.png"
+done
+```
+
+用 JSON 中的 MSE、Dice、IoU，加上对比图的笔画位置共同选择
+`BEST_OFFSET_SCALE`。完成尺度扫描后，再按论文报告的 CGL 阶数 `3–8`
+做完整字符级搜索：
+
+```bash
+read -p "BEST_OFFSET_SCALE: " BEST_OFFSET_SCALE
+
 python -u tools/invert_paper_trajectory.py \
   --trajectory_csv data/raw/trajectories.csv \
   --target_image assets/targets/wu_kaishu_target.png \
@@ -812,6 +839,7 @@ python -u tools/invert_paper_trajectory.py \
   --finite_difference_eps 0.01 \
   --field_mode h_only \
   --dynamic_profile wang2020_figure4_digitized_v1 \
+  --offset_transfer_scale "${BEST_OFFSET_SCALE}" \
   --h_prior_weight 0.001 \
   --alpha_prior_weight 0.05 \
   --beta_prior_weight 0.05 \
@@ -827,7 +855,10 @@ python -u tools/invert_paper_trajectory.py \
 
 Wang 论文是“每个分解笔画分别测试 3–8 阶”；当前目标图只有整字而没有逐笔目标，
 所以 v7 采用“整字共享一个阶数，依次比较 3–8 阶”的近似，并把每个候选的 cost、
-MSE、Dice 和 IoU 写入 `psoc_order_search.candidates`。完整搜索约等于执行 6 次反演。
+MSE、Dice 和 IoU 写入 `psoc_order_search.candidates`。跨阶数时正则残差数量会随
+CGL 节点数变化，因此不能按总 cost 选择；程序按与论文图像误差对应的全分辨率
+plain MSE 选择最终阶数。每个候选的图像和姿态 CSV 另存于
+`order_candidates/`。完整搜索约等于执行 6 次反演。
 先做功能检查时去掉 `--search_orders`，使用 `--order 3 --max_steps 2`。
 
 论文 Eq. (19) 的末端抬笔权重 `beta_k` 没有公开。代码提供

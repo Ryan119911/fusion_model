@@ -190,6 +190,7 @@ def main(args: argparse.Namespace) -> None:
             width_inertia=args.width_inertia,
             drag_inertia=args.drag_inertia,
             calibration_profile=args.dynamic_profile,
+            offset_transfer_scale=args.offset_transfer_scale,
             offset_fraction=args.offset_fraction,
             pixels_per_model_unit=args.pixels_per_model_unit,
             patch_floor=args.patch_floor,
@@ -213,6 +214,9 @@ def main(args: argparse.Namespace) -> None:
             posture_tensor,
             stroke_tensor,
         )[0, 0].cpu().numpy()
+        contact_shift = torch.linalg.vector_norm(
+            states["contact_xy"] - xy_tensor, dim=-1
+        )
     output = Path(args.output_image)
     output.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(
@@ -235,11 +239,22 @@ def main(args: argparse.Namespace) -> None:
         "gamma_rad": 0.0,
         "regression_angle_basis": renderer.regression_angle_basis,
         "dynamic_profile": args.dynamic_profile,
+        "offset_transfer_scale": args.offset_transfer_scale,
         "paper_calibration": paper_calibration_metadata(args.dynamic_profile),
         "footprint_scale": args.footprint_scale,
         "input_point_count": int(len(xy)),
         "render_sample_count": int(len(dense_xy)),
         "render_max_step_px": args.render_max_step_px,
+        "dynamic_state_metrics": {
+            "contact_shift_px_mean": float(contact_shift.mean().cpu()),
+            "contact_shift_px_max": float(contact_shift.max().cpu()),
+            "offset_model_unit_mean": float(
+                states["offset_model_unit"].mean().cpu()
+            ),
+            "offset_model_unit_max": float(
+                states["offset_model_unit"].max().cpu()
+            ),
+        },
     }
     if args.target_image:
         target = load_target_image(args.target_image, image_size=args.image_size)
@@ -255,6 +270,12 @@ def main(args: argparse.Namespace) -> None:
     print(
         f"[DONE] Forward-rendered {sample.character or 'sample'} on {device}: "
         f"{output}"
+    )
+    print(
+        "[DYNAMIC] contact_shift_px="
+        f"{report['dynamic_state_metrics']['contact_shift_px_mean']:.6f} "
+        "(mean), "
+        f"{report['dynamic_state_metrics']['contact_shift_px_max']:.6f} (max)"
     )
     for key, value in report.get("target_metrics", {}).items():
         print(f"{key}: {value:.6f}")
@@ -285,6 +306,15 @@ if __name__ == "__main__":
         "--dynamic_profile",
         choices=DYNAMIC_PROFILES,
         default=WANG2020_PROFILE,
+    )
+    parser.add_argument(
+        "--offset_transfer_scale",
+        type=float,
+        default=1.0,
+        help=(
+            "cross-paper scale applied to the digitized Offset/Drag ratio; "
+            "scan this simulation bridge before LM"
+        ),
     )
     parser.add_argument(
         "--offset_fraction",
