@@ -112,7 +112,7 @@ def save_pose_csv(
                     "z_unit": "mm",
                     "angle_unit": "rad",
                     "pose_frame": "paper_model",
-                    "prototype": "paper_psoc_lm_v7_wang2020_calibrated",
+                    "prototype": "paper_psoc_lm_v8_fullres_checkpoint",
                     "regression_angle_basis": regression_angle_basis,
                     "z_source": field_decisions["H"]["source"],
                     "z_confidence": field_decisions["H"]["confidence"],
@@ -362,7 +362,7 @@ def main(args: argparse.Namespace) -> None:
         output_dir / f"{stem}_comparison.png",
     )
     report = {
-        "format": "paper_psoc_lm_v7_wang2020_calibrated",
+        "format": "paper_psoc_lm_v8_fullres_checkpoint",
         "simulation_only": True,
         "character": sample.character,
         "sample_id": sample.meta.get("sample_id"),

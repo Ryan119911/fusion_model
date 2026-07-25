@@ -320,6 +320,18 @@ class PaperPSOCLM:
                 residual = residual_fn(vector)
                 return 0.5 * float(torch.dot(residual, residual).item())
 
+        def evaluate_full_resolution_mse(vector: torch.Tensor) -> float:
+            """Evaluate the user-facing image metric without downsampling."""
+            with torch.no_grad():
+                posture, _ = self._decode(
+                    vector, matrices, point_indices, len(xy)
+                )
+                for field_index, field_name in enumerate(self.FIELD_NAMES):
+                    if field_name not in active_fields:
+                        posture[:, field_index] = float(initial[field_index])
+                rendered = self.renderer(xy, posture, ids)
+                return float(F.mse_loss(rendered, target).item())
+
         def finite_difference_jacobian(
             vector: torch.Tensor,
             base_residual: torch.Tensor,
@@ -466,8 +478,17 @@ class PaperPSOCLM:
 
         current_cost = evaluate_cost(decision)
         initial_cost = current_cost
+        current_full_mse = evaluate_full_resolution_mse(decision)
+        initial_full_mse = current_full_mse
+        best_full_mse = current_full_mse
+        best_decision = decision.detach().clone()
+        best_step = 0
         mu = float(damping)
-        history = {"cost": [current_cost], "damping": [mu]}
+        history = {
+            "cost": [current_cost],
+            "damping": [mu],
+            "full_resolution_mse": [current_full_mse],
+        }
         success = False
         message = "Maximum steps reached"
         completed_steps = 0
@@ -526,6 +547,11 @@ class PaperPSOCLM:
                 improvement = current_cost - trial_cost
                 decision = trial
                 current_cost = trial_cost
+                current_full_mse = evaluate_full_resolution_mse(decision)
+                if current_full_mse < best_full_mse:
+                    best_full_mse = current_full_mse
+                    best_decision = decision.detach().clone()
+                    best_step = step
                 mu = max(mu * 0.3, 1e-8)
                 if improvement < 1e-7 * (1.0 + current_cost):
                     success = True
@@ -533,6 +559,7 @@ class PaperPSOCLM:
                     completed_steps = step
                     history["cost"].append(current_cost)
                     history["damping"].append(mu)
+                    history["full_resolution_mse"].append(current_full_mse)
                     break
             else:
                 decision = decision.detach()
@@ -540,20 +567,35 @@ class PaperPSOCLM:
             completed_steps = step
             history["cost"].append(current_cost)
             history["damping"].append(mu)
+            history["full_resolution_mse"].append(current_full_mse)
             print(
-                f"[LM {step:03d}] cost={current_cost:.6f}, damping={mu:.6g}",
+                f"[LM {step:03d}] cost={current_cost:.6f}, "
+                f"full_mse={current_full_mse:.6f}, damping={mu:.6g}",
                 flush=True,
             )
 
+        terminal_cost = current_cost
+        terminal_full_mse = current_full_mse
+        selected_cost = evaluate_cost(best_decision)
         with torch.no_grad():
             posture, _ = self._decode(
-                decision.detach(), matrices, point_indices, len(xy)
+                best_decision, matrices, point_indices, len(xy)
             )
             for field_index, field_name in enumerate(self.FIELD_NAMES):
                 if field_name not in active_fields:
                     posture[:, field_index] = float(initial[field_index])
             rendered = self.renderer(xy, posture, ids)[0, 0]
         diagnostics: Dict[str, Any] = {
+            "checkpoint_selection": {
+                "metric": "full_resolution_plain_mse",
+                "initial_mse": initial_full_mse,
+                "best_mse": best_full_mse,
+                "best_step": best_step,
+                "terminal_mse": terminal_full_mse,
+                "terminal_regularized_cost": terminal_cost,
+                "selected_regularized_cost": selected_cost,
+                "returned_best_checkpoint": best_step != completed_steps,
+            },
             "regularization": {
                 "field_order": list(self.FIELD_NAMES),
                 "smoothness_weights": self.smoothness_weights.tolist(),
@@ -652,7 +694,7 @@ class PaperPSOCLM:
             success=success,
             steps=completed_steps,
             initial_cost=initial_cost,
-            final_cost=current_cost,
+            final_cost=selected_cost,
             message=message,
             history=history,
             diagnostics=diagnostics,

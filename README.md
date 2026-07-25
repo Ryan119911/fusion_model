@@ -864,3 +864,26 @@ plain MSE 选择最终阶数。每个候选的图像和姿态 CSV 另存于
 论文 Eq. (19) 的末端抬笔权重 `beta_k` 没有公开。代码提供
 `--terminal_lift_weight` 和 `--terminal_lift_nodes`，但默认权重严格为 `0`，
 不会把人为数值伪装成论文数据。只有完成真实毛笔标定或明确进行仿真消融时才应设置。
+
+### 11.8 v8：按全分辨率图像保存最佳 LM 迭代
+
+v7 的 LM 接受条件使用 `optimization_size×optimization_size` 的加权残差。实测中，
+`16×16` cost 在第 20–30 步继续下降时，`128×128` MSE 可能反而上升，导致更好的
+中间姿态被最后一步覆盖。v8 保留论文的低分辨率数值 Jacobian 和 LM 更新，但在
+初始点及每个被 LM 接受的迭代上额外计算一次完整 `128×128` plain MSE，并最终
+返回其中最好的 checkpoint。
+
+报告格式更新为 `paper_psoc_lm_v8_fullres_checkpoint`，并新增：
+
+```text
+lm.history.full_resolution_mse
+lm.diagnostics.checkpoint_selection.initial_mse
+lm.diagnostics.checkpoint_selection.best_mse
+lm.diagnostics.checkpoint_selection.best_step
+lm.diagnostics.checkpoint_selection.terminal_mse
+lm.diagnostics.checkpoint_selection.returned_best_checkpoint
+```
+
+`lm.final_cost` 现在对应被返回 checkpoint 的正则化 cost；优化循环最后一步的 cost
+保存在 `terminal_regularized_cost`。因此可以安全增加 `max_steps`，较差的后续迭代
+不会再覆盖先前更好的全分辨率结果。
