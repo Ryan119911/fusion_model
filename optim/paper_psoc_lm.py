@@ -63,7 +63,7 @@ class PaperPSOCLM:
         jacobian_mode: str = "finite_difference",
         finite_difference_eps: float = 1e-2,
         field_mode: str = "auto",
-        min_relative_median_sensitivity: float = 0.35,
+        min_relative_median_sensitivity: float = 0.45,
     ):
         if order < 1:
             raise ValueError("order must be >= 1")
@@ -606,7 +606,10 @@ class PaperPSOCLM:
                 "confidence": confidence,
                 "reason": reason,
                 "initial_relative_median_sensitivity": relative,
-                "boundary_fraction": boundary_total,
+                "boundary_fraction": boundary_total if optimized else None,
+                "fixed_value_on_physical_boundary": (
+                    None if optimized else boundary_total > 0.0
+                ),
             }
         decisions["gamma"] = {
             "optimized": False,
@@ -615,6 +618,7 @@ class PaperPSOCLM:
             "reason": "unobservable_in_axisymmetric_brush_model",
             "initial_relative_median_sensitivity": None,
             "boundary_fraction": 0.0,
+            "fixed_value_on_physical_boundary": False,
         }
         diagnostics["field_decisions"] = decisions
         return PaperLMResult(

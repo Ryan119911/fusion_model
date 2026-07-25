@@ -449,7 +449,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--min_relative_median_sensitivity",
         type=float,
-        default=0.35,
+        default=0.45,
     )
     parser.add_argument("--initial_h_mm", type=float, default=15.5)
     parser.add_argument("--initial_alpha_deg", type=float, default=0.0)

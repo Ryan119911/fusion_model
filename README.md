@@ -706,7 +706,7 @@ python -u tools/invert_paper_trajectory.py \
   --jacobian_mode finite_difference \
   --finite_difference_eps 0.01 \
   --field_mode auto \
-  --min_relative_median_sensitivity 0.35 \
+  --min_relative_median_sensitivity 0.45 \
   --h_prior_weight 0.001 \
   --alpha_prior_weight 0.05 \
   --beta_prior_weight 0.05 \
@@ -725,6 +725,10 @@ python -u tools/invert_paper_trajectory.py \
 强制只优化 H。正式结果的 JSON 会记录 `observability_gate` 和
 `field_decisions`；CSV 每行增加 `z/alpha/beta/gamma_source` 与对应
 `*_confidence`。`medium_simulation` 只表示仿真内部可辨识，仍不等于机器人真值。
+
+当前“武”字在阈值 `0.35` 下曾放行 alpha，但其最终贴边比例达到 69%，因此默认
+阈值提高为 `0.45`。已经完成一次审计并确认 alpha/beta 不可靠时，可在后续正式
+导出中直接使用 `--field_mode h_only`，避免重复计算完整审计 Jacobian。
 
 ### 11.6 当前原型不能直接下发机器人
 
