@@ -92,8 +92,10 @@ class PaperPSOCLM:
             )
         if finite_difference_eps <= 0:
             raise ValueError("finite_difference_eps must be positive")
-        if field_mode not in {"auto", "all", "h_only"}:
-            raise ValueError("field_mode must be 'auto', 'all', or 'h_only'")
+        if field_mode not in {"auto", "all", "h_only", "xy_only"}:
+            raise ValueError(
+                "field_mode must be 'auto', 'all', 'h_only', or 'xy_only'"
+            )
         if not 0.0 <= min_relative_median_sensitivity <= 1.0:
             raise ValueError(
                 "min_relative_median_sensitivity must be in [0,1]"
@@ -118,6 +120,8 @@ class PaperPSOCLM:
         self.xy_max_offset_px = float(xy_max_offset_px)
         self.xy_smoothness_weight = float(xy_smoothness_weight)
         self.xy_prior_weight = float(xy_prior_weight)
+        if self.field_mode == "xy_only" and not self.optimize_xy:
+            raise ValueError("field_mode='xy_only' requires optimize_xy=True")
 
     @staticmethod
     def _validate_field_weights(
@@ -526,6 +530,10 @@ class PaperPSOCLM:
             return sensitivity
 
         def columns_for_fields(field_names: Sequence[str]) -> torch.Tensor:
+            if not field_names:
+                return torch.empty(
+                    0, dtype=torch.long, device=decision.device
+                )
             return torch.cat([field_columns[name] for name in field_names])
 
         def fix_inactive_fields(
@@ -577,6 +585,8 @@ class PaperPSOCLM:
             )
         elif self.field_mode == "h_only":
             active_fields = ["H"]
+        elif self.field_mode == "xy_only":
+            active_fields = []
         else:
             active_fields = list(self.FIELD_NAMES)
         decision = fix_inactive_fields(decision, active_fields)
@@ -804,7 +814,11 @@ class PaperPSOCLM:
             )
             if not optimized:
                 confidence = "low"
-                reason = "fixed_below_observability_threshold"
+                reason = (
+                    "fixed_for_xy_only_ablation"
+                    if self.field_mode == "xy_only"
+                    else "fixed_below_observability_threshold"
+                )
             elif boundary_total > 0.25:
                 confidence = "low"
                 reason = "optimized_but_boundary_saturated"

@@ -719,11 +719,12 @@ if __name__ == "__main__":
     parser.add_argument("--finite_difference_eps", type=float, default=0.01)
     parser.add_argument(
         "--field_mode",
-        choices=["auto", "all", "h_only"],
+        choices=["auto", "all", "h_only", "xy_only"],
         default="auto",
         help=(
             "auto audits all posture fields once and optimizes only observable "
-            "ones; all reproduces unconstrained A/B runs; h_only skips audit"
+            "ones; all reproduces unconstrained A/B runs; h_only skips audit; "
+            "xy_only fixes H/alpha/beta for a planar-geometry ablation"
         ),
     )
     parser.add_argument(

@@ -401,7 +401,7 @@ try:
                 XYRenderer(),
                 order=1,
                 optimization_size=8,
-                field_mode="h_only",
+                field_mode="xy_only",
                 optimize_xy=True,
                 xy_max_offset_px=3.0,
                 xy_smoothness_weight=0.01,
@@ -424,6 +424,13 @@ try:
             )
             self.assertTrue(
                 result.diagnostics["xy_optimization"]["enabled"]
+            )
+            np.testing.assert_allclose(
+                result.posture[:, 0], 15.5, atol=0.0
+            )
+            self.assertEqual(
+                result.diagnostics["observability_gate"]["optimized_fields"],
+                ["x", "y"],
             )
 
 except ImportError:

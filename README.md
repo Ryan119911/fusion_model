@@ -970,3 +970,46 @@ v9 报告格式为 `paper_psoc_lm_v9_bounded_xy`，新增
 
 这些 x/y 仍是输入轨迹坐标系中的仿真配准结果，不是机器人基坐标或 TCP
 坐标。送入真实机器人之前，必须再经过纸面坐标、相机、TCP 和机器人基座标定。
+
+### 11.11 H 可辨识性消融
+
+如果联合反演结果中大量 H 位于 11/20 mm 边界，不能仅凭图像指标把它解释为
+真实 z。使用 `--field_mode xy_only --optimize_xy` 可以固定
+`H=initial_h_mm`、alpha 和 beta，只优化完全相同的受限 x/y 变量：
+
+```bash
+python -u tools/invert_paper_trajectory.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --target_image assets/targets/wu_kaishu_target.png \
+  --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
+  --character 武 \
+  --output_dir outputs/wu_paper_inverse_v9_xy_only \
+  --output_stem wu \
+  --device cuda \
+  --padding 16 \
+  --order 8 \
+  --optimization_size 32 \
+  --max_steps 30 \
+  --damping 0.05 \
+  --jacobian_mode finite_difference \
+  --finite_difference_eps 0.01 \
+  --field_mode xy_only \
+  --optimize_xy \
+  --xy_max_offset_px 6 \
+  --xy_smoothness_weight 0.10 \
+  --xy_prior_weight 0.05 \
+  --dynamic_profile wang2020_figure4_digitized_v1 \
+  --offset_transfer_scale 1.0 \
+  --pixel_weight 5 \
+  --initial_h_mm 15.5 \
+  --initial_alpha_deg 0 \
+  --initial_beta_deg 0 \
+  --footprint_longitudinal_scale 0.22 \
+  --footprint_transverse_scale 0.245 \
+  --render_max_step_px 2.0
+```
+
+将它与 `wu_paper_inverse_v9_xy6` 比较。若固定 H 后 MSE、Dice、IoU 几乎不变，
+说明单张目标图不能为 z 提供足够独立信息，联合反演的 H 不应进入真实机器人
+数据集。只有联合 H 在留出图像上稳定改善指标、不过度贴边，并通过真实毛笔
+标定验证后，才能把它升级为可用 z 标签。
