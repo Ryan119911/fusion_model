@@ -2,6 +2,7 @@ import unittest
 
 import numpy as np
 
+from models.geometry import CanvasTransform
 from models.paper_bbsm import (
     PAPER_ANGLE_BASIS_DEGREE_FITTED,
     PAPER_POSTURE_MAX,
@@ -21,6 +22,22 @@ from models.paper_calibration import (
     wang2020_curves_numpy,
 )
 from tools.build_paper_bbsmg_dataset import build_dataset
+
+
+class CanvasTransformTests(unittest.TestCase):
+    def test_map_unmap_round_trip(self):
+        transform = CanvasTransform(
+            src_min_x=100.0,
+            src_max_x=700.0,
+            src_min_y=-50.0,
+            src_max_y=850.0,
+            dst_size=128,
+            padding=16,
+        )
+        source = (321.5, 456.25)
+        canvas = transform.map_point(*source)
+        restored = transform.unmap_point(*canvas)
+        np.testing.assert_allclose(restored, source, atol=1e-6)
 
 
 class PaperBBSMTests(unittest.TestCase):
@@ -204,6 +221,36 @@ try:
             self.assertTrue(torch.all(posture >= lower))
             self.assertTrue(torch.all(posture <= upper))
 
+        def test_xy_offsets_are_bounded_between_cgl_nodes(self):
+            from optim.paper_psoc_lm import PaperPSOCLM
+
+            solver = object.__new__(PaperPSOCLM)
+            solver.order = 3
+            solver.xy_max_offset_px = 6.0
+            matrix = torch.as_tensor(
+                cgl_interpolation_matrix(order=3, num_samples=41)
+            )
+            decision = torch.tensor(
+                [
+                    -8.0,
+                    8.0,
+                    -8.0,
+                    8.0,
+                    8.0,
+                    -8.0,
+                    8.0,
+                    -8.0,
+                ]
+            )
+            offsets, _ = solver._decode_xy_offsets(
+                decision,
+                [matrix],
+                [np.arange(41)],
+                41,
+            )
+            self.assertTrue(torch.all(offsets >= -6.0))
+            self.assertTrue(torch.all(offsets <= 6.0))
+
         def test_render_densification_preserves_endpoints_and_pose_gradient(self):
             from types import SimpleNamespace
 
@@ -320,6 +367,63 @@ try:
             self.assertEqual(
                 result.diagnostics["field_decisions"]["alpha"]["source"],
                 "initial_default",
+            )
+
+        def test_bounded_xy_optimization_moves_toward_target(self):
+            from optim.paper_psoc_lm import PaperPSOCLM
+
+            class XYRenderer(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.bbsmg = nn.Linear(1, 1, bias=False)
+                    yy, xx = torch.meshgrid(
+                        torch.arange(8, dtype=torch.float32),
+                        torch.arange(8, dtype=torch.float32),
+                        indexing="ij",
+                    )
+                    self.register_buffer("xx", xx)
+                    self.register_buffer("yy", yy)
+
+                def forward(self, xy, posture, stroke_ids):
+                    center = xy.mean(dim=0)
+                    image = torch.exp(
+                        -(
+                            (self.xx - center[0]) ** 2
+                            + (self.yy - center[1]) ** 2
+                        )
+                        / 2.0
+                    )
+                    return image.view(1, 1, 8, 8)
+
+            yy, xx = np.mgrid[:8, :8].astype(np.float32)
+            target = np.exp(-((xx - 4.0) ** 2 + (yy - 4.0) ** 2) / 2.0)
+            solver = PaperPSOCLM(
+                XYRenderer(),
+                order=1,
+                optimization_size=8,
+                field_mode="h_only",
+                optimize_xy=True,
+                xy_max_offset_px=3.0,
+                xy_smoothness_weight=0.01,
+                xy_prior_weight=0.001,
+            )
+            initial_xy = np.asarray(
+                [[2.0, 4.0], [2.0, 4.0]], dtype=np.float32
+            )
+            result = solver.optimize(
+                xy_canvas=initial_xy,
+                stroke_ids=np.zeros(2, dtype=np.int64),
+                target_image=target,
+                max_steps=5,
+                pixel_weight=0.0,
+            )
+            self.assertGreater(result.xy_canvas[:, 0].mean(), 2.0)
+            self.assertLessEqual(
+                float(np.abs(result.xy_canvas - initial_xy).max()),
+                3.0 + 1e-6,
+            )
+            self.assertTrue(
+                result.diagnostics["xy_optimization"]["enabled"]
             )
 
 except ImportError:

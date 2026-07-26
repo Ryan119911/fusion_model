@@ -1,4 +1,4 @@
-"""Invert a target image into fixed-x/y paper posture using PSOC + LM."""
+"""Invert a target image into bounded planar trajectory and paper posture."""
 from __future__ import annotations
 
 import argparse
@@ -16,7 +16,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from datasets.trajectory_dataset import load_trajectory_csv
-from models.geometry import normalize_trajectory_xy
+from models.geometry import (
+    CanvasTransform,
+    normalize_trajectory_xy,
+    trajectory_bounds,
+)
 from models.paper_calibration import (
     DYNAMIC_PROFILES,
     WANG2020_PROFILE,
@@ -54,12 +58,53 @@ def flatten_canvas_trajectory(sample, image_size: int, padding: int):
     return np.asarray(xy, dtype=np.float32), np.asarray(stroke_ids, dtype=np.int64)
 
 
+def trajectory_canvas_transform(
+    sample, image_size: int, padding: int
+) -> CanvasTransform:
+    min_x, max_x, min_y, max_y = trajectory_bounds(sample)
+    return CanvasTransform(
+        min_x,
+        max_x,
+        min_y,
+        max_y,
+        dst_size=image_size,
+        padding=padding,
+    )
+
+
+def canvas_xy_to_source(
+    sample,
+    xy_canvas: np.ndarray,
+    image_size: int,
+    padding: int,
+) -> np.ndarray:
+    transform = trajectory_canvas_transform(sample, image_size, padding)
+    return np.asarray(
+        [transform.unmap_point(float(x), float(y)) for x, y in xy_canvas],
+        dtype=np.float32,
+    )
+
+
+def source_xy_to_canvas(
+    sample,
+    xy_source: np.ndarray,
+    image_size: int,
+    padding: int,
+) -> np.ndarray:
+    transform = trajectory_canvas_transform(sample, image_size, padding)
+    return np.asarray(
+        [transform.map_point(float(x), float(y)) for x, y in xy_source],
+        dtype=np.float32,
+    )
+
+
 def save_pose_csv(
     sample,
     posture: np.ndarray,
     output_path: Path,
     regression_angle_basis: str,
     field_decisions: dict,
+    xy_source: np.ndarray | None = None,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fields = [
@@ -69,6 +114,10 @@ def save_pose_csv(
         "point_id",
         "x",
         "y",
+        "x_source",
+        "x_confidence",
+        "y_source",
+        "y_confidence",
         "z",
         "alpha",
         "beta",
@@ -91,18 +140,28 @@ def save_pose_csv(
     points = sample.all_points()
     if len(points) != len(posture):
         raise ValueError("Posture count does not match trajectory point count")
+    if xy_source is None:
+        xy_source = np.asarray(
+            [[point.x, point.y] for point in points], dtype=np.float32
+        )
+    if len(xy_source) != len(points):
+        raise ValueError("x/y count does not match trajectory point count")
     with output_path.open("w", encoding="utf-8-sig", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fields)
         writer.writeheader()
-        for point, pose in zip(points, posture):
+        for point, pose, optimized_xy in zip(points, posture, xy_source):
             writer.writerow(
                 {
                     "character": sample.character,
                     "sample_id": sample.meta.get("sample_id"),
                     "stroke_id": point.stroke_id,
                     "point_id": point.point_id,
-                    "x": repr(float(point.x)),
-                    "y": repr(float(point.y)),
+                    "x": repr(float(optimized_xy[0])),
+                    "y": repr(float(optimized_xy[1])),
+                    "x_source": field_decisions["x"]["source"],
+                    "x_confidence": field_decisions["x"]["confidence"],
+                    "y_source": field_decisions["y"]["source"],
+                    "y_confidence": field_decisions["y"]["confidence"],
                     # Prototype contract: CSV z is paper-model H in millimetres.
                     "z": repr(float(pose[0])),
                     "alpha": repr(float(pose[1])),
@@ -112,7 +171,7 @@ def save_pose_csv(
                     "z_unit": "mm",
                     "angle_unit": "rad",
                     "pose_frame": "paper_model",
-                    "prototype": "paper_psoc_lm_v8_fullres_checkpoint",
+                    "prototype": "paper_psoc_lm_v9_bounded_xy",
                     "regression_angle_basis": regression_angle_basis,
                     "z_source": field_decisions["H"]["source"],
                     "z_confidence": field_decisions["H"]["confidence"],
@@ -166,6 +225,10 @@ def binary_metrics(prediction: np.ndarray, target: np.ndarray) -> dict:
     truth = target >= 0.5
     intersection = int(np.logical_and(pred, truth).sum())
     union = int(np.logical_or(pred, truth).sum())
+    target_ink = float(truth.mean())
+    prediction_ink = float(pred.mean())
+    soft_target_ink = float(target.mean())
+    soft_prediction_ink = float(prediction.mean())
     return {
         "plain_mse": float(np.mean((prediction - target) ** 2)),
         "mae": float(np.mean(np.abs(prediction - target))),
@@ -173,6 +236,16 @@ def binary_metrics(prediction: np.ndarray, target: np.ndarray) -> dict:
             (2 * intersection + 1e-6) / (pred.sum() + truth.sum() + 1e-6)
         ),
         "iou_at_0.5": float((intersection + 1e-6) / (union + 1e-6)),
+        "target_ink_at_0.5": target_ink,
+        "prediction_ink_at_0.5": prediction_ink,
+        "ink_ratio_at_0.5": float(
+            (prediction_ink + 1e-8) / (target_ink + 1e-8)
+        ),
+        "soft_target_ink": soft_target_ink,
+        "soft_prediction_ink": soft_prediction_ink,
+        "soft_ink_ratio": float(
+            (soft_prediction_ink + 1e-8) / (soft_target_ink + 1e-8)
+        ),
     }
 
 
@@ -194,6 +267,11 @@ def trajectory_target_coverage(
 
 
 def main(args: argparse.Namespace) -> None:
+    if args.optimize_xy and args.xy_max_offset_px > args.padding:
+        raise ValueError(
+            "xy_max_offset_px must not exceed padding, so corrected points "
+            "remain inside the render canvas"
+        )
     device = torch.device(
         args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu"
     )
@@ -287,6 +365,10 @@ def main(args: argparse.Namespace) -> None:
             ),
             terminal_lift_weight=args.terminal_lift_weight,
             terminal_lift_nodes=args.terminal_lift_nodes,
+            optimize_xy=args.optimize_xy,
+            xy_max_offset_px=args.xy_max_offset_px,
+            xy_smoothness_weight=args.xy_smoothness_weight,
+            xy_prior_weight=args.xy_prior_weight,
         )
         candidate = solver.optimize(
             xy_canvas,
@@ -310,6 +392,9 @@ def main(args: argparse.Namespace) -> None:
                 "plain_mse": candidate_metrics["plain_mse"],
                 "dice_at_0.5": candidate_metrics["dice_at_0.5"],
                 "iou_at_0.5": candidate_metrics["iou_at_0.5"],
+                "xy_max_abs_change_px": candidate.diagnostics[
+                    "xy_optimization"
+                ]["max_abs_change_px"],
             }
         )
         candidate_results.append((order, candidate))
@@ -324,6 +409,18 @@ def main(args: argparse.Namespace) -> None:
         f"plain_mse={selected_mse:.6f}, cost={result.final_cost:.6f}",
         flush=True,
     )
+    optimized_xy_source = canvas_xy_to_source(
+        sample,
+        result.xy_canvas,
+        args.image_size,
+        args.padding,
+    )
+    original_xy_source = np.asarray(
+        [[point.x, point.y] for point in sample.all_points()],
+        dtype=np.float32,
+    )
+    xy_delta_canvas = result.xy_canvas - xy_canvas
+    xy_delta_source = optimized_xy_source - original_xy_source
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -343,6 +440,12 @@ def main(args: argparse.Namespace) -> None:
                 candidate_dir / f"{candidate_stem}_trajectory.csv",
                 renderer.regression_angle_basis,
                 candidate.diagnostics["field_decisions"],
+                xy_source=canvas_xy_to_source(
+                    sample,
+                    candidate.xy_canvas,
+                    args.image_size,
+                    args.padding,
+                ),
             )
     save_pose_csv(
         sample,
@@ -350,6 +453,7 @@ def main(args: argparse.Namespace) -> None:
         output_dir / f"{stem}_trajectory.csv",
         renderer.regression_angle_basis,
         result.diagnostics["field_decisions"],
+        xy_source=optimized_xy_source,
     )
     save_gray(target, output_dir / f"{stem}_target.png")
     save_gray(initial_render, output_dir / f"{stem}_initial.png")
@@ -364,12 +468,23 @@ def main(args: argparse.Namespace) -> None:
         output_dir / f"{stem}_comparison.png",
     )
     report = {
-        "format": "paper_psoc_lm_v8_fullres_checkpoint",
+        "format": "paper_psoc_lm_v9_bounded_xy",
         "simulation_only": True,
         "character": sample.character,
         "sample_id": sample.meta.get("sample_id"),
-        "fixed_xy": True,
-        "xy_max_abs_change": 0.0,
+        "fixed_xy": not args.optimize_xy,
+        "xy_max_abs_change": float(np.abs(xy_delta_canvas).max()),
+        "xy_optimization": {
+            **result.diagnostics["xy_optimization"],
+            "coordinate_frame": "normalized_image_canvas",
+            "source_xy_max_abs_change": float(
+                np.abs(xy_delta_source).max()
+            ),
+            "source_coordinate_note": (
+                "CSV x/y are mapped back into the input trajectory frame; "
+                "they are not calibrated robot coordinates."
+            ),
+        },
         "optimized_fields": result.diagnostics["observability_gate"][
             "optimized_fields"
         ],
@@ -461,7 +576,15 @@ def main(args: argparse.Namespace) -> None:
         },
         "metrics": binary_metrics(result.rendered_image, target),
         "trajectory_target_coverage_at_5px": trajectory_target_coverage(
-            xy_canvas, target, tolerance_px=5
+            result.xy_canvas, target, tolerance_px=5
+        ),
+        "initial_trajectory_target_coverage_at_5px": (
+            trajectory_target_coverage(xy_canvas, target, tolerance_px=5)
+        ),
+        "optimized_trajectory_target_coverage_at_5px": (
+            trajectory_target_coverage(
+                result.xy_canvas, target, tolerance_px=5
+            )
         ),
         "warning": (
             "Prototype paper-frame pose only; do not command a real robot before "
@@ -473,9 +596,8 @@ def main(args: argparse.Namespace) -> None:
     )
     optimized = report["optimized_fields"]
     fixed = report["fixed_fields"]
-    print(
-        f"[DONE] fixed x/y; optimized={optimized}; fixed={fixed} on {device}"
-    )
+    xy_mode = "bounded x/y correction" if args.optimize_xy else "fixed x/y"
+    print(f"[DONE] {xy_mode}; optimized={optimized}; fixed={fixed} on {device}")
     print(
         f"[LM] success={result.success}, steps={result.steps}, "
         f"cost={result.initial_cost:.6f}->{result.final_cost:.6f}"
@@ -486,6 +608,16 @@ def main(args: argparse.Namespace) -> None:
         "trajectory_target_coverage_at_5px: "
         f"{report['trajectory_target_coverage_at_5px']:.6f}"
     )
+    if args.optimize_xy:
+        xy_summary = report["xy_optimization"]
+        print(
+            "[XY] max_abs_change_px="
+            f"{xy_summary['max_abs_change_px']:.6f}, "
+            "mean_displacement_px="
+            f"{xy_summary['mean_point_displacement_px']:.6f}, "
+            "bound_fraction="
+            f"{xy_summary['component_bound_fraction_within_1pct']:.6f}"
+        )
     sensitivity = result.diagnostics["observability_gate"].get(
         "initial_image_jacobian_sensitivity", {}
     ) or result.diagnostics.get("image_jacobian_sensitivity", {})
@@ -526,7 +658,7 @@ if __name__ == "__main__":
         action="store_true",
         help=(
             "compare the paper-reported CGL orders from order_min through "
-            "order_max and retain the lowest regularized LM cost"
+            "order_max and retain the lowest full-resolution plain MSE"
         ),
     )
     parser.add_argument("--order_min", type=int, default=3)
@@ -537,6 +669,32 @@ if __name__ == "__main__":
     parser.add_argument("--render_stride", type=int, default=1)
     parser.add_argument("--point_batch_size", type=int, default=128)
     parser.add_argument("--pixel_weight", type=float, default=3.0)
+    parser.add_argument(
+        "--optimize_xy",
+        action="store_true",
+        help=(
+            "jointly optimize bounded per-stroke x/y CGL offsets; disabled "
+            "by default for backward compatibility"
+        ),
+    )
+    parser.add_argument(
+        "--xy_max_offset_px",
+        type=float,
+        default=6.0,
+        help="maximum absolute x or y correction in normalized canvas pixels",
+    )
+    parser.add_argument(
+        "--xy_smoothness_weight",
+        type=float,
+        default=0.10,
+        help="smoothness penalty for normalized x/y CGL offsets",
+    )
+    parser.add_argument(
+        "--xy_prior_weight",
+        type=float,
+        default=0.05,
+        help="zero-offset prior for normalized x/y CGL offsets",
+    )
     parser.add_argument("--h_smoothness_weight", type=float, default=0.02)
     parser.add_argument("--alpha_smoothness_weight", type=float, default=0.10)
     parser.add_argument("--beta_smoothness_weight", type=float, default=0.10)

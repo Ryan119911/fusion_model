@@ -28,12 +28,13 @@ from tools.invert_paper_trajectory import (
     binary_metrics,
     flatten_canvas_trajectory,
     pick_sample,
+    source_xy_to_canvas,
 )
 
 
 def load_pose_csv(
     path: str, sample, clip_pose_limits: bool = False
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     by_key = {}
     with open(path, "r", encoding="utf-8-sig", newline="") as file:
         for row in csv.DictReader(file):
@@ -41,17 +42,21 @@ def load_pose_csv(
             gamma = float(row.get("gamma", 0.0) or 0.0)
             if abs(gamma) > 1e-9:
                 raise ValueError("Prototype requires gamma=0 rad for every point")
-            by_key[key] = [
-                float(row["z"]),
-                float(row["alpha"]),
-                float(row["beta"]),
-            ]
-    values = []
+            by_key[key] = {
+                "posture": [
+                    float(row["z"]),
+                    float(row["alpha"]),
+                    float(row["beta"]),
+                ],
+                "xy": [float(row["x"]), float(row["y"])],
+            }
+    values, xy_values = [], []
     for point in sample.all_points():
         key = (point.stroke_id, point.point_id)
         if key not in by_key:
             raise ValueError(f"Pose CSV is missing stroke/point {key}")
-        values.append(by_key[key])
+        values.append(by_key[key]["posture"])
+        xy_values.append(by_key[key]["xy"])
     posture = np.asarray(values, dtype=np.float32)
     tolerance = 1e-6
     invalid = np.any(posture < PAPER_POSTURE_MIN - tolerance) or np.any(
@@ -73,7 +78,10 @@ def load_pose_csv(
             "Use this only for visual inspection; re-run inversion for a "
             "physically valid result."
         )
-    return np.clip(posture, PAPER_POSTURE_MIN, PAPER_POSTURE_MAX)
+    return (
+        np.clip(posture, PAPER_POSTURE_MIN, PAPER_POSTURE_MAX),
+        np.asarray(xy_values, dtype=np.float32),
+    )
 
 
 def save_dynamic_states(sample, xy, posture, states, path: Path) -> None:
@@ -156,11 +164,18 @@ def main(args: argparse.Namespace) -> None:
     xy, stroke_ids = flatten_canvas_trajectory(
         sample, args.image_size, args.padding
     )
+    original_xy = xy.copy()
     if args.pose_csv:
-        posture = load_pose_csv(
+        posture, pose_xy_source = load_pose_csv(
             args.pose_csv,
             sample,
             clip_pose_limits=args.clip_pose_limits,
+        )
+        xy = source_xy_to_canvas(
+            sample,
+            pose_xy_source,
+            args.image_size,
+            args.padding,
         )
         pose_source = args.pose_csv
     else:
@@ -236,7 +251,10 @@ def main(args: argparse.Namespace) -> None:
         "character": sample.character,
         "sample_id": sample.meta.get("sample_id"),
         "point_count": int(len(xy)),
-        "fixed_xy": True,
+        "fixed_xy": bool(np.allclose(xy, original_xy, atol=1e-6)),
+        "xy_max_abs_change_canvas_px": float(
+            np.abs(xy - original_xy).max()
+        ),
         "pose_source": pose_source,
         "angle_unit": "rad",
         "z_semantics": "H_mm",

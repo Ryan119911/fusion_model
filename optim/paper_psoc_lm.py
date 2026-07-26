@@ -36,6 +36,7 @@ def cgl_interpolation_matrix(order: int, num_samples: int) -> np.ndarray:
 
 @dataclass
 class PaperLMResult:
+    xy_canvas: np.ndarray
     posture: np.ndarray
     rendered_image: np.ndarray
     success: bool
@@ -48,7 +49,7 @@ class PaperLMResult:
 
 
 class PaperPSOCLM:
-    """Optimize H/alpha/beta CGL nodes while holding x/y exactly fixed."""
+    """Optimize bounded per-stroke CGL pose and optional planar offsets."""
 
     FIELD_NAMES = ("H", "alpha", "beta")
 
@@ -66,6 +67,10 @@ class PaperPSOCLM:
         min_relative_median_sensitivity: float = 0.45,
         terminal_lift_weight: float = 0.0,
         terminal_lift_nodes: int = 1,
+        optimize_xy: bool = False,
+        xy_max_offset_px: float = 6.0,
+        xy_smoothness_weight: float = 0.10,
+        xy_prior_weight: float = 0.05,
     ):
         if order < 1:
             raise ValueError("order must be >= 1")
@@ -105,6 +110,14 @@ class PaperPSOCLM:
             raise ValueError("terminal_lift_nodes must be >= 1")
         self.terminal_lift_weight = float(terminal_lift_weight)
         self.terminal_lift_nodes = int(terminal_lift_nodes)
+        if xy_max_offset_px <= 0:
+            raise ValueError("xy_max_offset_px must be positive")
+        if xy_smoothness_weight < 0 or xy_prior_weight < 0:
+            raise ValueError("x/y regularization weights must be non-negative")
+        self.optimize_xy = bool(optimize_xy)
+        self.xy_max_offset_px = float(xy_max_offset_px)
+        self.xy_smoothness_weight = float(xy_smoothness_weight)
+        self.xy_prior_weight = float(xy_prior_weight)
 
     @staticmethod
     def _validate_field_weights(
@@ -168,6 +181,34 @@ class PaperPSOCLM:
         posture = lower + normalized_points * (upper - lower)
         return posture, normalized_nodes
 
+    def _decode_xy_offsets(
+        self,
+        decision: torch.Tensor,
+        matrices: Sequence[torch.Tensor],
+        point_indices: Sequence[np.ndarray],
+        point_count: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Decode bounded canvas offsets without polynomial overshoot."""
+        node_count = self.order + 1
+        node_logits = decision.view(len(matrices), 2, node_count)
+        normalized_nodes = torch.tanh(node_logits)
+        normalized_points = torch.empty(
+            (point_count, 2), dtype=decision.dtype, device=decision.device
+        )
+        for stroke_index, (matrix, indices) in enumerate(
+            zip(matrices, point_indices)
+        ):
+            point_logits = (
+                matrix.to(dtype=decision.dtype) @ node_logits[stroke_index].T
+            )
+            normalized_points[
+                torch.as_tensor(indices, device=decision.device)
+            ] = torch.tanh(point_logits)
+        return (
+            normalized_points * self.xy_max_offset_px,
+            normalized_nodes,
+        )
+
     def _render_indices(self, point_indices: Sequence[np.ndarray]) -> np.ndarray:
         selected: List[int] = []
         for indices in point_indices:
@@ -229,7 +270,7 @@ class PaperPSOCLM:
         logits = np.log(
             normalized_for_audit / (1.0 - normalized_for_audit)
         )
-        decision = torch.as_tensor(
+        posture_decision = torch.as_tensor(
             np.tile(
                 logits[None, :, None],
                 (len(matrices), 1, self.order + 1),
@@ -237,6 +278,25 @@ class PaperPSOCLM:
             dtype=torch.float32,
             device=self.device,
         )
+        posture_decision_count = int(posture_decision.numel())
+        xy_decision_count = (
+            len(matrices) * 2 * (self.order + 1)
+            if self.optimize_xy
+            else 0
+        )
+        if xy_decision_count:
+            decision = torch.cat(
+                [
+                    posture_decision,
+                    torch.zeros(
+                        xy_decision_count,
+                        dtype=posture_decision.dtype,
+                        device=posture_decision.device,
+                    ),
+                ]
+            )
+        else:
+            decision = posture_decision
         prior = torch.as_tensor(
             np.tile(
                 normalized_initial[None, :, None],
@@ -246,7 +306,7 @@ class PaperPSOCLM:
             device=decision.device,
         )
         node_count = self.order + 1
-        layout = np.arange(decision.numel(), dtype=np.int64).reshape(
+        layout = np.arange(posture_decision_count, dtype=np.int64).reshape(
             len(matrices), 3, node_count
         )
         field_columns = {
@@ -257,8 +317,16 @@ class PaperPSOCLM:
             )
             for field_index, field_name in enumerate(self.FIELD_NAMES)
         }
-        all_columns = torch.arange(
-            decision.numel(), dtype=torch.long, device=decision.device
+        all_posture_columns = torch.arange(
+            posture_decision_count,
+            dtype=torch.long,
+            device=decision.device,
+        )
+        xy_columns = torch.arange(
+            posture_decision_count,
+            posture_decision_count + xy_decision_count,
+            dtype=torch.long,
+            device=decision.device,
         )
         smoothness_weights = torch.as_tensor(
             self.smoothness_weights,
@@ -273,10 +341,23 @@ class PaperPSOCLM:
 
         def residual_fn(vector: torch.Tensor) -> torch.Tensor:
             posture, nodes = self._decode(
-                vector, matrices, point_indices, len(xy)
+                vector[:posture_decision_count],
+                matrices,
+                point_indices,
+                len(xy),
             )
+            rendered_xy = xy
+            xy_nodes = None
+            if self.optimize_xy:
+                xy_offsets, xy_nodes = self._decode_xy_offsets(
+                    vector[posture_decision_count:],
+                    matrices,
+                    point_indices,
+                    len(xy),
+                )
+                rendered_xy = xy + xy_offsets
             rendered = self.renderer(
-                xy[render_indices],
+                rendered_xy[render_indices],
                 posture[render_indices],
                 ids[render_indices],
             )
@@ -303,6 +384,17 @@ class PaperPSOCLM:
                         torch.sqrt(posture_prior_weights) * (nodes - prior)
                     ).flatten()
                 )
+            if xy_nodes is not None and self.xy_smoothness_weight > 0:
+                residuals.append(
+                    (
+                        self.xy_smoothness_weight**0.5
+                        * (xy_nodes[:, :, 1:] - xy_nodes[:, :, :-1])
+                    ).flatten()
+                )
+            if xy_nodes is not None and self.xy_prior_weight > 0:
+                residuals.append(
+                    (self.xy_prior_weight**0.5 * xy_nodes).flatten()
+                )
             if self.terminal_lift_weight > 0:
                 tail = min(self.terminal_lift_nodes, nodes.shape[-1])
                 # Wang Eq. (19) penalizes terminal z so the brush tends to
@@ -324,12 +416,24 @@ class PaperPSOCLM:
             """Evaluate the user-facing image metric without downsampling."""
             with torch.no_grad():
                 posture, _ = self._decode(
-                    vector, matrices, point_indices, len(xy)
+                    vector[:posture_decision_count],
+                    matrices,
+                    point_indices,
+                    len(xy),
                 )
                 for field_index, field_name in enumerate(self.FIELD_NAMES):
                     if field_name not in active_fields:
                         posture[:, field_index] = float(initial[field_index])
-                rendered = self.renderer(xy, posture, ids)
+                rendered_xy = xy
+                if self.optimize_xy:
+                    xy_offsets, _ = self._decode_xy_offsets(
+                        vector[posture_decision_count:],
+                        matrices,
+                        point_indices,
+                        len(xy),
+                    )
+                    rendered_xy = xy + xy_offsets
+                rendered = self.renderer(rendered_xy, posture, ids)
                 return float(F.mse_loss(rendered, target).item())
 
         def finite_difference_jacobian(
@@ -449,12 +553,14 @@ class PaperPSOCLM:
             )
             if self.jacobian_mode == "finite_difference":
                 audit_jacobian = finite_difference_jacobian(
-                    decision, audit_residual, all_columns
+                    decision, audit_residual, all_posture_columns
                 )
             else:
-                audit_jacobian = autograd_jacobian(decision, all_columns)
+                audit_jacobian = autograd_jacobian(
+                    decision, all_posture_columns
+                )
             audit_sensitivity = summarize_sensitivity(
-                audit_jacobian, all_columns, decision
+                audit_jacobian, all_posture_columns, decision
             )
             active_fields = ["H"]
             for field_name in ("alpha", "beta"):
@@ -475,6 +581,8 @@ class PaperPSOCLM:
             active_fields = list(self.FIELD_NAMES)
         decision = fix_inactive_fields(decision, active_fields)
         active_columns = columns_for_fields(active_fields)
+        if self.optimize_xy:
+            active_columns = torch.cat([active_columns, xy_columns])
 
         current_cost = evaluate_cost(decision)
         initial_cost = current_cost
@@ -579,12 +687,25 @@ class PaperPSOCLM:
         selected_cost = evaluate_cost(best_decision)
         with torch.no_grad():
             posture, _ = self._decode(
-                best_decision, matrices, point_indices, len(xy)
+                best_decision[:posture_decision_count],
+                matrices,
+                point_indices,
+                len(xy),
             )
             for field_index, field_name in enumerate(self.FIELD_NAMES):
                 if field_name not in active_fields:
                     posture[:, field_index] = float(initial[field_index])
-            rendered = self.renderer(xy, posture, ids)[0, 0]
+            optimized_xy = xy
+            xy_offsets = torch.zeros_like(xy)
+            if self.optimize_xy:
+                xy_offsets, _ = self._decode_xy_offsets(
+                    best_decision[posture_decision_count:],
+                    matrices,
+                    point_indices,
+                    len(xy),
+                )
+                optimized_xy = xy + xy_offsets
+            rendered = self.renderer(optimized_xy, posture, ids)[0, 0]
         diagnostics: Dict[str, Any] = {
             "checkpoint_selection": {
                 "metric": "full_resolution_plain_mse",
@@ -607,17 +728,25 @@ class PaperPSOCLM:
                     if self.terminal_lift_weight > 0
                     else "disabled_paper_did_not_report_beta_k"
                 ),
+                "xy_enabled": self.optimize_xy,
+                "xy_max_offset_px": self.xy_max_offset_px,
+                "xy_smoothness_weight": self.xy_smoothness_weight,
+                "xy_prior_weight": self.xy_prior_weight,
             },
             "observability_gate": {
                 "mode": self.field_mode,
                 "min_relative_median_sensitivity": (
                     self.min_relative_median_sensitivity
                 ),
-                "optimized_fields": list(active_fields),
+                "optimized_fields": (
+                    ["x", "y"] if self.optimize_xy else []
+                )
+                + list(active_fields),
                 "fixed_fields": [
                     name for name in self.FIELD_NAMES
                     if name not in active_fields
-                ],
+                ]
+                + ([] if self.optimize_xy else ["x", "y"]),
                 "initial_image_jacobian_sensitivity": audit_sensitivity,
             },
         }
@@ -642,6 +771,24 @@ class PaperPSOCLM:
                 ),
             }
             for field_index, field_name in enumerate(("H", "alpha", "beta"))
+        }
+        xy_offsets_np = xy_offsets.cpu().numpy()
+        normalized_xy_offset = xy_offsets_np / self.xy_max_offset_px
+        diagnostics["xy_optimization"] = {
+            "enabled": self.optimize_xy,
+            "max_offset_px": self.xy_max_offset_px,
+            "smoothness_weight": self.xy_smoothness_weight,
+            "prior_weight": self.xy_prior_weight,
+            "max_abs_change_px": float(np.abs(xy_offsets_np).max()),
+            "mean_point_displacement_px": float(
+                np.linalg.norm(xy_offsets_np, axis=1).mean()
+            ),
+            "rms_point_displacement_px": float(
+                np.sqrt(np.mean(np.sum(xy_offsets_np**2, axis=1)))
+            ),
+            "component_bound_fraction_within_1pct": float(
+                np.mean(np.abs(normalized_xy_offset) >= 0.99)
+            ),
         }
         decisions = {}
         source_sensitivity = (
@@ -687,8 +834,36 @@ class PaperPSOCLM:
             "boundary_fraction": 0.0,
             "fixed_value_on_physical_boundary": False,
         }
+        for field_name, field_index in (("x", 0), ("y", 1)):
+            component_boundary = float(
+                np.mean(
+                    np.abs(normalized_xy_offset[:, field_index]) >= 0.99
+                )
+            )
+            decisions[field_name] = {
+                "optimized": self.optimize_xy,
+                "source": (
+                    "lm_optimized_bounded_offset"
+                    if self.optimize_xy
+                    else "input_trajectory"
+                ),
+                "confidence": (
+                    "low_simulation" if self.optimize_xy else "input"
+                ),
+                "reason": (
+                    "bounded_planar_image_registration"
+                    if self.optimize_xy
+                    else "fixed_by_user_trajectory"
+                ),
+                "initial_relative_median_sensitivity": None,
+                "boundary_fraction": (
+                    component_boundary if self.optimize_xy else None
+                ),
+                "fixed_value_on_physical_boundary": None,
+            }
         diagnostics["field_decisions"] = decisions
         return PaperLMResult(
+            xy_canvas=optimized_xy.cpu().numpy(),
             posture=posture_np,
             rendered_image=rendered.cpu().numpy(),
             success=success,

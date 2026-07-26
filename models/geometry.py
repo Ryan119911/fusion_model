@@ -36,6 +36,18 @@ class CanvasTransform:
 
         return nx, ny
 
+    def unmap_point(self, x: float, y: float) -> Tuple[float, float]:
+        """Map a canvas point back into the original trajectory frame."""
+        w = max(self.src_max_x - self.src_min_x, 1e-6)
+        h = max(self.src_max_y - self.src_min_y, 1e-6)
+        avail = self.dst_size - 2 * self.padding
+        scale = min(avail / w, avail / h)
+        off_x = self.padding + (avail - w * scale) / 2.0
+        off_y = self.padding + (avail - h * scale) / 2.0
+        source_x = (x - off_x) / scale + self.src_min_x
+        source_y = self.src_max_y - (y - off_y) / scale
+        return source_x, source_y
+
 
 # 中文注释：将 MakeHanzi 坐标转换为常见显示坐标方向。
 def makehanzi_to_display(x: float, y: float) -> Tuple[float, float]:

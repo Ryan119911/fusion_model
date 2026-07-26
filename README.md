@@ -902,3 +902,71 @@ lm.diagnostics.checkpoint_selection.returned_best_checkpoint
 两者未指定时都回退到 `--footprint_scale`，旧命令和旧结果保持兼容。动态 Offset
 仍沿笔画方向计算，因此像素换算使用纵向尺度。当前仿真建议先固定纵向 `0.22`，
 单独扫描横向尺度；这只是 B-BSMG 图像桥梁标定，不是机器人毛笔物理尺寸。
+
+### 11.10 v9：受限 x/y 轨迹修正
+
+v8 只优化 H/alpha/beta，严格锁定输入 x/y。“武”字在固定 x/y 下搜索 CGL
+3–8 阶后，order 8 最好，但 Dice 仍约为 `0.5052`；差异图显示剩余误差主要来自
+笔画位置和长度，而不是全局粗细。v9 因此新增可选的逐笔 CGL 平面偏移：
+
+```text
+--optimize_xy                 开启 x/y 联合反演，默认关闭
+--xy_max_offset_px            每个画布坐标分量的最大修正，默认 6 px
+--xy_smoothness_weight        相邻 x/y CGL 节点平滑权重，默认 0.10
+--xy_prior_weight             回到原轨迹的零偏移先验，默认 0.05
+```
+
+偏移在 CGL 插值后经过 `tanh`，因此每一个轨迹点都严格位于
+`[-xy_max_offset_px,+xy_max_offset_px]`。`xy_max_offset_px` 不允许超过
+`padding`，防止修正后的轨迹离开画布。未传 `--optimize_xy` 时，行为与 v8
+完全兼容。
+
+当前“武”字推荐运行：
+
+```bash
+python -u tools/invert_paper_trajectory.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --target_image assets/targets/wu_kaishu_target.png \
+  --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
+  --character 武 \
+  --output_dir outputs/wu_paper_inverse_v9_xy6 \
+  --output_stem wu \
+  --device cuda \
+  --padding 16 \
+  --order 8 \
+  --optimization_size 32 \
+  --max_steps 30 \
+  --damping 0.05 \
+  --jacobian_mode finite_difference \
+  --finite_difference_eps 0.01 \
+  --field_mode h_only \
+  --optimize_xy \
+  --xy_max_offset_px 6 \
+  --xy_smoothness_weight 0.10 \
+  --xy_prior_weight 0.05 \
+  --dynamic_profile wang2020_figure4_digitized_v1 \
+  --offset_transfer_scale 1.0 \
+  --pixel_weight 5 \
+  --h_prior_weight 0.001 \
+  --alpha_prior_weight 0.05 \
+  --beta_prior_weight 0.05 \
+  --h_smoothness_weight 0.02 \
+  --alpha_smoothness_weight 0.10 \
+  --beta_smoothness_weight 0.10 \
+  --initial_h_mm 15.5 \
+  --initial_alpha_deg 0 \
+  --initial_beta_deg 0 \
+  --footprint_longitudinal_scale 0.22 \
+  --footprint_transverse_scale 0.245 \
+  --render_max_step_px 2.0
+```
+
+v9 报告格式为 `paper_psoc_lm_v9_bounded_xy`，新增
+`xy_optimization`、修正前/后的 `trajectory_target_coverage_at_5px`，并直接
+报告二值及软墨量比。导出的 `wu_trajectory.csv` 中 x/y 已反变换回输入
+`trajectories.csv` 的坐标系；新增 `x_source/x_confidence` 和
+`y_source/y_confidence` 字段说明其来源。正向渲染工具读取 v9 CSV 时也会使用
+其中的新 x/y。
+
+这些 x/y 仍是输入轨迹坐标系中的仿真配准结果，不是机器人基坐标或 TCP
+坐标。送入真实机器人之前，必须再经过纸面坐标、相机、TCP 和机器人基座标定。
