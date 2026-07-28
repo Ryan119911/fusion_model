@@ -102,6 +102,7 @@ class PaperFusionRenderer(nn.Module):
                 "PaperFusionRenderer requires a 5D or 6D paper B-BSMG checkpoint"
             )
         self.gamma_conditioned = input_dim == 6
+        self.checkpoint_validation_rmse: float | None = None
         self.bbsmg = bbsmg.eval()
         for parameter in self.bbsmg.parameters():
             parameter.requires_grad_(False)
@@ -230,13 +231,20 @@ class PaperFusionRenderer(nn.Module):
             )
         if feature_names is not None and feature_names != expected_features:
             raise ValueError("Checkpoint posture features do not match paper semantics")
-        return cls(
+        renderer = cls(
             model.to(device),
             normalization,
             image_size=image_size,
             dynamic=dynamic,
             point_batch_size=point_batch_size,
         ).to(device)
+        validation_metrics = checkpoint.get("val_metrics") or {}
+        validation_mse = validation_metrics.get("plain_mse")
+        if validation_mse is not None and float(validation_mse) >= 0.0:
+            renderer.checkpoint_validation_rmse = float(
+                np.sqrt(float(validation_mse))
+            )
+        return renderer
 
     @staticmethod
     def trajectory_heading(

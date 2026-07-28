@@ -1153,3 +1153,26 @@ python -u tools/invert_paper_trajectory.py \
 `lm.diagnostics.regularization.initial_posture_source` 中记录初始化来源。只有
 alpha/beta 的 `relative_median` 达到门槛，且后续留出目标验证不出现边界饱和时，
 才能进入角度优化；gamma 在加入非轴对称笔刷观测或真实姿态标定前继续固定为 0。
+
+### 11.14 v14：逐 CGL 节点的噪声可观测性门控
+
+v13 的 6D B-BSMG 让 gamma 真正进入神经渲染器；v14 进一步把整字段相对灵敏度
+门控替换为逐节点 SNR 门控。默认噪声取自 checkpoint 验证集 plain MSE 的平方根：
+
+```text
+节点 SNR = 该节点跨完整物理范围的像素 RMS 响应 / 验证噪声 RMSE
+```
+
+启用参数：
+
+```text
+--observability_gate_mode node_snr
+--min_observability_snr 1.0
+```
+
+只有超过噪声的 H/alpha/beta/gamma CGL 节点进入 LM；其余节点严格保留初值。
+正向渲染工具现在也读取姿态 CSV 中的非零 gamma。提交真实字帖反演前，应先用
+`tools/build_paper_roundtrip_probe.py` 和
+`tools/evaluate_paper_pose_recovery.py` 做已知真值的局部闭环测试。完整 v13 训练、
+v14 审计、闭环命令和真实机器人标定边界见
+[`docs/robot_brush_calibration.md`](docs/robot_brush_calibration.md)。

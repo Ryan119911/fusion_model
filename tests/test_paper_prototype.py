@@ -25,7 +25,113 @@ from models.paper_calibration import (
     wang2020_curves_numpy,
 )
 from tools.build_paper_bbsmg_dataset import build_dataset
+from tools.build_paper_roundtrip_probe import build_probe
+from tools.evaluate_paper_pose_recovery import evaluate as evaluate_pose_recovery
 from tools.validate_robot_brush_calibration import validate_calibration_csv
+from tools.render_paper_trajectory import load_pose_csv
+from utils.types import (
+    CharacterTrajectory,
+    PointState,
+    StrokeTrajectory,
+    TrajectoryPoint,
+)
+
+
+class PaperForwardPoseCsvTests(unittest.TestCase):
+    def test_gamma_is_loaded_in_radians(self):
+        sample = CharacterTrajectory(
+            character="武",
+            strokes=[
+                StrokeTrajectory(
+                    stroke_id=0,
+                    points=[
+                        TrajectoryPoint(
+                            stroke_id=0,
+                            point_id=0,
+                            x=1.0,
+                            y=2.0,
+                            z=0.0,
+                            alpha=0.0,
+                            beta=0.0,
+                            gamma=0.0,
+                            state=PointState.MOVE,
+                        )
+                    ],
+                )
+            ],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pose.csv"
+            with path.open("w", encoding="utf-8", newline="") as stream:
+                writer = csv.DictWriter(
+                    stream,
+                    fieldnames=[
+                        "stroke_id",
+                        "point_id",
+                        "x",
+                        "y",
+                        "z",
+                        "alpha",
+                        "beta",
+                        "gamma",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "stroke_id": 0,
+                        "point_id": 0,
+                        "x": 1.0,
+                        "y": 2.0,
+                        "z": 15.5,
+                        "alpha": 0.05,
+                        "beta": 0.02,
+                        "gamma": -0.3,
+                    }
+                )
+            posture, xy, gamma = load_pose_csv(str(path), sample)
+        np.testing.assert_allclose(posture, [[15.5, 0.05, 0.02]])
+        np.testing.assert_allclose(xy, [[1.0, 2.0]])
+        np.testing.assert_allclose(gamma, [-0.3])
+
+    def test_roundtrip_probe_stays_inside_simulation_limits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.csv"
+            output = Path(directory) / "probe.csv"
+            with source.open("w", encoding="utf-8", newline="") as stream:
+                writer = csv.DictWriter(
+                    stream,
+                    fieldnames=[
+                        "stroke_id",
+                        "point_id",
+                        "x",
+                        "y",
+                        "z",
+                        "alpha",
+                        "beta",
+                        "gamma",
+                    ],
+                )
+                writer.writeheader()
+                for point_id in range(3):
+                    writer.writerow(
+                        {
+                            "stroke_id": 0,
+                            "point_id": point_id,
+                            "x": point_id,
+                            "y": point_id,
+                            "z": 15.5,
+                            "alpha": 0.0,
+                            "beta": 0.0,
+                            "gamma": 0.0,
+                        }
+                    )
+            report = build_probe(str(source), str(output))
+            recovery = evaluate_pose_recovery(str(output), str(output))
+        self.assertEqual(report["point_count"], 3)
+        self.assertEqual(report["ranges"]["z"], [13.0, 17.0])
+        for metrics in recovery["metrics"].values():
+            self.assertEqual(metrics["rmse"], 0.0)
 
 
 class RobotBrushCalibrationTests(unittest.TestCase):
@@ -336,6 +442,7 @@ try:
                         "base_channels": 8,
                     },
                     "model_state": model.state_dict(),
+                    "val_metrics": {"plain_mse": 0.0004},
                     "input_normalization": {
                         "input_dim": 6,
                         "scales": [
@@ -361,6 +468,9 @@ try:
             )
             renderer = PaperFusionRenderer.from_checkpoint(path)
             self.assertTrue(renderer.gamma_conditioned)
+            self.assertAlmostEqual(
+                renderer.checkpoint_validation_rmse, 0.02
+            )
 
         def test_cgl_interpolation_preserves_constant(self):
             matrix = cgl_interpolation_matrix(order=3, num_samples=17)
@@ -551,6 +661,107 @@ try:
             self.assertGreater(float(result.gamma.mean()), 0.25)
             self.assertTrue(
                 result.diagnostics["field_decisions"]["gamma"]["optimized"]
+            )
+
+        def test_v14_node_snr_gate_selects_only_sensitive_cgl_nodes(self):
+            from types import SimpleNamespace
+
+            from optim.paper_psoc_lm import PaperPSOCLM
+
+            class FirstPointGammaRenderer(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.bbsmg = nn.Linear(1, 1, bias=False)
+                    self.dynamic = SimpleNamespace(
+                        longitudinal_scale=0.30,
+                        transverse_scale=0.15,
+                    )
+                    self.checkpoint_validation_rmse = 0.001
+                    yy, xx = torch.meshgrid(
+                        torch.arange(8, dtype=torch.float32),
+                        torch.arange(8, dtype=torch.float32),
+                        indexing="ij",
+                    )
+                    self.register_buffer("xx", xx - 3.5)
+                    self.register_buffer("yy", yy - 3.5)
+
+                def forward(self, xy, posture, stroke_ids, gamma=None):
+                    angle = gamma[0]
+                    cosine = torch.cos(angle)
+                    sine = torch.sin(angle)
+                    along = cosine * self.xx + sine * self.yy
+                    across = -sine * self.xx + cosine * self.yy
+                    image = torch.exp(
+                        -(along**2 / 8.0 + across**2 / 0.8)
+                    )
+                    return image.view(1, 1, 8, 8)
+
+            renderer = FirstPointGammaRenderer()
+            solver = PaperPSOCLM(
+                renderer,
+                order=2,
+                optimization_size=8,
+                field_mode="auto",
+                optimize_gamma=True,
+                gamma_max_abs_rad=1.0,
+                observability_gate_mode="node_snr",
+                min_observability_snr=1.0,
+            )
+            result = solver.optimize(
+                xy_canvas=np.zeros((3, 2), dtype=np.float32),
+                stroke_ids=np.zeros(3, dtype=np.int64),
+                target_image=np.zeros((8, 8), dtype=np.float32),
+                max_steps=0,
+            )
+            gate = result.diagnostics["observability_gate"]
+            gamma_gate = gate["selected_node_columns"]["gamma"]
+            self.assertEqual(gamma_gate["selected_nodes"], 1)
+            self.assertEqual(gamma_gate["evaluated_nodes"], 3)
+            self.assertIn("gamma", gate["partially_optimized_fields"])
+            self.assertNotIn("H", gate["optimized_fields"])
+            self.assertEqual(
+                result.diagnostics["field_decisions"]["gamma"][
+                    "source"
+                ],
+                "lm_optimized_selected_nodes",
+            )
+
+        def test_v14_audit_preserves_exact_zero_angle_boundary(self):
+            from optim.paper_psoc_lm import PaperPSOCLM
+
+            class FirstAlphaRenderer(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.bbsmg = nn.Linear(1, 1, bias=False)
+                    self.checkpoint_validation_rmse = 0.001
+
+                def forward(self, xy, posture, stroke_ids):
+                    value = torch.sigmoid(posture[0, 1] * 100.0)
+                    return value.expand(1, 1, 8, 8)
+
+            solver = PaperPSOCLM(
+                FirstAlphaRenderer(),
+                order=2,
+                optimization_size=8,
+                field_mode="auto",
+                observability_gate_mode="node_snr",
+                min_observability_snr=1.0,
+            )
+            result = solver.optimize(
+                xy_canvas=np.zeros((3, 2), dtype=np.float32),
+                stroke_ids=np.zeros(3, dtype=np.int64),
+                target_image=np.zeros((8, 8), dtype=np.float32),
+                initial_alpha_rad=0.0,
+                max_steps=0,
+            )
+            self.assertGreater(
+                result.diagnostics["observability_gate"][
+                    "selected_node_columns"
+                ]["alpha"]["selected_nodes"],
+                0,
+            )
+            np.testing.assert_allclose(
+                result.posture[:, 1], 0.0, atol=1e-8
             )
 
         def test_posture_is_bounded_between_cgl_nodes(self):

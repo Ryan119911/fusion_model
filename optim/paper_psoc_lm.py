@@ -88,6 +88,7 @@ class PaperPSOCLM:
     """Optimize bounded per-stroke CGL pose and optional planar offsets."""
 
     FIELD_NAMES = ("H", "alpha", "beta")
+    POSTURE_BOUND_EPS = 0.02
 
     def __init__(
         self,
@@ -114,6 +115,9 @@ class PaperPSOCLM:
         gamma_max_abs_rad: float = np.pi,
         gamma_smoothness_weight: float = 0.10,
         gamma_prior_weight: float = 0.05,
+        observability_gate_mode: str = "field_relative",
+        observability_noise_rmse: float | None = None,
+        min_observability_snr: float = 1.0,
     ):
         if order < 1:
             raise ValueError("order must be >= 1")
@@ -182,6 +186,40 @@ class PaperPSOCLM:
         self.gamma_max_abs_rad = float(gamma_max_abs_rad)
         self.gamma_smoothness_weight = float(gamma_smoothness_weight)
         self.gamma_prior_weight = float(gamma_prior_weight)
+        if observability_gate_mode not in {
+            "field_relative",
+            "node_snr",
+        }:
+            raise ValueError(
+                "observability_gate_mode must be field_relative or node_snr"
+            )
+        if observability_noise_rmse is not None and observability_noise_rmse <= 0:
+            raise ValueError("observability_noise_rmse must be positive")
+        if min_observability_snr <= 0:
+            raise ValueError("min_observability_snr must be positive")
+        self.observability_gate_mode = observability_gate_mode
+        checkpoint_rmse = getattr(
+            renderer, "checkpoint_validation_rmse", None
+        )
+        self.observability_noise_rmse = (
+            float(observability_noise_rmse)
+            if observability_noise_rmse is not None
+            else (
+                float(checkpoint_rmse)
+                if checkpoint_rmse is not None
+                else None
+            )
+        )
+        self.min_observability_snr = float(min_observability_snr)
+        if (
+            self.field_mode == "auto"
+            and self.observability_gate_mode == "node_snr"
+            and self.observability_noise_rmse is None
+        ):
+            raise ValueError(
+                "node_snr observability requires checkpoint plain_mse or "
+                "an explicit observability_noise_rmse"
+            )
         if self.optimize_gamma and np.isclose(
             renderer.dynamic.longitudinal_scale,
             renderer.dynamic.transverse_scale,
@@ -266,7 +304,11 @@ class PaperPSOCLM:
             PAPER_POSTURE_MAX, dtype=decision.dtype, device=decision.device
         )
         node_logits = decision.view(len(matrices), 3, node_count)
-        normalized_nodes = torch.sigmoid(node_logits)
+        epsilon = float(self.POSTURE_BOUND_EPS)
+        normalized_nodes = (
+            (torch.sigmoid(node_logits) - epsilon)
+            / (1.0 - 2.0 * epsilon)
+        ).clamp(0.0, 1.0)
         normalized_points = torch.empty(
             (point_count, 3), dtype=decision.dtype, device=decision.device
         )
@@ -279,7 +321,10 @@ class PaperPSOCLM:
             point_logits = (
                 matrix.to(dtype=decision.dtype) @ node_logits[stroke_index].T
             )
-            values = torch.sigmoid(point_logits)
+            values = (
+                (torch.sigmoid(point_logits) - epsilon)
+                / (1.0 - 2.0 * epsilon)
+            ).clamp(0.0, 1.0)
             normalized_points[
                 torch.as_tensor(indices, device=decision.device)
             ] = values
@@ -436,9 +481,11 @@ class PaperPSOCLM:
         ) / (
             PAPER_POSTURE_MAX - PAPER_POSTURE_MIN
         )
-        # A value exactly on a bound has zero useful logistic derivative.
-        normalized_for_audit = np.clip(
-            normalized_initial_points, 0.02, 0.98
+        epsilon = float(self.POSTURE_BOUND_EPS)
+        normalized_for_audit = (
+            epsilon
+            + (1.0 - 2.0 * epsilon)
+            * np.clip(normalized_initial_points, 0.0, 1.0)
         )
         point_logits = np.log(
             normalized_for_audit / (1.0 - normalized_for_audit)
@@ -520,11 +567,14 @@ class PaperPSOCLM:
             )
         decision = torch.cat(decision_parts)
         initial_decision = decision.detach().clone()
+        prior_sigmoid = 1.0 / (
+            1.0 + np.exp(-np.clip(initial_node_logits, -30.0, 30.0))
+        )
         prior = torch.as_tensor(
-            1.0
-            / (
-                1.0
-                + np.exp(-np.clip(initial_node_logits, -30.0, 30.0))
+            np.clip(
+                (prior_sigmoid - epsilon) / (1.0 - 2.0 * epsilon),
+                0.0,
+                1.0,
             ),
             dtype=decision.dtype,
             device=decision.device,
@@ -838,12 +888,12 @@ class PaperPSOCLM:
             ).detach()
             return full[:, columns_to_evaluate]
 
-        def summarize_sensitivity(
+        def normalized_column_sensitivity(
             jacobian: torch.Tensor,
             columns_evaluated: torch.Tensor,
             vector: torch.Tensor,
-        ) -> Dict[str, Dict[str, float]]:
-            """Summarize image sensitivity for the evaluated decision columns."""
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            """Return per-column L2 and pixel RMS for a normalized full range."""
             pixel_rows = self.optimization_size * self.optimization_size
             column_norms = torch.linalg.vector_norm(
                 jacobian[:pixel_rows], dim=0
@@ -851,6 +901,7 @@ class PaperPSOCLM:
             normalized_nodes = torch.sigmoid(vector)
             parameter_slope = (
                 normalized_nodes * (1.0 - normalized_nodes)
+                / (1.0 - 2.0 * float(self.POSTURE_BOUND_EPS))
             ).clamp_min(1e-4)
             if gamma_decision_count:
                 gamma_normalized = torch.tanh(
@@ -859,10 +910,23 @@ class PaperPSOCLM:
                 parameter_slope[gamma_start:gamma_stop] = (
                     1.0 - gamma_normalized**2
                 ).clamp_min(1e-4)
+            l2 = column_norms / parameter_slope[columns_evaluated]
+            return l2, l2 / float(pixel_rows) ** 0.5
+
+        def summarize_sensitivity(
+            jacobian: torch.Tensor,
+            columns_evaluated: torch.Tensor,
+            vector: torch.Tensor,
+        ) -> Dict[str, Dict[str, float]]:
+            """Summarize image sensitivity for the evaluated decision columns."""
+            column_l2, column_rms = normalized_column_sensitivity(
+                jacobian, columns_evaluated, vector
+            )
             sensitivity: Dict[str, Dict[str, float]] = {}
             medians = {}
             means = {}
             values_by_field = {}
+            rms_by_field = {}
             audit_field_names = list(self.FIELD_NAMES) + (
                 ["gamma"] if self.optimize_gamma else []
             )
@@ -877,11 +941,9 @@ class PaperPSOCLM:
                 if not bool(torch.any(member_mask)):
                     continue
                 selected_columns = columns_evaluated[member_mask]
-                values = (
-                    column_norms[member_mask]
-                    / parameter_slope[selected_columns]
-                )
+                values = column_l2[member_mask]
                 values_by_field[field_name] = values
+                rms_by_field[field_name] = column_rms[member_mask]
                 medians[field_name] = values.median()
                 means[field_name] = values.mean()
             max_median = max(
@@ -893,6 +955,7 @@ class PaperPSOCLM:
             max_median = max(max_median, 1e-12)
             max_mean = max(max_mean, 1e-12)
             for field_name, values in values_by_field.items():
+                rms_values = rms_by_field[field_name]
                 sensitivity[field_name] = {
                     "mean_l2_per_normalized_range": float(values.mean()),
                     "median_l2_per_normalized_range": float(values.median()),
@@ -901,7 +964,25 @@ class PaperPSOCLM:
                     "relative_median": (
                         float(medians[field_name]) / max_median
                     ),
+                    "mean_rms_per_pixel_per_normalized_range": float(
+                        rms_values.mean()
+                    ),
+                    "median_rms_per_pixel_per_normalized_range": float(
+                        rms_values.median()
+                    ),
+                    "max_rms_per_pixel_per_normalized_range": float(
+                        rms_values.max()
+                    ),
                 }
+                if self.observability_noise_rmse is not None:
+                    snr = rms_values / self.observability_noise_rmse
+                    sensitivity[field_name].update(
+                        {
+                            "mean_snr": float(snr.mean()),
+                            "median_snr": float(snr.median()),
+                            "max_snr": float(snr.max()),
+                        }
+                    )
             return sensitivity
 
         def columns_for_fields(field_names: Sequence[str]) -> torch.Tensor:
@@ -928,6 +1009,15 @@ class PaperPSOCLM:
             return fixed
 
         audit_sensitivity: Dict[str, Dict[str, float]] = {}
+        node_gate_diagnostics: Dict[str, Dict[str, Any]] = {}
+        selected_columns_by_field: Dict[str, torch.Tensor] = {}
+        available_field_names = list(self.FIELD_NAMES) + (
+            ["gamma"] if self.optimize_gamma else []
+        )
+        available_columns = {
+            **field_columns,
+            "gamma": gamma_columns,
+        }
         if self.field_mode == "auto":
             with torch.no_grad():
                 audit_residual = residual_fn(decision)
@@ -953,22 +1043,76 @@ class PaperPSOCLM:
             audit_sensitivity = summarize_sensitivity(
                 audit_jacobian, all_audit_columns, decision
             )
-            active_fields = ["H"]
-            candidates = ["alpha", "beta"] + (
-                ["gamma"] if self.optimize_gamma else []
-            )
-            for field_name in candidates:
-                relative = audit_sensitivity[field_name][
-                    "relative_median"
-                ]
-                if relative >= self.min_relative_median_sensitivity:
-                    active_fields.append(field_name)
-            print(
-                "[OBSERVABILITY] active_fields="
-                f"{','.join(active_fields)}, threshold="
-                f"{self.min_relative_median_sensitivity:.3f}",
-                flush=True,
-            )
+            if self.observability_gate_mode == "node_snr":
+                _, audit_column_rms = normalized_column_sensitivity(
+                    audit_jacobian, all_audit_columns, decision
+                )
+                active_fields = []
+                for field_name in available_field_names:
+                    member_mask = torch.isin(
+                        all_audit_columns,
+                        available_columns[field_name],
+                    )
+                    field_columns_evaluated = all_audit_columns[member_mask]
+                    field_snr = (
+                        audit_column_rms[member_mask]
+                        / float(self.observability_noise_rmse)
+                    )
+                    selected = field_columns_evaluated[
+                        field_snr >= self.min_observability_snr
+                    ]
+                    selected_columns_by_field[field_name] = selected
+                    if int(selected.numel()) > 0:
+                        active_fields.append(field_name)
+                    node_gate_diagnostics[field_name] = {
+                        "evaluated_nodes": int(
+                            field_columns_evaluated.numel()
+                        ),
+                        "selected_nodes": int(selected.numel()),
+                        "selected_fraction": float(
+                            selected.numel()
+                            / max(field_columns_evaluated.numel(), 1)
+                        ),
+                        "min_snr": float(field_snr.min()),
+                        "median_snr": float(field_snr.median()),
+                        "max_snr": float(field_snr.max()),
+                        "selected_decision_columns": [
+                            int(value) for value in selected.cpu().tolist()
+                        ],
+                    }
+                counts = ",".join(
+                    f"{name}:{node_gate_diagnostics[name]['selected_nodes']}/"
+                    f"{node_gate_diagnostics[name]['evaluated_nodes']}"
+                    for name in available_field_names
+                )
+                print(
+                    "[OBSERVABILITY] node_snr selected="
+                    f"{counts}, noise_rmse="
+                    f"{self.observability_noise_rmse:.6f}, "
+                    f"min_snr={self.min_observability_snr:.3f}",
+                    flush=True,
+                )
+            else:
+                active_fields = ["H"]
+                candidates = ["alpha", "beta"] + (
+                    ["gamma"] if self.optimize_gamma else []
+                )
+                for field_name in candidates:
+                    relative = audit_sensitivity[field_name][
+                        "relative_median"
+                    ]
+                    if relative >= self.min_relative_median_sensitivity:
+                        active_fields.append(field_name)
+                selected_columns_by_field = {
+                    name: available_columns[name]
+                    for name in active_fields
+                }
+                print(
+                    "[OBSERVABILITY] active_fields="
+                    f"{','.join(active_fields)}, threshold="
+                    f"{self.min_relative_median_sensitivity:.3f}",
+                    flush=True,
+                )
         elif self.field_mode == "h_only":
             active_fields = ["H"]
         elif self.field_mode == "xy_only":
@@ -977,9 +1121,24 @@ class PaperPSOCLM:
             active_fields = list(self.FIELD_NAMES) + (
                 ["gamma"] if self.optimize_gamma else []
             )
+        if not selected_columns_by_field:
+            selected_columns_by_field = {
+                name: available_columns[name] for name in active_fields
+            }
         decision = fix_inactive_fields(decision, active_fields)
         gated_active_fields = set(active_fields)
-        active_columns = columns_for_fields(active_fields)
+        selected_parts = [
+            selected_columns_by_field[name]
+            for name in active_fields
+            if int(selected_columns_by_field[name].numel()) > 0
+        ]
+        active_columns = (
+            torch.cat(selected_parts)
+            if selected_parts
+            else torch.empty(
+                0, dtype=torch.long, device=decision.device
+            )
+        )
         if self.optimize_xy:
             active_columns = torch.cat([active_columns, xy_columns])
 
@@ -997,13 +1156,25 @@ class PaperPSOCLM:
             "full_resolution_mse": [current_full_mse],
         }
         success = False
-        message = "Maximum steps reached"
+        effective_max_steps = (
+            int(max_steps) if int(active_columns.numel()) > 0 else 0
+        )
+        message = (
+            "Maximum steps reached"
+            if effective_max_steps > 0 or int(max_steps) == 0
+            else "No observable decision variables passed the gate"
+        )
+        if int(max_steps) > 0 and effective_max_steps == 0:
+            print(
+                "[OBSERVABILITY] no decision columns passed; skipping LM",
+                flush=True,
+            )
         completed_steps = 0
         last_jacobian = None
         last_decision = decision.detach()
         last_columns = active_columns
 
-        for step in range(1, int(max_steps) + 1):
+        for step in range(1, effective_max_steps + 1):
             decision = decision.detach()
             with torch.no_grad():
                 residual = residual_fn(decision)
@@ -1174,9 +1345,17 @@ class PaperPSOCLM:
             },
             "observability_gate": {
                 "mode": self.field_mode,
+                "gate_mode": self.observability_gate_mode,
                 "min_relative_median_sensitivity": (
                     self.min_relative_median_sensitivity
                 ),
+                "noise_rmse": self.observability_noise_rmse,
+                "noise_rmse_source": (
+                    "explicit_or_checkpoint_validation_plain_mse"
+                    if self.observability_noise_rmse is not None
+                    else None
+                ),
+                "min_observability_snr": self.min_observability_snr,
                 "optimized_fields": (
                     ["x", "y"] if self.optimize_xy else []
                 )
@@ -1191,6 +1370,13 @@ class PaperPSOCLM:
                     else []
                 )
                 + ([] if self.optimize_xy else ["x", "y"]),
+                "partially_optimized_fields": [
+                    name
+                    for name in active_fields
+                    if int(selected_columns_by_field[name].numel())
+                    < int(available_columns[name].numel())
+                ],
+                "selected_node_columns": node_gate_diagnostics,
                 "initial_image_jacobian_sensitivity": audit_sensitivity,
             },
         }
@@ -1288,6 +1474,15 @@ class PaperPSOCLM:
         )
         for field_name in self.FIELD_NAMES:
             optimized = field_name in active_fields
+            selected_node_count = int(
+                selected_columns_by_field.get(
+                    field_name,
+                    torch.empty(0, device=decision.device),
+                ).numel()
+            )
+            available_node_count = int(
+                available_columns[field_name].numel()
+            )
             boundary = diagnostics["bound_fraction_within_1pct"][field_name]
             boundary_total = boundary["lower"] + boundary["upper"]
             relative = source_sensitivity.get(field_name, {}).get(
@@ -1305,14 +1500,26 @@ class PaperPSOCLM:
                 reason = "optimized_but_boundary_saturated"
             elif field_name == "H":
                 confidence = "medium_simulation"
-                reason = "optimized_observable_simulation_parameter"
+                reason = (
+                    "partially_optimized_above_snr"
+                    if selected_node_count < available_node_count
+                    else "optimized_observable_simulation_parameter"
+                )
             else:
                 confidence = "medium_simulation"
-                reason = "optimized_above_observability_threshold"
+                reason = (
+                    "partially_optimized_above_snr"
+                    if selected_node_count < available_node_count
+                    else "optimized_above_observability_threshold"
+                )
             decisions[field_name] = {
                 "optimized": optimized,
                 "source": (
-                    "lm_optimized"
+                    (
+                        "lm_optimized_selected_nodes"
+                        if selected_node_count < available_node_count
+                        else "lm_optimized"
+                    )
                     if optimized
                     else (
                         "initial_pose_csv"
@@ -1323,12 +1530,26 @@ class PaperPSOCLM:
                 "confidence": confidence,
                 "reason": reason,
                 "initial_relative_median_sensitivity": relative,
+                "initial_median_snr": source_sensitivity.get(
+                    field_name, {}
+                ).get("median_snr"),
+                "optimized_nodes": selected_node_count,
+                "available_nodes": available_node_count,
+                "optimized_node_fraction": (
+                    selected_node_count / max(available_node_count, 1)
+                ),
                 "boundary_fraction": boundary_total if optimized else None,
                 "fixed_value_on_physical_boundary": (
                     None if optimized else boundary_total > 0.0
                 ),
             }
         gamma_optimized = "gamma" in active_fields
+        gamma_selected_nodes = int(
+            selected_columns_by_field.get(
+                "gamma", torch.empty(0, device=decision.device)
+            ).numel()
+        )
+        gamma_available_nodes = int(gamma_columns.numel())
         gamma_boundary = float(
             np.mean(
                 np.abs(
@@ -1344,7 +1565,11 @@ class PaperPSOCLM:
         decisions["gamma"] = {
             "optimized": gamma_optimized,
             "source": (
-                "lm_optimized"
+                (
+                    "lm_optimized_selected_nodes"
+                    if gamma_selected_nodes < gamma_available_nodes
+                    else "lm_optimized"
+                )
                 if gamma_optimized
                 else (
                     "initial_pose_csv"
@@ -1358,7 +1583,11 @@ class PaperPSOCLM:
                 else "low"
             ),
             "reason": (
-                "optimized_above_observability_threshold"
+                (
+                    "partially_optimized_above_snr"
+                    if gamma_selected_nodes < gamma_available_nodes
+                    else "optimized_above_observability_threshold"
+                )
                 if gamma_optimized and gamma_boundary <= 0.25
                 else (
                     "optimized_but_boundary_saturated"
@@ -1371,6 +1600,16 @@ class PaperPSOCLM:
                 )
             ),
             "initial_relative_median_sensitivity": gamma_relative,
+            "initial_median_snr": source_sensitivity.get(
+                "gamma", {}
+            ).get("median_snr"),
+            "optimized_nodes": gamma_selected_nodes,
+            "available_nodes": gamma_available_nodes,
+            "optimized_node_fraction": (
+                gamma_selected_nodes / max(gamma_available_nodes, 1)
+                if gamma_available_nodes
+                else 0.0
+            ),
             "boundary_fraction": gamma_boundary if gamma_optimized else None,
             "fixed_value_on_physical_boundary": (
                 None if gamma_optimized else gamma_boundary > 0.0

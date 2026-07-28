@@ -34,14 +34,14 @@ from tools.invert_paper_trajectory import (
 
 def load_pose_csv(
     path: str, sample, clip_pose_limits: bool = False
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     by_key = {}
     with open(path, "r", encoding="utf-8-sig", newline="") as file:
         for row in csv.DictReader(file):
             key = (int(row["stroke_id"]), int(row["point_id"]))
             gamma = float(row.get("gamma", 0.0) or 0.0)
-            if abs(gamma) > 1e-9:
-                raise ValueError("Prototype requires gamma=0 rad for every point")
+            if not np.isfinite(gamma) or abs(gamma) > np.pi + 1e-6:
+                raise ValueError("Pose CSV gamma must be finite and in [-pi,pi]")
             by_key[key] = {
                 "posture": [
                     float(row["z"]),
@@ -49,14 +49,16 @@ def load_pose_csv(
                     float(row["beta"]),
                 ],
                 "xy": [float(row["x"]), float(row["y"])],
+                "gamma": gamma,
             }
-    values, xy_values = [], []
+    values, xy_values, gamma_values = [], [], []
     for point in sample.all_points():
         key = (point.stroke_id, point.point_id)
         if key not in by_key:
             raise ValueError(f"Pose CSV is missing stroke/point {key}")
         values.append(by_key[key]["posture"])
         xy_values.append(by_key[key]["xy"])
+        gamma_values.append(by_key[key]["gamma"])
     posture = np.asarray(values, dtype=np.float32)
     tolerance = 1e-6
     invalid = np.any(posture < PAPER_POSTURE_MIN - tolerance) or np.any(
@@ -81,10 +83,11 @@ def load_pose_csv(
     return (
         np.clip(posture, PAPER_POSTURE_MIN, PAPER_POSTURE_MAX),
         np.asarray(xy_values, dtype=np.float32),
+        np.asarray(gamma_values, dtype=np.float32),
     )
 
 
-def save_dynamic_states(sample, xy, posture, states, path: Path) -> None:
+def save_dynamic_states(sample, xy, posture, gamma, states, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     virtual = states["virtual_posture"].cpu().numpy()
     geometry = states["geometry"].cpu().numpy()
@@ -103,6 +106,7 @@ def save_dynamic_states(sample, xy, posture, states, path: Path) -> None:
         "H_input_mm",
         "alpha_input_rad",
         "beta_input_rad",
+        "gamma_input_rad",
         "H_virtual_mm",
         "alpha_virtual_rad",
         "beta_virtual_rad",
@@ -131,6 +135,7 @@ def save_dynamic_states(sample, xy, posture, states, path: Path) -> None:
                     "H_input_mm": repr(float(posture[index, 0])),
                     "alpha_input_rad": repr(float(posture[index, 1])),
                     "beta_input_rad": repr(float(posture[index, 2])),
+                    "gamma_input_rad": repr(float(gamma[index])),
                     "H_virtual_mm": repr(float(virtual[index, 0])),
                     "alpha_virtual_rad": repr(float(virtual[index, 1])),
                     "beta_virtual_rad": repr(float(virtual[index, 2])),
@@ -166,7 +171,7 @@ def main(args: argparse.Namespace) -> None:
     )
     original_xy = xy.copy()
     if args.pose_csv:
-        posture, pose_xy_source = load_pose_csv(
+        posture, pose_xy_source, gamma = load_pose_csv(
             args.pose_csv,
             sample,
             clip_pose_limits=args.clip_pose_limits,
@@ -196,6 +201,9 @@ def main(args: argparse.Namespace) -> None:
             raise ValueError(
                 "Default pose exceeds H=11-20 mm, alpha=0-10 deg, beta=0-5 deg"
             )
+        gamma = np.full(
+            len(xy), np.deg2rad(args.gamma_deg), dtype=np.float32
+        )
         pose_source = "command_line_default"
     renderer = PaperFusionRenderer.from_checkpoint(
         args.bbsmg_ckpt,
@@ -221,6 +229,7 @@ def main(args: argparse.Namespace) -> None:
     with torch.no_grad():
         xy_tensor = torch.as_tensor(xy, device=device)
         posture_tensor = torch.as_tensor(posture, device=device)
+        gamma_tensor = torch.as_tensor(gamma, device=device)
         stroke_tensor = torch.as_tensor(stroke_ids, device=device)
         states = renderer.compute_dynamic_states(
             xy_tensor, posture_tensor, stroke_tensor
@@ -232,6 +241,7 @@ def main(args: argparse.Namespace) -> None:
             xy_tensor,
             posture_tensor,
             stroke_tensor,
+            gamma_tensor,
         )[0, 0].cpu().numpy()
         contact_shift = torch.linalg.vector_norm(
             states["contact_xy"] - xy_tensor, dim=-1
@@ -243,7 +253,7 @@ def main(args: argparse.Namespace) -> None:
         mode="L",
     ).save(output)
     save_dynamic_states(
-        sample, xy, posture, states, output.with_suffix(".states.csv")
+        sample, xy, posture, gamma, states, output.with_suffix(".states.csv")
     )
     report = {
         "format": "paper_forward_renderer_v3_wang2020",
@@ -258,7 +268,10 @@ def main(args: argparse.Namespace) -> None:
         "pose_source": pose_source,
         "angle_unit": "rad",
         "z_semantics": "H_mm",
-        "gamma_rad": 0.0,
+        "gamma_rad": {
+            "min": float(gamma.min()),
+            "max": float(gamma.max()),
+        },
         "regression_angle_basis": renderer.regression_angle_basis,
         "dynamic_profile": args.dynamic_profile,
         "offset_transfer_scale": args.offset_transfer_scale,
@@ -326,6 +339,7 @@ if __name__ == "__main__":
     parser.add_argument("--h_mm", type=float, default=15.5)
     parser.add_argument("--alpha_deg", type=float, default=0.0)
     parser.add_argument("--beta_deg", type=float, default=0.0)
+    parser.add_argument("--gamma_deg", type=float, default=0.0)
     parser.add_argument("--width_inertia", type=float, default=0.02)
     parser.add_argument("--drag_inertia", type=float, default=0.02)
     parser.add_argument(

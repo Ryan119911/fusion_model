@@ -354,21 +354,35 @@ def main(args: argparse.Namespace) -> None:
             "xy_max_offset_px must not exceed padding, so corrected points "
             "remain inside the render canvas"
         )
+    if (
+        args.observability_gate_mode == "node_snr"
+        and args.optimization_size < 64
+    ):
+        print(
+            "[WARN] node_snr pose inversion below 64x64 can reduce the "
+            "low-resolution LM objective while worsening the 128x128 image. "
+            "Use --optimization_size 64 for pose-recovery validation.",
+            flush=True,
+        )
     v10_continuity_enabled = (
         args.cap_order_to_points
         or args.h_point_velocity_weight > 0
         or args.h_point_acceleration_weight > 0
     )
     output_format = (
-        "paper_psoc_lm_v12_nonaxisymmetric_gamma"
-        if args.optimize_gamma
+        "paper_psoc_lm_v14_node_snr_gate"
+        if args.observability_gate_mode == "node_snr"
         else (
-            "paper_psoc_lm_v11_staged_pose"
-            if args.initial_pose_csv
+            "paper_psoc_lm_v12_nonaxisymmetric_gamma"
+            if args.optimize_gamma
             else (
-                "paper_psoc_lm_v10_point_continuity"
-                if v10_continuity_enabled
-                else "paper_psoc_lm_v9_bounded_xy"
+                "paper_psoc_lm_v11_staged_pose"
+                if args.initial_pose_csv
+                else (
+                    "paper_psoc_lm_v10_point_continuity"
+                    if v10_continuity_enabled
+                    else "paper_psoc_lm_v9_bounded_xy"
+                )
             )
         )
     )
@@ -497,6 +511,9 @@ def main(args: argparse.Namespace) -> None:
             gamma_max_abs_rad=float(np.deg2rad(args.gamma_max_abs_deg)),
             gamma_smoothness_weight=args.gamma_smoothness_weight,
             gamma_prior_weight=args.gamma_prior_weight,
+            observability_gate_mode=args.observability_gate_mode,
+            observability_noise_rmse=args.observability_noise_rmse,
+            min_observability_snr=args.min_observability_snr,
         )
         candidate = solver.optimize(
             xy_canvas,
@@ -742,6 +759,20 @@ def main(args: argparse.Namespace) -> None:
                 float(result.gamma.max()),
             ],
         },
+        "identifiability": {
+            "node_gate_scope": (
+                "local single-column response above image-noise RMSE"
+            ),
+            "joint_pose_unique_from_single_image": False,
+            "optimization_size": args.optimization_size,
+            "recommended_minimum_optimization_size_for_pose_recovery": 64,
+            "external_observation_required_for_robot_ground_truth": True,
+            "note": (
+                "Image similarity and per-node SNR do not prove unique "
+                "H/alpha/beta/gamma recovery because fields can compensate "
+                "for one another."
+            ),
+        },
         "lm": {
             "success": result.success,
             "steps": result.steps,
@@ -808,6 +839,17 @@ def main(args: argparse.Namespace) -> None:
                 "relative_median="
                 f"{sensitivity[field_name]['relative_median']:.6f}"
             )
+    node_gate = result.diagnostics["observability_gate"].get(
+        "selected_node_columns", {}
+    )
+    for field_name, selection in node_gate.items():
+        print(
+            f"[NODE GATE] {field_name}: "
+            f"selected={selection['selected_nodes']}/"
+            f"{selection['evaluated_nodes']}, "
+            f"median_snr={selection['median_snr']:.6f}, "
+            f"max_snr={selection['max_snr']:.6f}"
+        )
     for field_name, fractions in result.diagnostics[
         "bound_fraction_within_1pct"
     ].items():
@@ -961,6 +1003,29 @@ if __name__ == "__main__":
         "--min_relative_median_sensitivity",
         type=float,
         default=0.45,
+    )
+    parser.add_argument(
+        "--observability_gate_mode",
+        choices=["field_relative", "node_snr"],
+        default="field_relative",
+        help=(
+            "legacy whole-field relative gate or v14 per-CGL-node "
+            "signal-to-validation-noise gate"
+        ),
+    )
+    parser.add_argument(
+        "--observability_noise_rmse",
+        type=float,
+        default=None,
+        help=(
+            "pixel RMSE noise floor for node_snr; defaults to sqrt(checkpoint "
+            "validation plain_mse)"
+        ),
+    )
+    parser.add_argument(
+        "--min_observability_snr",
+        type=float,
+        default=1.0,
     )
     parser.add_argument("--initial_h_mm", type=float, default=15.5)
     parser.add_argument("--initial_alpha_deg", type=float, default=0.0)
