@@ -34,6 +34,41 @@ def cgl_interpolation_matrix(order: int, num_samples: int) -> np.ndarray:
     return matrix
 
 
+def trajectory_difference_residuals(
+    values: torch.Tensor,
+    point_indices: Sequence[np.ndarray],
+    first_difference_weight: float,
+    second_difference_weight: float,
+) -> List[torch.Tensor]:
+    """Build within-stroke point-space continuity residuals.
+
+    ``values`` is a one-dimensional decoded trajectory quantity. Differences
+    never cross a stroke boundary. The weights operate on the normalized
+    quantity rather than physical units so they remain independent of the H
+    range used by the prototype.
+    """
+    residuals: List[torch.Tensor] = []
+    for indices in point_indices:
+        stroke_values = values[
+            torch.as_tensor(indices, dtype=torch.long, device=values.device)
+        ]
+        if first_difference_weight > 0 and len(indices) >= 2:
+            residuals.append(
+                first_difference_weight**0.5
+                * (stroke_values[1:] - stroke_values[:-1])
+            )
+        if second_difference_weight > 0 and len(indices) >= 3:
+            residuals.append(
+                second_difference_weight**0.5
+                * (
+                    stroke_values[2:]
+                    - 2.0 * stroke_values[1:-1]
+                    + stroke_values[:-2]
+                )
+            )
+    return residuals
+
+
 @dataclass
 class PaperLMResult:
     xy_canvas: np.ndarray
@@ -71,6 +106,9 @@ class PaperPSOCLM:
         xy_max_offset_px: float = 6.0,
         xy_smoothness_weight: float = 0.10,
         xy_prior_weight: float = 0.05,
+        h_point_velocity_weight: float = 0.0,
+        h_point_acceleration_weight: float = 0.0,
+        cap_order_to_points: bool = False,
     ):
         if order < 1:
             raise ValueError("order must be >= 1")
@@ -120,6 +158,15 @@ class PaperPSOCLM:
         self.xy_max_offset_px = float(xy_max_offset_px)
         self.xy_smoothness_weight = float(xy_smoothness_weight)
         self.xy_prior_weight = float(xy_prior_weight)
+        if h_point_velocity_weight < 0 or h_point_acceleration_weight < 0:
+            raise ValueError(
+                "H point-space regularization weights must be non-negative"
+            )
+        self.h_point_velocity_weight = float(h_point_velocity_weight)
+        self.h_point_acceleration_weight = float(
+            h_point_acceleration_weight
+        )
+        self.cap_order_to_points = bool(cap_order_to_points)
         if self.field_mode == "xy_only" and not self.optimize_xy:
             raise ValueError("field_mode='xy_only' requires optimize_xy=True")
 
@@ -140,15 +187,44 @@ class PaperPSOCLM:
 
     def _build_layout(
         self, stroke_ids: np.ndarray
-    ) -> tuple[List[torch.Tensor], List[np.ndarray]]:
+    ) -> tuple[
+        List[torch.Tensor],
+        List[np.ndarray],
+        List[int],
+        np.ndarray,
+    ]:
         matrices: List[torch.Tensor] = []
         point_indices: List[np.ndarray] = []
+        effective_orders: List[int] = []
+        active_node_masks: List[np.ndarray] = []
+        node_count = self.order + 1
         for stroke_id in np.unique(stroke_ids):
             indices = np.flatnonzero(stroke_ids == stroke_id)
             point_indices.append(indices)
-            matrix = cgl_interpolation_matrix(self.order, len(indices))
+            effective_order = self.order
+            if self.cap_order_to_points:
+                effective_order = min(self.order, max(len(indices) - 1, 0))
+            if effective_order == 0:
+                compact_matrix = np.ones((len(indices), 1), dtype=np.float32)
+            else:
+                compact_matrix = cgl_interpolation_matrix(
+                    effective_order, len(indices)
+                )
+            matrix = np.zeros(
+                (len(indices), node_count), dtype=np.float32
+            )
+            matrix[:, : effective_order + 1] = compact_matrix
+            active_mask = np.zeros(node_count, dtype=bool)
+            active_mask[: effective_order + 1] = True
+            effective_orders.append(effective_order)
+            active_node_masks.append(active_mask)
             matrices.append(torch.as_tensor(matrix, device=self.device))
-        return matrices, point_indices
+        return (
+            matrices,
+            point_indices,
+            effective_orders,
+            np.stack(active_node_masks, axis=0),
+        )
 
     def _decode(
         self,
@@ -249,7 +325,12 @@ class PaperPSOCLM:
             mode="bilinear",
             align_corners=False,
         )
-        matrices, point_indices = self._build_layout(stroke_ids)
+        (
+            matrices,
+            point_indices,
+            effective_orders,
+            active_node_mask_np,
+        ) = self._build_layout(stroke_ids)
         render_indices_np = self._render_indices(point_indices)
         render_indices = torch.as_tensor(
             render_indices_np, dtype=torch.long, device=self.device
@@ -315,22 +396,40 @@ class PaperPSOCLM:
         )
         field_columns = {
             field_name: torch.as_tensor(
-                layout[:, field_index, :].reshape(-1),
+                layout[:, field_index, :][active_node_mask_np],
                 dtype=torch.long,
                 device=decision.device,
             )
             for field_index, field_name in enumerate(self.FIELD_NAMES)
         }
-        all_posture_columns = torch.arange(
-            posture_decision_count,
-            dtype=torch.long,
+        all_posture_columns = torch.cat(
+            [field_columns[name] for name in self.FIELD_NAMES]
+        )
+        if xy_decision_count:
+            xy_layout = np.arange(
+                posture_decision_count,
+                posture_decision_count + xy_decision_count,
+                dtype=np.int64,
+            ).reshape(len(matrices), 2, node_count)
+            xy_mask = np.broadcast_to(
+                active_node_mask_np[:, None, :], xy_layout.shape
+            )
+            xy_columns = torch.as_tensor(
+                xy_layout[xy_mask],
+                dtype=torch.long,
+                device=decision.device,
+            )
+        else:
+            xy_columns = torch.empty(
+                0, dtype=torch.long, device=decision.device
+            )
+        active_node_mask = torch.as_tensor(
+            active_node_mask_np,
+            dtype=decision.dtype,
             device=decision.device,
         )
-        xy_columns = torch.arange(
-            posture_decision_count,
-            posture_decision_count + xy_decision_count,
-            dtype=torch.long,
-            device=decision.device,
+        active_node_pair_mask = (
+            active_node_mask[:, 1:] * active_node_mask[:, :-1]
         )
         smoothness_weights = torch.as_tensor(
             self.smoothness_weights,
@@ -380,12 +479,14 @@ class PaperPSOCLM:
                     (
                         torch.sqrt(smoothness_weights)
                         * (nodes[:, :, 1:] - nodes[:, :, :-1])
+                        * active_node_pair_mask[:, None, :]
                     ).flatten()
                 )
             if bool(torch.any(posture_prior_weights > 0)):
                 residuals.append(
                     (
                         torch.sqrt(posture_prior_weights) * (nodes - prior)
+                        * active_node_mask[:, None, :]
                     ).flatten()
                 )
             if xy_nodes is not None and self.xy_smoothness_weight > 0:
@@ -393,17 +494,48 @@ class PaperPSOCLM:
                     (
                         self.xy_smoothness_weight**0.5
                         * (xy_nodes[:, :, 1:] - xy_nodes[:, :, :-1])
+                        * active_node_pair_mask[:, None, :]
                     ).flatten()
                 )
             if xy_nodes is not None and self.xy_prior_weight > 0:
                 residuals.append(
-                    (self.xy_prior_weight**0.5 * xy_nodes).flatten()
+                    (
+                        self.xy_prior_weight**0.5
+                        * xy_nodes
+                        * active_node_mask[:, None, :]
+                    ).flatten()
                 )
+            normalized_h_points = (
+                posture[:, 0] - float(PAPER_POSTURE_MIN[0])
+            ) / float(PAPER_POSTURE_MAX[0] - PAPER_POSTURE_MIN[0])
+            residuals.extend(
+                trajectory_difference_residuals(
+                    normalized_h_points,
+                    point_indices,
+                    self.h_point_velocity_weight,
+                    self.h_point_acceleration_weight,
+                )
+            )
             if self.terminal_lift_weight > 0:
-                tail = min(self.terminal_lift_nodes, nodes.shape[-1])
                 # Wang Eq. (19) penalizes terminal z so the brush tends to
                 # lift.  In this bridge, normalized H=0 is H_min=11 mm.
-                terminal_h = nodes[:, 0, -tail:]
+                terminal_h = torch.cat(
+                    [
+                        nodes[
+                            stroke_index,
+                            0,
+                            max(
+                                effective_order
+                                + 1
+                                - self.terminal_lift_nodes,
+                                0,
+                            ) : effective_order + 1,
+                        ]
+                        for stroke_index, effective_order in enumerate(
+                            effective_orders
+                        )
+                    ]
+                )
                 residuals.append(
                     (
                         self.terminal_lift_weight**0.5 * terminal_h
@@ -742,6 +874,23 @@ class PaperPSOCLM:
                 "xy_max_offset_px": self.xy_max_offset_px,
                 "xy_smoothness_weight": self.xy_smoothness_weight,
                 "xy_prior_weight": self.xy_prior_weight,
+                "h_point_velocity_weight": self.h_point_velocity_weight,
+                "h_point_acceleration_weight": (
+                    self.h_point_acceleration_weight
+                ),
+            },
+            "cgl_layout": {
+                "requested_order": self.order,
+                "cap_order_to_points": self.cap_order_to_points,
+                "point_counts_per_stroke": [
+                    int(len(indices)) for indices in point_indices
+                ],
+                "effective_orders_per_stroke": effective_orders,
+                "active_nodes_per_stroke": [
+                    int(order + 1) for order in effective_orders
+                ],
+                "active_node_count": int(active_node_mask_np.sum()),
+                "allocated_node_count": int(active_node_mask_np.size),
             },
             "observability_gate": {
                 "mode": self.field_mode,
@@ -771,6 +920,53 @@ class PaperPSOCLM:
         normalized_posture = (posture_np - PAPER_POSTURE_MIN) / (
             PAPER_POSTURE_MAX - PAPER_POSTURE_MIN
         )
+        h_first_differences = []
+        h_second_differences = []
+        per_stroke_h_continuity = []
+        for stroke_id, indices in zip(np.unique(stroke_ids), point_indices):
+            h_values = posture_np[indices, 0]
+            first = np.diff(h_values)
+            second = np.diff(h_values, n=2)
+            h_first_differences.extend(first.tolist())
+            h_second_differences.extend(second.tolist())
+            per_stroke_h_continuity.append(
+                {
+                    "stroke_id": int(stroke_id),
+                    "point_count": int(len(indices)),
+                    "max_abs_step_mm": (
+                        float(np.max(np.abs(first))) if len(first) else 0.0
+                    ),
+                    "max_abs_second_difference_mm": (
+                        float(np.max(np.abs(second))) if len(second) else 0.0
+                    ),
+                }
+            )
+
+        def difference_summary(values: Sequence[float]) -> Dict[str, float]:
+            array = np.asarray(values, dtype=np.float32)
+            if not len(array):
+                return {
+                    "mean_abs_mm": 0.0,
+                    "rms_mm": 0.0,
+                    "max_abs_mm": 0.0,
+                }
+            return {
+                "mean_abs_mm": float(np.mean(np.abs(array))),
+                "rms_mm": float(np.sqrt(np.mean(array**2))),
+                "max_abs_mm": float(np.max(np.abs(array))),
+            }
+
+        diagnostics["trajectory_continuity"] = {
+            "quantity": "H_mm",
+            "difference_domain": "successive input trajectory samples",
+            "first_difference": difference_summary(h_first_differences),
+            "second_difference": difference_summary(h_second_differences),
+            "per_stroke": per_stroke_h_continuity,
+            "physical_time_note": (
+                "Input samples have no timestamps; these are point-index "
+                "continuity diagnostics, not calibrated mm/s or mm/s^2."
+            ),
+        }
         diagnostics["bound_fraction_within_1pct"] = {
             field_name: {
                 "lower": float(

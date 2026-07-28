@@ -184,6 +184,51 @@ try:
                 atol=1e-6,
             )
 
+        def test_effective_order_is_capped_for_sparse_strokes(self):
+            from types import SimpleNamespace
+
+            from optim.paper_psoc_lm import PaperPSOCLM
+
+            renderer = SimpleNamespace(bbsmg=nn.Linear(1, 1))
+            solver = PaperPSOCLM(
+                renderer,
+                order=8,
+                cap_order_to_points=True,
+            )
+            stroke_ids = np.asarray(
+                [0, 0, 0] + [1] * 12,
+                dtype=np.int64,
+            )
+            matrices, indices, orders, mask = solver._build_layout(
+                stroke_ids
+            )
+            self.assertEqual([len(item) for item in indices], [3, 12])
+            self.assertEqual(orders, [2, 8])
+            self.assertEqual(mask.sum(axis=1).tolist(), [3, 9])
+            self.assertEqual(tuple(matrices[0].shape), (3, 9))
+            torch.testing.assert_close(
+                matrices[0][:, :3] @ torch.ones(3),
+                torch.ones(3),
+            )
+            self.assertTrue(torch.all(matrices[0][:, 3:] == 0))
+
+        def test_point_continuity_does_not_cross_stroke_boundaries(self):
+            from optim.paper_psoc_lm import (
+                trajectory_difference_residuals,
+            )
+
+            values = torch.tensor([0.0, 0.5, 1.0, 8.0, 8.0])
+            residuals = trajectory_difference_residuals(
+                values,
+                [np.arange(3), np.arange(3, 5)],
+                first_difference_weight=4.0,
+                second_difference_weight=9.0,
+            )
+            torch.testing.assert_close(
+                torch.cat(residuals),
+                torch.tensor([1.0, 1.0, 0.0, 0.0]),
+            )
+
         def test_posture_is_bounded_between_cgl_nodes(self):
             from optim.paper_psoc_lm import PaperPSOCLM
 
@@ -362,7 +407,9 @@ try:
             )
             gate = result.diagnostics["observability_gate"]
             self.assertEqual(gate["optimized_fields"], ["H"])
-            self.assertEqual(gate["fixed_fields"], ["alpha", "beta"])
+            self.assertEqual(
+                gate["fixed_fields"], ["alpha", "beta", "x", "y"]
+            )
             np.testing.assert_allclose(result.posture[:, 1:], 0.0, atol=0.0)
             self.assertEqual(
                 result.diagnostics["field_decisions"]["alpha"]["source"],

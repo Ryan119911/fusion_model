@@ -105,6 +105,7 @@ def save_pose_csv(
     regression_angle_basis: str,
     field_decisions: dict,
     xy_source: np.ndarray | None = None,
+    prototype: str = "paper_psoc_lm_v9_bounded_xy",
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fields = [
@@ -171,7 +172,7 @@ def save_pose_csv(
                     "z_unit": "mm",
                     "angle_unit": "rad",
                     "pose_frame": "paper_model",
-                    "prototype": "paper_psoc_lm_v9_bounded_xy",
+                    "prototype": prototype,
                     "regression_angle_basis": regression_angle_basis,
                     "z_source": field_decisions["H"]["source"],
                     "z_confidence": field_decisions["H"]["confidence"],
@@ -272,6 +273,16 @@ def main(args: argparse.Namespace) -> None:
             "xy_max_offset_px must not exceed padding, so corrected points "
             "remain inside the render canvas"
         )
+    v10_continuity_enabled = (
+        args.cap_order_to_points
+        or args.h_point_velocity_weight > 0
+        or args.h_point_acceleration_weight > 0
+    )
+    output_format = (
+        "paper_psoc_lm_v10_point_continuity"
+        if v10_continuity_enabled
+        else "paper_psoc_lm_v9_bounded_xy"
+    )
     device = torch.device(
         args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu"
     )
@@ -369,6 +380,9 @@ def main(args: argparse.Namespace) -> None:
             xy_max_offset_px=args.xy_max_offset_px,
             xy_smoothness_weight=args.xy_smoothness_weight,
             xy_prior_weight=args.xy_prior_weight,
+            h_point_velocity_weight=args.h_point_velocity_weight,
+            h_point_acceleration_weight=args.h_point_acceleration_weight,
+            cap_order_to_points=args.cap_order_to_points,
         )
         candidate = solver.optimize(
             xy_canvas,
@@ -446,6 +460,7 @@ def main(args: argparse.Namespace) -> None:
                     args.image_size,
                     args.padding,
                 ),
+                prototype=output_format,
             )
     save_pose_csv(
         sample,
@@ -454,6 +469,7 @@ def main(args: argparse.Namespace) -> None:
         renderer.regression_angle_basis,
         result.diagnostics["field_decisions"],
         xy_source=optimized_xy_source,
+        prototype=output_format,
     )
     save_gray(target, output_dir / f"{stem}_target.png")
     save_gray(initial_render, output_dir / f"{stem}_initial.png")
@@ -468,7 +484,7 @@ def main(args: argparse.Namespace) -> None:
         output_dir / f"{stem}_comparison.png",
     )
     report = {
-        "format": "paper_psoc_lm_v9_bounded_xy",
+        "format": output_format,
         "simulation_only": True,
         "character": sample.character,
         "sample_id": sample.meta.get("sample_id"),
@@ -636,6 +652,21 @@ def main(args: argparse.Namespace) -> None:
             f"[BOUNDS] {field_name}: lower={fractions['lower']:.6f}, "
             f"upper={fractions['upper']:.6f}"
         )
+    continuity = result.diagnostics["trajectory_continuity"]
+    print(
+        "[H CONTINUITY] max_step_mm="
+        f"{continuity['first_difference']['max_abs_mm']:.6f}, "
+        "max_second_difference_mm="
+        f"{continuity['second_difference']['max_abs_mm']:.6f}"
+    )
+    layout = result.diagnostics["cgl_layout"]
+    print(
+        "[CGL LAYOUT] requested_order="
+        f"{layout['requested_order']}, effective_orders="
+        f"{layout['effective_orders_per_stroke']}, "
+        f"active_nodes={layout['active_node_count']}/"
+        f"{layout['allocated_node_count']}"
+    )
     print(f"[DONE] outputs: {output_dir}")
 
 
@@ -694,6 +725,32 @@ if __name__ == "__main__":
         type=float,
         default=0.05,
         help="zero-offset prior for normalized x/y CGL offsets",
+    )
+    parser.add_argument(
+        "--cap_order_to_points",
+        action="store_true",
+        help=(
+            "cap each stroke's effective CGL order at point_count-1 while "
+            "retaining the requested allocation for backward compatibility"
+        ),
+    )
+    parser.add_argument(
+        "--h_point_velocity_weight",
+        type=float,
+        default=0.0,
+        help=(
+            "first-difference penalty on decoded normalized H at successive "
+            "trajectory samples; zero preserves v9 behavior"
+        ),
+    )
+    parser.add_argument(
+        "--h_point_acceleration_weight",
+        type=float,
+        default=0.0,
+        help=(
+            "second-difference penalty on decoded normalized H at successive "
+            "trajectory samples; zero preserves v9 behavior"
+        ),
     )
     parser.add_argument("--h_smoothness_weight", type=float, default=0.02)
     parser.add_argument("--alpha_smoothness_weight", type=float, default=0.10)

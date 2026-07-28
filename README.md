@@ -1013,3 +1013,86 @@ python -u tools/invert_paper_trajectory.py \
 说明单张目标图不能为 z 提供足够独立信息，联合反演的 H 不应进入真实机器人
 数据集。只有联合 H 在留出图像上稳定改善指标、不过度贴边，并通过真实毛笔
 标定验证后，才能把它升级为可用 z 标签。
+
+### 11.12 v10：逐点 H 连续性与短笔画阶数保护
+
+`wu_paper_inverse_v9_xy6_hreg_medium` 将节点级 H 平滑权重提高后，H 贴边率由
+`40.48%` 降到 `19.05%`，但仍出现同一笔画内 `20→11→18 mm` 一类跳变。
+原因是旧正则只约束 CGL 节点，没有直接约束插值后实际导出的轨迹点；同时“武”
+字部分笔画只有 3–7 个输入点，却统一分配 order 8（9 个节点），形成不可辨识的
+冗余变量。
+
+v10 新增三个显式开关，默认值保持 v9 行为：
+
+```text
+--cap_order_to_points
+    每个笔画的有效阶数限制为 min(requested_order, point_count-1)。
+    单点笔画退化为常数；未使用的预分配节点不进入 Jacobian 或正则项。
+
+--h_point_velocity_weight
+    对同一笔画内、相邻解码轨迹点的归一化 H 一阶差分加权。
+
+--h_point_acceleration_weight
+    对同一笔画内、相邻解码轨迹点的归一化 H 二阶差分加权。
+```
+
+差分不会跨越笔画边界。由于当前 CSV 没有时间戳，这两个量只表示按输入点序号的
+连续性，不能解释为真实 `mm/s` 或 `mm/s²`。正式机器人速度和加速度约束必须在
+完成时间参数化、TCP 及纸面标定后重新定义。
+
+“武”字 v10 首轮建议保持 v9 的节点级弱先验，只单独验证短笔画保护和逐点约束：
+
+```bash
+python -u tools/invert_paper_trajectory.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --target_image assets/targets/wu_kaishu_target.png \
+  --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
+  --character 武 \
+  --output_dir outputs/wu_paper_inverse_v10_point_continuity \
+  --output_stem wu \
+  --device cuda \
+  --padding 16 \
+  --order 8 \
+  --cap_order_to_points \
+  --optimization_size 32 \
+  --max_steps 30 \
+  --damping 0.05 \
+  --jacobian_mode finite_difference \
+  --finite_difference_eps 0.01 \
+  --field_mode h_only \
+  --optimize_xy \
+  --xy_max_offset_px 6 \
+  --xy_smoothness_weight 0.10 \
+  --xy_prior_weight 0.05 \
+  --h_point_velocity_weight 2.0 \
+  --h_point_acceleration_weight 4.0 \
+  --dynamic_profile wang2020_figure4_digitized_v1 \
+  --offset_transfer_scale 1.0 \
+  --pixel_weight 5 \
+  --h_prior_weight 0.001 \
+  --h_smoothness_weight 0.02 \
+  --alpha_prior_weight 0.05 \
+  --beta_prior_weight 0.05 \
+  --alpha_smoothness_weight 0.10 \
+  --beta_smoothness_weight 0.10 \
+  --initial_h_mm 15.5 \
+  --initial_alpha_deg 0 \
+  --initial_beta_deg 0 \
+  --footprint_longitudinal_scale 0.22 \
+  --footprint_transverse_scale 0.245 \
+  --render_max_step_px 2.0
+```
+
+启用任一 v10 开关后，报告和 CSV 的 `format/prototype` 为
+`paper_psoc_lm_v10_point_continuity`。报告新增：
+
+```text
+lm.diagnostics.cgl_layout
+lm.diagnostics.trajectory_continuity.first_difference
+lm.diagnostics.trajectory_continuity.second_difference
+lm.diagnostics.trajectory_continuity.per_stroke
+```
+
+验收时同时比较 v9 `xy_only`、v9 联合反演和 v10：图像指标不能掩盖 H 跳变。
+如果 v10 仍需要频繁触及 11/20 mm，或连续性改善完全来自 x/y 贴边，则 H 继续
+标记为仿真低置信估计，不进入真实机器人监督数据。
