@@ -38,3 +38,51 @@ gamma    需要非轴对称笔锋、footprint_angle 或外部姿态观测
 
 在完成上述标定前，v11 导出的 H/alpha/beta/gamma 是仿真候选值，不是可以直接
 下发真实机器人的物理真值。
+
+## v12 非轴对称 gamma 通道
+
+v12 把 gamma 定义为笔触局部足迹相对于轨迹切向的附加轴向角。默认不开启，因此
+旧 checkpoint、旧命令和旧 CSV 的行为不变。开启时必须满足：
+
+- `footprint_longitudinal_scale != footprint_transverse_scale`；
+- `gamma_max_abs_deg` 给出对称仿真边界；
+- `field_mode=auto` 的 gamma 相对中位灵敏度达到门槛。
+
+只做审计而不更新参数：
+
+```bash
+python -u tools/invert_paper_trajectory.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --initial_pose_csv outputs/wu_paper_inverse_v10_velocity8_w0258/wu_trajectory.csv \
+  --target_image assets/targets/wu_kaishu_target.png \
+  --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
+  --character 武 \
+  --output_dir outputs/wu_paper_inverse_v12_gamma_audit \
+  --output_stem wu \
+  --device cuda \
+  --order 8 \
+  --cap_order_to_points \
+  --optimization_size 32 \
+  --max_steps 0 \
+  --field_mode auto \
+  --min_relative_median_sensitivity 0.45 \
+  --optimize_gamma \
+  --gamma_max_abs_deg 30 \
+  --gamma_smoothness_weight 0.10 \
+  --gamma_prior_weight 0.05 \
+  --footprint_longitudinal_scale 0.22 \
+  --footprint_transverse_scale 0.258
+```
+
+当前“武”字审计的相对中位灵敏度为：
+
+```text
+H       1.0000
+alpha   0.1542
+beta    0.0479
+gamma   0.1078
+```
+
+因此阈值 `0.45` 下仍只开放 H，gamma 保持初始 0。不能为了得到非零角度而降低
+门槛；应先通过真实非轴对称笔锋的 `footprint_angle_rad` 或同步外部姿态观测完成
+标定。

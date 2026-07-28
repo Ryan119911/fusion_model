@@ -1,9 +1,9 @@
 """Differentiable Dynamic-Brush + B-BSMG forward renderer.
 
-This module is intentionally separate from the legacy renderer.  Its posture
-semantics match the papers: H [mm], alpha [rad], beta [rad].  The trajectory
-heading is computed from fixed x/y, while gamma is not an input because the
-axisymmetric prototype cannot identify it.
+This module is intentionally separate from the legacy renderer. Its posture
+semantics match the papers: H [mm], alpha [rad], beta [rad]. The optional
+gamma [rad] rotates a non-axisymmetric footprint relative to the trajectory
+heading. Gamma defaults to zero for complete backward compatibility.
 """
 from __future__ import annotations
 
@@ -377,6 +377,7 @@ class PaperFusionRenderer(nn.Module):
         xy_canvas: torch.Tensor,
         posture: torch.Tensor,
         stroke_ids: torch.Tensor,
+        gamma: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if xy_canvas.ndim != 2 or xy_canvas.shape[1] != 2:
             raise ValueError("xy_canvas must have shape [N,2]")
@@ -384,6 +385,8 @@ class PaperFusionRenderer(nn.Module):
             raise ValueError("posture must have shape [N,3]")
         if stroke_ids.shape != (xy_canvas.shape[0],):
             raise ValueError("stroke_ids must have shape [N]")
+        if gamma is not None and gamma.shape != (xy_canvas.shape[0],):
+            raise ValueError("gamma must have shape [N]")
         if len(xy_canvas) == 0:
             return torch.zeros(
                 (1, 1, self.image_size, self.image_size),
@@ -394,12 +397,20 @@ class PaperFusionRenderer(nn.Module):
         render_xy, render_posture, render_stroke_ids = (
             self.densify_for_rendering(xy_canvas, posture, stroke_ids)
         )
+        if gamma is None:
+            render_gamma = torch.zeros(
+                len(render_xy), dtype=posture.dtype, device=posture.device
+            )
+        else:
+            render_gamma = self.densify_scalar_for_rendering(
+                xy_canvas, gamma, stroke_ids
+            )
         states = self.compute_dynamic_states(
             render_xy, render_posture, render_stroke_ids
         )
         virtual_posture = states["virtual_posture"]
         contact_xy = states["contact_xy"]
-        heading = states["heading"]
+        heading = states["heading"] + render_gamma
         raw_params = torch.cat([virtual_posture, contact_xy], dim=-1)
         normalized = normalize_bbsmg_inputs(
             raw_params, self.input_normalization
@@ -424,6 +435,50 @@ class PaperFusionRenderer(nn.Module):
             )
             transmittance = transmittance * chunk_transmittance
         return (1.0 - transmittance).clamp(0.0, 1.0)
+
+    def densify_scalar_for_rendering(
+        self,
+        xy_canvas: torch.Tensor,
+        values: torch.Tensor,
+        stroke_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        """Interpolate a per-point scalar with the exact render sweep plan."""
+        if values.shape != (len(xy_canvas),):
+            raise ValueError("values must have shape [N]")
+        parts = []
+        max_step = float(self.dynamic.render_max_step_px)
+        for stroke_id in torch.unique_consecutive(stroke_ids):
+            indices = torch.nonzero(
+                stroke_ids == stroke_id, as_tuple=False
+            ).flatten()
+            points = xy_canvas[indices]
+            stroke_values = values[indices]
+            if len(indices) == 0:
+                continue
+            parts.append(stroke_values[:1])
+            for point_index in range(len(indices) - 1):
+                distance = float(
+                    torch.linalg.vector_norm(
+                        points[point_index + 1] - points[point_index]
+                    )
+                    .detach()
+                    .cpu()
+                )
+                steps = max(int(np.ceil(distance / max_step)), 1)
+                t = torch.arange(
+                    1,
+                    steps + 1,
+                    dtype=xy_canvas.dtype,
+                    device=xy_canvas.device,
+                ) / float(steps)
+                parts.append(
+                    torch.lerp(
+                        stroke_values[point_index][None],
+                        stroke_values[point_index + 1][None],
+                        t,
+                    )
+                )
+        return torch.cat(parts, dim=0)
 
     def densify_for_rendering(
         self,

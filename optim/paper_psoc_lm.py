@@ -81,6 +81,7 @@ class PaperLMResult:
     message: str
     history: Dict[str, List[float]] = field(default_factory=dict)
     diagnostics: Dict[str, Any] = field(default_factory=dict)
+    gamma: np.ndarray | None = None
 
 
 class PaperPSOCLM:
@@ -109,6 +110,10 @@ class PaperPSOCLM:
         h_point_velocity_weight: float = 0.0,
         h_point_acceleration_weight: float = 0.0,
         cap_order_to_points: bool = False,
+        optimize_gamma: bool = False,
+        gamma_max_abs_rad: float = np.pi,
+        gamma_smoothness_weight: float = 0.10,
+        gamma_prior_weight: float = 0.05,
     ):
         if order < 1:
             raise ValueError("order must be >= 1")
@@ -167,6 +172,26 @@ class PaperPSOCLM:
             h_point_acceleration_weight
         )
         self.cap_order_to_points = bool(cap_order_to_points)
+        if gamma_max_abs_rad <= 0 or gamma_max_abs_rad > np.pi:
+            raise ValueError("gamma_max_abs_rad must be in (0, pi]")
+        if gamma_smoothness_weight < 0 or gamma_prior_weight < 0:
+            raise ValueError(
+                "gamma regularization weights must be non-negative"
+            )
+        self.optimize_gamma = bool(optimize_gamma)
+        self.gamma_max_abs_rad = float(gamma_max_abs_rad)
+        self.gamma_smoothness_weight = float(gamma_smoothness_weight)
+        self.gamma_prior_weight = float(gamma_prior_weight)
+        if self.optimize_gamma and np.isclose(
+            renderer.dynamic.longitudinal_scale,
+            renderer.dynamic.transverse_scale,
+            rtol=0.0,
+            atol=1e-8,
+        ):
+            raise ValueError(
+                "Gamma requires a non-axisymmetric footprint: longitudinal "
+                "and transverse scales must differ"
+            )
         if self.field_mode == "xy_only" and not self.optimize_xy:
             raise ValueError("field_mode='xy_only' requires optimize_xy=True")
 
@@ -289,6 +314,34 @@ class PaperPSOCLM:
             normalized_nodes,
         )
 
+    def _decode_gamma(
+        self,
+        decision: torch.Tensor,
+        matrices: Sequence[torch.Tensor],
+        point_indices: Sequence[np.ndarray],
+        point_count: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Decode bounded axial angles without CGL overshoot."""
+        node_count = self.order + 1
+        node_logits = decision.view(len(matrices), node_count)
+        normalized_nodes = torch.tanh(node_logits)
+        normalized_points = torch.empty(
+            point_count, dtype=decision.dtype, device=decision.device
+        )
+        for stroke_index, (matrix, indices) in enumerate(
+            zip(matrices, point_indices)
+        ):
+            point_logits = (
+                matrix.to(dtype=decision.dtype) @ node_logits[stroke_index]
+            )
+            normalized_points[
+                torch.as_tensor(indices, device=decision.device)
+            ] = torch.tanh(point_logits)
+        return (
+            normalized_points * self.gamma_max_abs_rad,
+            normalized_nodes,
+        )
+
     def _render_indices(self, point_indices: Sequence[np.ndarray]) -> np.ndarray:
         selected: List[int] = []
         for indices in point_indices:
@@ -306,10 +359,12 @@ class PaperPSOCLM:
         initial_h_mm: float = 15.5,
         initial_alpha_rad: float = 0.0,
         initial_beta_rad: float = 0.0,
+        initial_gamma_rad: float = 0.0,
         damping: float = 0.05,
         max_steps: int = 15,
         pixel_weight: float = 3.0,
         initial_posture: np.ndarray | None = None,
+        initial_gamma: np.ndarray | None = None,
     ) -> PaperLMResult:
         xy = torch.as_tensor(
             xy_canvas, dtype=torch.float32, device=self.device
@@ -358,6 +413,24 @@ class PaperPSOCLM:
                 "Initial posture is outside H=11-20 mm, alpha=0-10 deg, "
                 "beta=0-5 deg"
             )
+        if initial_gamma is None:
+            initial_gamma_points = np.full(
+                len(xy), float(initial_gamma_rad), dtype=np.float32
+            )
+        else:
+            initial_gamma_points = np.asarray(
+                initial_gamma, dtype=np.float32
+            )
+            if initial_gamma_points.shape != (len(xy),):
+                raise ValueError(
+                    "initial_gamma must have shape [trajectory_points]"
+                )
+        if not np.all(np.isfinite(initial_gamma_points)) or np.any(
+            np.abs(initial_gamma_points) > self.gamma_max_abs_rad + 1e-6
+        ):
+            raise ValueError(
+                "Initial gamma exceeds configured symmetric angular bounds"
+            )
         normalized_initial_points = (
             initial_points - PAPER_POSTURE_MIN
         ) / (
@@ -393,24 +466,59 @@ class PaperPSOCLM:
             device=self.device,
         )
         posture_decision_count = int(posture_decision.numel())
+        gamma_decision_count = (
+            len(matrices) * (self.order + 1)
+            if self.optimize_gamma
+            else 0
+        )
         xy_decision_count = (
             len(matrices) * 2 * (self.order + 1)
             if self.optimize_xy
             else 0
         )
-        if xy_decision_count:
-            decision = torch.cat(
-                [
-                    posture_decision,
-                    torch.zeros(
-                        xy_decision_count,
-                        dtype=posture_decision.dtype,
-                        device=posture_decision.device,
-                    ),
-                ]
+        decision_parts = [posture_decision]
+        initial_gamma_node_logits = np.zeros(
+            (len(matrices), self.order + 1), dtype=np.float32
+        )
+        if gamma_decision_count:
+            normalized_gamma = np.clip(
+                initial_gamma_points / self.gamma_max_abs_rad,
+                -0.98,
+                0.98,
             )
-        else:
-            decision = posture_decision
+            gamma_point_logits = np.arctanh(normalized_gamma)
+            for stroke_index, (
+                matrix,
+                indices,
+                effective_order,
+            ) in enumerate(zip(matrices, point_indices, effective_orders)):
+                compact_matrix = (
+                    matrix[:, : effective_order + 1].detach().cpu().numpy()
+                )
+                fitted, _, _, _ = np.linalg.lstsq(
+                    compact_matrix,
+                    gamma_point_logits[indices],
+                    rcond=None,
+                )
+                initial_gamma_node_logits[
+                    stroke_index, : effective_order + 1
+                ] = fitted
+            decision_parts.append(
+                torch.as_tensor(
+                    initial_gamma_node_logits.reshape(-1),
+                    dtype=posture_decision.dtype,
+                    device=posture_decision.device,
+                )
+            )
+        if xy_decision_count:
+            decision_parts.append(
+                torch.zeros(
+                    xy_decision_count,
+                    dtype=posture_decision.dtype,
+                    device=posture_decision.device,
+                )
+            )
+        decision = torch.cat(decision_parts)
         initial_decision = decision.detach().clone()
         prior = torch.as_tensor(
             1.0
@@ -423,6 +531,11 @@ class PaperPSOCLM:
         )
         initial_points_tensor = torch.as_tensor(
             initial_points, dtype=decision.dtype, device=decision.device
+        )
+        initial_gamma_tensor = torch.as_tensor(
+            initial_gamma_points,
+            dtype=decision.dtype,
+            device=decision.device,
         )
         node_count = self.order + 1
         layout = np.arange(posture_decision_count, dtype=np.int64).reshape(
@@ -439,10 +552,25 @@ class PaperPSOCLM:
         all_posture_columns = torch.cat(
             [field_columns[name] for name in self.FIELD_NAMES]
         )
+        gamma_start = posture_decision_count
+        gamma_stop = gamma_start + gamma_decision_count
+        if gamma_decision_count:
+            gamma_layout = np.arange(
+                gamma_start, gamma_stop, dtype=np.int64
+            ).reshape(len(matrices), node_count)
+            gamma_columns = torch.as_tensor(
+                gamma_layout[active_node_mask_np],
+                dtype=torch.long,
+                device=decision.device,
+            )
+        else:
+            gamma_columns = torch.empty(
+                0, dtype=torch.long, device=decision.device
+            )
         if xy_decision_count:
             xy_layout = np.arange(
-                posture_decision_count,
-                posture_decision_count + xy_decision_count,
+                gamma_stop,
+                gamma_stop + xy_decision_count,
                 dtype=np.int64,
             ).reshape(len(matrices), 2, node_count)
             xy_mask = np.broadcast_to(
@@ -475,6 +603,14 @@ class PaperPSOCLM:
             dtype=decision.dtype,
             device=decision.device,
         ).view(1, 3, 1)
+        gamma_prior = torch.tanh(
+            torch.as_tensor(
+                initial_gamma_node_logits,
+                dtype=decision.dtype,
+                device=decision.device,
+            )
+        )
+        gated_active_fields: set[str] | None = None
 
         def residual_fn(vector: torch.Tensor) -> torch.Tensor:
             posture, nodes = self._decode(
@@ -483,20 +619,45 @@ class PaperPSOCLM:
                 point_indices,
                 len(xy),
             )
+            if gated_active_fields is not None:
+                for field_index, field_name in enumerate(self.FIELD_NAMES):
+                    if field_name not in gated_active_fields:
+                        posture[:, field_index] = initial_points_tensor[
+                            :, field_index
+                        ]
             rendered_xy = xy
             xy_nodes = None
+            gamma_points = initial_gamma_tensor
+            gamma_nodes = None
+            if self.optimize_gamma:
+                gamma_points, gamma_nodes = self._decode_gamma(
+                    vector[gamma_start:gamma_stop],
+                    matrices,
+                    point_indices,
+                    len(xy),
+                )
+                if (
+                    gated_active_fields is not None
+                    and "gamma" not in gated_active_fields
+                ):
+                    gamma_points = initial_gamma_tensor
             if self.optimize_xy:
                 xy_offsets, xy_nodes = self._decode_xy_offsets(
-                    vector[posture_decision_count:],
+                    vector[gamma_stop:],
                     matrices,
                     point_indices,
                     len(xy),
                 )
                 rendered_xy = xy + xy_offsets
-            rendered = self.renderer(
+            render_args = (
                 rendered_xy[render_indices],
                 posture[render_indices],
                 ids[render_indices],
+            )
+            rendered = (
+                self.renderer(*render_args, gamma_points[render_indices])
+                if self.optimize_gamma
+                else self.renderer(*render_args)
             )
             rendered_small = F.interpolate(
                 rendered,
@@ -521,6 +682,22 @@ class PaperPSOCLM:
                     (
                         torch.sqrt(posture_prior_weights) * (nodes - prior)
                         * active_node_mask[:, None, :]
+                    ).flatten()
+                )
+            if gamma_nodes is not None and self.gamma_smoothness_weight > 0:
+                residuals.append(
+                    (
+                        self.gamma_smoothness_weight**0.5
+                        * (gamma_nodes[:, 1:] - gamma_nodes[:, :-1])
+                        * active_node_pair_mask
+                    ).flatten()
+                )
+            if gamma_nodes is not None and self.gamma_prior_weight > 0:
+                residuals.append(
+                    (
+                        self.gamma_prior_weight**0.5
+                        * (gamma_nodes - gamma_prior)
+                        * active_node_mask
                     ).flatten()
                 )
             if xy_nodes is not None and self.xy_smoothness_weight > 0:
@@ -597,15 +774,31 @@ class PaperPSOCLM:
                             :, field_index
                         ]
                 rendered_xy = xy
+                gamma_points = initial_gamma_tensor
+                if self.optimize_gamma:
+                    gamma_points, _ = self._decode_gamma(
+                        vector[gamma_start:gamma_stop],
+                        matrices,
+                        point_indices,
+                        len(xy),
+                    )
+                    if "gamma" not in active_fields:
+                        gamma_points = initial_gamma_tensor
                 if self.optimize_xy:
                     xy_offsets, _ = self._decode_xy_offsets(
-                        vector[posture_decision_count:],
+                        vector[gamma_stop:],
                         matrices,
                         point_indices,
                         len(xy),
                     )
                     rendered_xy = xy + xy_offsets
-                rendered = self.renderer(rendered_xy, posture, ids)
+                rendered = (
+                    self.renderer(
+                        rendered_xy, posture, ids, gamma_points
+                    )
+                    if self.optimize_gamma
+                    else self.renderer(rendered_xy, posture, ids)
+                )
                 return float(F.mse_loss(rendered, target).item())
 
         def finite_difference_jacobian(
@@ -656,23 +849,37 @@ class PaperPSOCLM:
                 jacobian[:pixel_rows], dim=0
             )
             normalized_nodes = torch.sigmoid(vector)
-            sigmoid_slope = (
+            parameter_slope = (
                 normalized_nodes * (1.0 - normalized_nodes)
             ).clamp_min(1e-4)
+            if gamma_decision_count:
+                gamma_normalized = torch.tanh(
+                    vector[gamma_start:gamma_stop]
+                )
+                parameter_slope[gamma_start:gamma_stop] = (
+                    1.0 - gamma_normalized**2
+                ).clamp_min(1e-4)
             sensitivity: Dict[str, Dict[str, float]] = {}
             medians = {}
             means = {}
             values_by_field = {}
-            for field_name in self.FIELD_NAMES:
+            audit_field_names = list(self.FIELD_NAMES) + (
+                ["gamma"] if self.optimize_gamma else []
+            )
+            audit_columns = {
+                **field_columns,
+                "gamma": gamma_columns,
+            }
+            for field_name in audit_field_names:
                 member_mask = torch.isin(
-                    columns_evaluated, field_columns[field_name]
+                    columns_evaluated, audit_columns[field_name]
                 )
                 if not bool(torch.any(member_mask)):
                     continue
                 selected_columns = columns_evaluated[member_mask]
                 values = (
                     column_norms[member_mask]
-                    / sigmoid_slope[selected_columns]
+                    / parameter_slope[selected_columns]
                 )
                 values_by_field[field_name] = values
                 medians[field_name] = values.median()
@@ -702,7 +909,8 @@ class PaperPSOCLM:
                 return torch.empty(
                     0, dtype=torch.long, device=decision.device
                 )
-            return torch.cat([field_columns[name] for name in field_names])
+            sources = {**field_columns, "gamma": gamma_columns}
+            return torch.cat([sources[name] for name in field_names])
 
         def fix_inactive_fields(
             vector: torch.Tensor, active_field_names: Sequence[str]
@@ -715,6 +923,8 @@ class PaperPSOCLM:
                 fixed[field_columns[field_name]] = initial_decision[
                     field_columns[field_name]
                 ]
+            if self.optimize_gamma and "gamma" not in active:
+                fixed[gamma_columns] = initial_decision[gamma_columns]
             return fixed
 
         audit_sensitivity: Dict[str, Dict[str, float]] = {}
@@ -722,22 +932,32 @@ class PaperPSOCLM:
             with torch.no_grad():
                 audit_residual = residual_fn(decision)
             print(
-                "[OBSERVABILITY] auditing H/alpha/beta before gated LM",
+                "[OBSERVABILITY] auditing H/alpha/beta"
+                + ("/gamma" if self.optimize_gamma else "")
+                + " before gated LM",
                 flush=True,
             )
+            all_audit_columns = all_posture_columns
+            if self.optimize_gamma:
+                all_audit_columns = torch.cat(
+                    [all_audit_columns, gamma_columns]
+                )
             if self.jacobian_mode == "finite_difference":
                 audit_jacobian = finite_difference_jacobian(
-                    decision, audit_residual, all_posture_columns
+                    decision, audit_residual, all_audit_columns
                 )
             else:
                 audit_jacobian = autograd_jacobian(
-                    decision, all_posture_columns
+                    decision, all_audit_columns
                 )
             audit_sensitivity = summarize_sensitivity(
-                audit_jacobian, all_posture_columns, decision
+                audit_jacobian, all_audit_columns, decision
             )
             active_fields = ["H"]
-            for field_name in ("alpha", "beta"):
+            candidates = ["alpha", "beta"] + (
+                ["gamma"] if self.optimize_gamma else []
+            )
+            for field_name in candidates:
                 relative = audit_sensitivity[field_name][
                     "relative_median"
                 ]
@@ -754,8 +974,11 @@ class PaperPSOCLM:
         elif self.field_mode == "xy_only":
             active_fields = []
         else:
-            active_fields = list(self.FIELD_NAMES)
+            active_fields = list(self.FIELD_NAMES) + (
+                ["gamma"] if self.optimize_gamma else []
+            )
         decision = fix_inactive_fields(decision, active_fields)
+        gated_active_fields = set(active_fields)
         active_columns = columns_for_fields(active_fields)
         if self.optimize_xy:
             active_columns = torch.cat([active_columns, xy_columns])
@@ -875,15 +1098,31 @@ class PaperPSOCLM:
                     ]
             optimized_xy = xy
             xy_offsets = torch.zeros_like(xy)
+            optimized_gamma = initial_gamma_tensor
+            if self.optimize_gamma:
+                optimized_gamma, _ = self._decode_gamma(
+                    best_decision[gamma_start:gamma_stop],
+                    matrices,
+                    point_indices,
+                    len(xy),
+                )
+                if "gamma" not in active_fields:
+                    optimized_gamma = initial_gamma_tensor
             if self.optimize_xy:
                 xy_offsets, _ = self._decode_xy_offsets(
-                    best_decision[posture_decision_count:],
+                    best_decision[gamma_stop:],
                     matrices,
                     point_indices,
                     len(xy),
                 )
                 optimized_xy = xy + xy_offsets
-            rendered = self.renderer(optimized_xy, posture, ids)[0, 0]
+            rendered = (
+                self.renderer(
+                    optimized_xy, posture, ids, optimized_gamma
+                )
+                if self.optimize_gamma
+                else self.renderer(optimized_xy, posture, ids)
+            )[0, 0]
         diagnostics: Dict[str, Any] = {
             "checkpoint_selection": {
                 "metric": "full_resolution_plain_mse",
@@ -915,6 +1154,10 @@ class PaperPSOCLM:
                 "h_point_acceleration_weight": (
                     self.h_point_acceleration_weight
                 ),
+                "gamma_enabled": self.optimize_gamma,
+                "gamma_max_abs_rad": self.gamma_max_abs_rad,
+                "gamma_smoothness_weight": self.gamma_smoothness_weight,
+                "gamma_prior_weight": self.gamma_prior_weight,
             },
             "cgl_layout": {
                 "requested_order": self.order,
@@ -942,6 +1185,11 @@ class PaperPSOCLM:
                     name for name in self.FIELD_NAMES
                     if name not in active_fields
                 ]
+                + (
+                    ["gamma"]
+                    if self.optimize_gamma and "gamma" not in active_fields
+                    else []
+                )
                 + ([] if self.optimize_xy else ["x", "y"]),
                 "initial_image_jacobian_sensitivity": audit_sensitivity,
             },
@@ -1080,14 +1328,53 @@ class PaperPSOCLM:
                     None if optimized else boundary_total > 0.0
                 ),
             }
+        gamma_optimized = "gamma" in active_fields
+        gamma_boundary = float(
+            np.mean(
+                np.abs(
+                    optimized_gamma.detach().cpu().numpy()
+                    / self.gamma_max_abs_rad
+                )
+                >= 0.99
+            )
+        )
+        gamma_relative = source_sensitivity.get("gamma", {}).get(
+            "relative_median"
+        )
         decisions["gamma"] = {
-            "optimized": False,
-            "source": "fixed_model_default",
-            "confidence": "low",
-            "reason": "unobservable_in_axisymmetric_brush_model",
-            "initial_relative_median_sensitivity": None,
-            "boundary_fraction": 0.0,
-            "fixed_value_on_physical_boundary": False,
+            "optimized": gamma_optimized,
+            "source": (
+                "lm_optimized"
+                if gamma_optimized
+                else (
+                    "initial_pose_csv"
+                    if initial_posture_source == "initial_pose_csv"
+                    else "initial_default"
+                )
+            ),
+            "confidence": (
+                "medium_simulation"
+                if gamma_optimized and gamma_boundary <= 0.25
+                else "low"
+            ),
+            "reason": (
+                "optimized_above_observability_threshold"
+                if gamma_optimized and gamma_boundary <= 0.25
+                else (
+                    "optimized_but_boundary_saturated"
+                    if gamma_optimized
+                    else (
+                        "fixed_below_observability_threshold"
+                        if self.optimize_gamma
+                        else "gamma_channel_disabled"
+                    )
+                )
+            ),
+            "initial_relative_median_sensitivity": gamma_relative,
+            "boundary_fraction": gamma_boundary if gamma_optimized else None,
+            "fixed_value_on_physical_boundary": (
+                None if gamma_optimized else gamma_boundary > 0.0
+            ),
         }
         for field_name, field_index in (("x", 0), ("y", 1)):
             component_boundary = float(
@@ -1128,4 +1415,5 @@ class PaperPSOCLM:
             message=message,
             history=history,
             diagnostics=diagnostics,
+            gamma=optimized_gamma.cpu().numpy(),
         )

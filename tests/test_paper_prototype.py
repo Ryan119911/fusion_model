@@ -361,6 +361,99 @@ try:
                 "initial_pose_csv",
             )
 
+        def test_gamma_requires_nonaxisymmetric_footprint(self):
+            from types import SimpleNamespace
+
+            from optim.paper_psoc_lm import PaperPSOCLM
+
+            class Renderer(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.bbsmg = nn.Linear(1, 1, bias=False)
+                    self.dynamic = SimpleNamespace(
+                        longitudinal_scale=0.25,
+                        transverse_scale=0.25,
+                    )
+
+            with self.assertRaisesRegex(
+                ValueError, "non-axisymmetric footprint"
+            ):
+                PaperPSOCLM(
+                    Renderer(),
+                    optimization_size=8,
+                    optimize_gamma=True,
+                )
+
+        def test_observable_gamma_is_gated_and_optimized(self):
+            from types import SimpleNamespace
+
+            from optim.paper_psoc_lm import PaperPSOCLM
+
+            class GammaRenderer(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.bbsmg = nn.Linear(1, 1, bias=False)
+                    self.dynamic = SimpleNamespace(
+                        longitudinal_scale=0.30,
+                        transverse_scale=0.15,
+                    )
+                    yy, xx = torch.meshgrid(
+                        torch.arange(8, dtype=torch.float32),
+                        torch.arange(8, dtype=torch.float32),
+                        indexing="ij",
+                    )
+                    self.register_buffer("xx", xx - 3.5)
+                    self.register_buffer("yy", yy - 3.5)
+
+                def forward(self, xy, posture, stroke_ids, gamma=None):
+                    angle = gamma.mean()
+                    cosine = torch.cos(angle)
+                    sine = torch.sin(angle)
+                    along = cosine * self.xx + sine * self.yy
+                    across = -sine * self.xx + cosine * self.yy
+                    image = torch.exp(
+                        -(along**2 / 8.0 + across**2 / 0.8)
+                    )
+                    return image.view(1, 1, 8, 8)
+
+            renderer = GammaRenderer()
+            target_gamma = torch.full((2,), 0.55)
+            with torch.no_grad():
+                target = renderer(
+                    torch.zeros((2, 2)),
+                    torch.tensor([[15.5, 0.0, 0.0]] * 2),
+                    torch.zeros(2, dtype=torch.long),
+                    target_gamma,
+                )[0, 0].numpy()
+            solver = PaperPSOCLM(
+                renderer,
+                order=1,
+                optimization_size=8,
+                field_mode="auto",
+                min_relative_median_sensitivity=0.20,
+                optimize_gamma=True,
+                gamma_max_abs_rad=1.0,
+                gamma_prior_weight=0.001,
+                gamma_smoothness_weight=0.001,
+            )
+            result = solver.optimize(
+                xy_canvas=np.zeros((2, 2), dtype=np.float32),
+                stroke_ids=np.zeros(2, dtype=np.int64),
+                target_image=target,
+                max_steps=6,
+                pixel_weight=0.0,
+            )
+            self.assertIn(
+                "gamma",
+                result.diagnostics["observability_gate"][
+                    "optimized_fields"
+                ],
+            )
+            self.assertGreater(float(result.gamma.mean()), 0.25)
+            self.assertTrue(
+                result.diagnostics["field_decisions"]["gamma"]["optimized"]
+            )
+
         def test_posture_is_bounded_between_cgl_nodes(self):
             from optim.paper_psoc_lm import PaperPSOCLM
 
@@ -456,6 +549,15 @@ try:
             self.assertTrue(torch.all(dense_ids == 0))
             dense_posture.sum().backward()
             self.assertTrue(torch.isfinite(posture.grad).all())
+
+            gamma = torch.tensor([0.0, 0.5], requires_grad=True)
+            dense_gamma = PaperFusionRenderer.densify_scalar_for_rendering(
+                fake_renderer, xy, gamma, stroke_ids
+            )
+            self.assertEqual(len(dense_gamma), len(dense_xy))
+            torch.testing.assert_close(dense_gamma[[0, -1]], gamma)
+            dense_gamma.sum().backward()
+            self.assertTrue(torch.isfinite(gamma.grad).all())
 
         def test_anisotropic_footprint_scale_keeps_legacy_fallback(self):
             from models.paper_fusion_renderer import PaperDynamicConfig

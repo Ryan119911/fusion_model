@@ -101,8 +101,8 @@ def source_xy_to_canvas(
 
 def load_initial_pose_csv(
     path: str, sample
-) -> tuple[np.ndarray, np.ndarray]:
-    """Load a staged x/y/H/alpha/beta pose keyed by stroke and point."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Load staged x/y/H/alpha/beta/gamma keyed by stroke and point."""
     expected_keys = {
         (point.stroke_id, point.point_id) for point in sample.all_points()
     }
@@ -129,10 +129,8 @@ def load_initial_pose_csv(
             if row.get("angle_unit") not in (None, "", "rad"):
                 raise ValueError("Initial pose CSV angle_unit must be rad")
             gamma = float(row.get("gamma", 0.0) or 0.0)
-            if abs(gamma) > 1e-9:
-                raise ValueError(
-                    "Current axisymmetric prototype requires gamma=0 rad"
-                )
+            if not np.isfinite(gamma) or abs(gamma) > np.pi + 1e-6:
+                raise ValueError("Initial pose CSV gamma must be in [-pi,pi]")
             rows_by_key[key] = {
                 "xy": [float(row["x"]), float(row["y"])],
                 "posture": [
@@ -140,6 +138,7 @@ def load_initial_pose_csv(
                     float(row["alpha"]),
                     float(row["beta"]),
                 ],
+                "gamma": gamma,
             }
     actual_keys = set(rows_by_key)
     missing = sorted(expected_keys - actual_keys)
@@ -151,10 +150,12 @@ def load_initial_pose_csv(
         )
     posture = []
     xy_source = []
+    gamma = []
     for point in sample.all_points():
         value = rows_by_key[(point.stroke_id, point.point_id)]
         posture.append(value["posture"])
         xy_source.append(value["xy"])
+        gamma.append(value["gamma"])
     posture_array = np.asarray(posture, dtype=np.float32)
     tolerance = 1e-6
     if np.any(posture_array < PAPER_POSTURE_MIN - tolerance) or np.any(
@@ -167,6 +168,7 @@ def load_initial_pose_csv(
     return (
         np.clip(posture_array, PAPER_POSTURE_MIN, PAPER_POSTURE_MAX),
         np.asarray(xy_source, dtype=np.float32),
+        np.asarray(gamma, dtype=np.float32),
     )
 
 
@@ -177,6 +179,7 @@ def save_pose_csv(
     regression_angle_basis: str,
     field_decisions: dict,
     xy_source: np.ndarray | None = None,
+    gamma: np.ndarray | None = None,
     prototype: str = "paper_psoc_lm_v9_bounded_xy",
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -219,10 +222,16 @@ def save_pose_csv(
         )
     if len(xy_source) != len(points):
         raise ValueError("x/y count does not match trajectory point count")
+    if gamma is None:
+        gamma = np.zeros(len(points), dtype=np.float32)
+    if len(gamma) != len(points):
+        raise ValueError("gamma count does not match trajectory point count")
     with output_path.open("w", encoding="utf-8-sig", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fields)
         writer.writeheader()
-        for point, pose, optimized_xy in zip(points, posture, xy_source):
+        for point, pose, optimized_xy, gamma_value in zip(
+            points, posture, xy_source, gamma
+        ):
             writer.writerow(
                 {
                     "character": sample.character,
@@ -239,7 +248,7 @@ def save_pose_csv(
                     "z": repr(float(pose[0])),
                     "alpha": repr(float(pose[1])),
                     "beta": repr(float(pose[2])),
-                    "gamma": "0",
+                    "gamma": repr(float(gamma_value)),
                     "state": int(point.state),
                     "z_unit": "mm",
                     "angle_unit": "rad",
@@ -351,12 +360,16 @@ def main(args: argparse.Namespace) -> None:
         or args.h_point_acceleration_weight > 0
     )
     output_format = (
-        "paper_psoc_lm_v11_staged_pose"
-        if args.initial_pose_csv
+        "paper_psoc_lm_v12_nonaxisymmetric_gamma"
+        if args.optimize_gamma
         else (
-            "paper_psoc_lm_v10_point_continuity"
-            if v10_continuity_enabled
-            else "paper_psoc_lm_v9_bounded_xy"
+            "paper_psoc_lm_v11_staged_pose"
+            if args.initial_pose_csv
+            else (
+                "paper_psoc_lm_v10_point_continuity"
+                if v10_continuity_enabled
+                else "paper_psoc_lm_v9_bounded_xy"
+            )
         )
     )
     device = torch.device(
@@ -373,7 +386,7 @@ def main(args: argparse.Namespace) -> None:
         sample, args.image_size, args.padding
     )
     if args.initial_pose_csv:
-        initial_pose, initial_xy_source = load_initial_pose_csv(
+        initial_pose, initial_xy_source, initial_gamma = load_initial_pose_csv(
             args.initial_pose_csv, sample
         )
         xy_canvas = source_xy_to_canvas(
@@ -397,6 +410,11 @@ def main(args: argparse.Namespace) -> None:
                 dtype=np.float32,
             ),
             (len(xy_canvas), 1),
+        )
+        initial_gamma = np.full(
+            len(xy_canvas),
+            np.deg2rad(args.initial_gamma_deg),
+            dtype=np.float32,
         )
     target = load_target_image(args.target_image, image_size=args.image_size)
     dynamic = PaperDynamicConfig(
@@ -424,6 +442,7 @@ def main(args: argparse.Namespace) -> None:
             torch.as_tensor(xy_canvas, device=device),
             torch.as_tensor(initial_pose, device=device),
             torch.as_tensor(stroke_ids, device=device),
+            torch.as_tensor(initial_gamma, device=device),
         )[0, 0].cpu().numpy()
 
     orders = (
@@ -474,6 +493,10 @@ def main(args: argparse.Namespace) -> None:
             h_point_velocity_weight=args.h_point_velocity_weight,
             h_point_acceleration_weight=args.h_point_acceleration_weight,
             cap_order_to_points=args.cap_order_to_points,
+            optimize_gamma=args.optimize_gamma,
+            gamma_max_abs_rad=float(np.deg2rad(args.gamma_max_abs_deg)),
+            gamma_smoothness_weight=args.gamma_smoothness_weight,
+            gamma_prior_weight=args.gamma_prior_weight,
         )
         candidate = solver.optimize(
             xy_canvas,
@@ -482,10 +505,12 @@ def main(args: argparse.Namespace) -> None:
             initial_h_mm=args.initial_h_mm,
             initial_alpha_rad=float(np.deg2rad(args.initial_alpha_deg)),
             initial_beta_rad=float(np.deg2rad(args.initial_beta_deg)),
+            initial_gamma_rad=float(np.deg2rad(args.initial_gamma_deg)),
             damping=args.damping,
             max_steps=args.max_steps,
             pixel_weight=args.pixel_weight,
             initial_posture=initial_pose,
+            initial_gamma=initial_gamma,
         )
         candidate_metrics = binary_metrics(candidate.rendered_image, target)
         candidates.append(
@@ -553,6 +578,7 @@ def main(args: argparse.Namespace) -> None:
                     args.padding,
                 ),
                 prototype=output_format,
+                gamma=candidate.gamma,
             )
     save_pose_csv(
         sample,
@@ -562,6 +588,7 @@ def main(args: argparse.Namespace) -> None:
         result.diagnostics["field_decisions"],
         xy_source=optimized_xy_source,
         prototype=output_format,
+        gamma=result.gamma,
     )
     save_gray(target, output_dir / f"{stem}_target.png")
     save_gray(initial_render, output_dir / f"{stem}_initial.png")
@@ -601,6 +628,10 @@ def main(args: argparse.Namespace) -> None:
                     float(initial_pose[:, 2].min()),
                     float(initial_pose[:, 2].max()),
                 ],
+                "gamma_rad": [
+                    float(initial_gamma.min()),
+                    float(initial_gamma.max()),
+                ],
             },
         },
         "fixed_xy": not args.optimize_xy,
@@ -622,9 +653,12 @@ def main(args: argparse.Namespace) -> None:
         "fixed_fields": result.diagnostics["observability_gate"][
             "fixed_fields"
         ]
-        + ["gamma"],
+        + ([] if args.optimize_gamma else ["gamma"]),
         "field_decisions": result.diagnostics["field_decisions"],
-        "gamma_rad": 0.0,
+        "gamma_rad": {
+            "min": float(result.gamma.min()),
+            "max": float(result.gamma.max()),
+        },
         "pose_frame": "paper_model",
         "regression_angle_basis": renderer.regression_angle_basis,
         "dynamic_profile": args.dynamic_profile,
@@ -651,12 +685,23 @@ def main(args: argparse.Namespace) -> None:
             ),
             "patch_floor": args.patch_floor,
             "render_max_step_px": args.render_max_step_px,
+            "nonaxisymmetric_gamma_enabled": args.optimize_gamma,
         },
         "limits": {
             "H_mm": [11.0, 20.0],
             "alpha_rad": [0.0, float(np.deg2rad(10.0))],
             "beta_rad": [0.0, float(np.deg2rad(5.0))],
-            "gamma_rad": [0.0, 0.0],
+            "gamma_rad": (
+                [
+                    -float(np.deg2rad(args.gamma_max_abs_deg)),
+                    float(np.deg2rad(args.gamma_max_abs_deg)),
+                ]
+                if args.optimize_gamma
+                else [
+                    float(initial_gamma.min()),
+                    float(initial_gamma.max()),
+                ]
+            ),
         },
         "psoc_order": selected_order,
         "psoc_order_search": {
@@ -692,7 +737,10 @@ def main(args: argparse.Namespace) -> None:
                 float(result.posture[:, 2].min()),
                 float(result.posture[:, 2].max()),
             ],
-            "gamma_rad": [0.0, 0.0],
+            "gamma_rad": [
+                float(result.gamma.min()),
+                float(result.gamma.max()),
+            ],
         },
         "lm": {
             "success": result.success,
@@ -752,7 +800,7 @@ def main(args: argparse.Namespace) -> None:
     sensitivity = result.diagnostics["observability_gate"].get(
         "initial_image_jacobian_sensitivity", {}
     ) or result.diagnostics.get("image_jacobian_sensitivity", {})
-    for field_name in ("H", "alpha", "beta"):
+    for field_name in ("H", "alpha", "beta", "gamma"):
         if field_name in sensitivity:
             print(
                 f"[SENSITIVITY] {field_name}: "
@@ -792,7 +840,7 @@ if __name__ == "__main__":
         "--initial_pose_csv",
         default=None,
         help=(
-            "staged x/y/z/alpha/beta CSV keyed by stroke_id and point_id; "
+            "staged x/y/z/alpha/beta/gamma CSV keyed by stroke_id and point_id; "
             "uses mm/rad and must match the selected base trajectory exactly"
         ),
     )
@@ -878,9 +926,11 @@ if __name__ == "__main__":
     parser.add_argument("--h_smoothness_weight", type=float, default=0.02)
     parser.add_argument("--alpha_smoothness_weight", type=float, default=0.10)
     parser.add_argument("--beta_smoothness_weight", type=float, default=0.10)
+    parser.add_argument("--gamma_smoothness_weight", type=float, default=0.10)
     parser.add_argument("--h_prior_weight", type=float, default=0.001)
     parser.add_argument("--alpha_prior_weight", type=float, default=0.05)
     parser.add_argument("--beta_prior_weight", type=float, default=0.05)
+    parser.add_argument("--gamma_prior_weight", type=float, default=0.05)
     parser.add_argument(
         "--terminal_lift_weight",
         type=float,
@@ -902,7 +952,7 @@ if __name__ == "__main__":
         choices=["auto", "all", "h_only", "xy_only"],
         default="auto",
         help=(
-            "auto audits all posture fields once and optimizes only observable "
+            "auto audits enabled posture fields once and optimizes observable "
             "ones; all reproduces unconstrained A/B runs; h_only skips audit; "
             "xy_only fixes H/alpha/beta for a planar-geometry ablation"
         ),
@@ -915,6 +965,22 @@ if __name__ == "__main__":
     parser.add_argument("--initial_h_mm", type=float, default=15.5)
     parser.add_argument("--initial_alpha_deg", type=float, default=0.0)
     parser.add_argument("--initial_beta_deg", type=float, default=0.0)
+    parser.add_argument("--initial_gamma_deg", type=float, default=0.0)
+    parser.add_argument(
+        "--optimize_gamma",
+        action="store_true",
+        help=(
+            "enable bounded axial-angle CGL variables; requires unequal "
+            "longitudinal/transverse footprint scales and remains subject "
+            "to the observability gate in field_mode=auto"
+        ),
+    )
+    parser.add_argument(
+        "--gamma_max_abs_deg",
+        type=float,
+        default=180.0,
+        help="symmetric axial-angle bound used only with --optimize_gamma",
+    )
     parser.add_argument("--width_inertia", type=float, default=0.02)
     parser.add_argument("--drag_inertia", type=float, default=0.02)
     parser.add_argument(
