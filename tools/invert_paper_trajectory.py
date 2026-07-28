@@ -26,6 +26,7 @@ from models.paper_calibration import (
     WANG2020_PROFILE,
     paper_calibration_metadata,
 )
+from models.paper_bbsm import PAPER_POSTURE_MAX, PAPER_POSTURE_MIN
 from models.paper_fusion_renderer import PaperDynamicConfig, PaperFusionRenderer
 from optim.paper_psoc_lm import PaperPSOCLM
 from optim.trajectory_optimizer import load_target_image
@@ -95,6 +96,77 @@ def source_xy_to_canvas(
     return np.asarray(
         [transform.map_point(float(x), float(y)) for x, y in xy_source],
         dtype=np.float32,
+    )
+
+
+def load_initial_pose_csv(
+    path: str, sample
+) -> tuple[np.ndarray, np.ndarray]:
+    """Load a staged x/y/H/alpha/beta pose keyed by stroke and point."""
+    expected_keys = {
+        (point.stroke_id, point.point_id) for point in sample.all_points()
+    }
+    rows_by_key = {}
+    with open(path, "r", encoding="utf-8-sig", newline="") as file:
+        for row in csv.DictReader(file):
+            key = (int(row["stroke_id"]), int(row["point_id"]))
+            if key in rows_by_key:
+                raise ValueError(
+                    f"Initial pose CSV contains duplicate stroke/point {key}"
+                )
+            row_character = row.get("character")
+            if (
+                row_character
+                and sample.character
+                and row_character != sample.character
+            ):
+                raise ValueError(
+                    "Initial pose CSV character does not match trajectory "
+                    f"character: {row_character!r} != {sample.character!r}"
+                )
+            if row.get("z_unit") not in (None, "", "mm"):
+                raise ValueError("Initial pose CSV z_unit must be mm")
+            if row.get("angle_unit") not in (None, "", "rad"):
+                raise ValueError("Initial pose CSV angle_unit must be rad")
+            gamma = float(row.get("gamma", 0.0) or 0.0)
+            if abs(gamma) > 1e-9:
+                raise ValueError(
+                    "Current axisymmetric prototype requires gamma=0 rad"
+                )
+            rows_by_key[key] = {
+                "xy": [float(row["x"]), float(row["y"])],
+                "posture": [
+                    float(row["z"]),
+                    float(row["alpha"]),
+                    float(row["beta"]),
+                ],
+            }
+    actual_keys = set(rows_by_key)
+    missing = sorted(expected_keys - actual_keys)
+    extra = sorted(actual_keys - expected_keys)
+    if missing or extra:
+        raise ValueError(
+            "Initial pose CSV stroke/point keys do not match the selected "
+            f"trajectory; missing={missing[:5]}, extra={extra[:5]}"
+        )
+    posture = []
+    xy_source = []
+    for point in sample.all_points():
+        value = rows_by_key[(point.stroke_id, point.point_id)]
+        posture.append(value["posture"])
+        xy_source.append(value["xy"])
+    posture_array = np.asarray(posture, dtype=np.float32)
+    tolerance = 1e-6
+    if np.any(posture_array < PAPER_POSTURE_MIN - tolerance) or np.any(
+        posture_array > PAPER_POSTURE_MAX + tolerance
+    ):
+        raise ValueError(
+            "Initial pose CSV exceeds H=11-20 mm, alpha=0-10 deg, "
+            "beta=0-5 deg"
+        )
+    return (
+        np.clip(posture_array, PAPER_POSTURE_MIN, PAPER_POSTURE_MAX),
+        np.asarray(xy_source, dtype=np.float32),
     )
 
 
@@ -279,9 +351,13 @@ def main(args: argparse.Namespace) -> None:
         or args.h_point_acceleration_weight > 0
     )
     output_format = (
-        "paper_psoc_lm_v10_point_continuity"
-        if v10_continuity_enabled
-        else "paper_psoc_lm_v9_bounded_xy"
+        "paper_psoc_lm_v11_staged_pose"
+        if args.initial_pose_csv
+        else (
+            "paper_psoc_lm_v10_point_continuity"
+            if v10_continuity_enabled
+            else "paper_psoc_lm_v9_bounded_xy"
+        )
     )
     device = torch.device(
         args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu"
@@ -296,6 +372,32 @@ def main(args: argparse.Namespace) -> None:
     xy_canvas, stroke_ids = flatten_canvas_trajectory(
         sample, args.image_size, args.padding
     )
+    if args.initial_pose_csv:
+        initial_pose, initial_xy_source = load_initial_pose_csv(
+            args.initial_pose_csv, sample
+        )
+        xy_canvas = source_xy_to_canvas(
+            sample,
+            initial_xy_source,
+            args.image_size,
+            args.padding,
+        )
+    else:
+        initial_xy_source = np.asarray(
+            [[point.x, point.y] for point in sample.all_points()],
+            dtype=np.float32,
+        )
+        initial_pose = np.tile(
+            np.asarray(
+                [
+                    args.initial_h_mm,
+                    np.deg2rad(args.initial_alpha_deg),
+                    np.deg2rad(args.initial_beta_deg),
+                ],
+                dtype=np.float32,
+            ),
+            (len(xy_canvas), 1),
+        )
     target = load_target_image(args.target_image, image_size=args.image_size)
     dynamic = PaperDynamicConfig(
         width_inertia=args.width_inertia,
@@ -316,17 +418,6 @@ def main(args: argparse.Namespace) -> None:
         image_size=args.image_size,
         dynamic=dynamic,
         point_batch_size=args.point_batch_size,
-    )
-    initial_pose = np.tile(
-        np.asarray(
-            [
-                args.initial_h_mm,
-                np.deg2rad(args.initial_alpha_deg),
-                np.deg2rad(args.initial_beta_deg),
-            ],
-            dtype=np.float32,
-        ),
-        (len(xy_canvas), 1),
     )
     with torch.no_grad():
         initial_render = renderer(
@@ -394,6 +485,7 @@ def main(args: argparse.Namespace) -> None:
             damping=args.damping,
             max_steps=args.max_steps,
             pixel_weight=args.pixel_weight,
+            initial_posture=initial_pose,
         )
         candidate_metrics = binary_metrics(candidate.rendered_image, target)
         candidates.append(
@@ -488,6 +580,29 @@ def main(args: argparse.Namespace) -> None:
         "simulation_only": True,
         "character": sample.character,
         "sample_id": sample.meta.get("sample_id"),
+        "initialization": {
+            "pose_source": (
+                "initial_pose_csv"
+                if args.initial_pose_csv
+                else "command_line_defaults"
+            ),
+            "initial_pose_csv": args.initial_pose_csv,
+            "initial_xy_source_frame": "input_trajectory_coordinates",
+            "initial_posture_ranges": {
+                "H_mm": [
+                    float(initial_pose[:, 0].min()),
+                    float(initial_pose[:, 0].max()),
+                ],
+                "alpha_rad": [
+                    float(initial_pose[:, 1].min()),
+                    float(initial_pose[:, 1].max()),
+                ],
+                "beta_rad": [
+                    float(initial_pose[:, 2].min()),
+                    float(initial_pose[:, 2].max()),
+                ],
+            },
+        },
         "fixed_xy": not args.optimize_xy,
         "xy_max_abs_change": float(np.abs(xy_delta_canvas).max()),
         "xy_optimization": {
@@ -673,6 +788,14 @@ def main(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--trajectory_csv", required=True)
+    parser.add_argument(
+        "--initial_pose_csv",
+        default=None,
+        help=(
+            "staged x/y/z/alpha/beta CSV keyed by stroke_id and point_id; "
+            "uses mm/rad and must match the selected base trajectory exactly"
+        ),
+    )
     parser.add_argument("--target_image", required=True)
     parser.add_argument("--bbsmg_ckpt", required=True)
     parser.add_argument("--character", default=None)

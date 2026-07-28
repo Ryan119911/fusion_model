@@ -1096,3 +1096,60 @@ lm.diagnostics.trajectory_continuity.per_stroke
 验收时同时比较 v9 `xy_only`、v9 联合反演和 v10：图像指标不能掩盖 H 跳变。
 如果 v10 仍需要频繁触及 11/20 mm，或连续性改善完全来自 x/y 贴边，则 H 继续
 标记为仿真低置信估计，不进入真实机器人监督数据。
+
+### 11.13 v11：从已有六维 CSV 分阶段继续反演
+
+v10 以前每次运行都会从原始 x/y 和统一的 H/alpha/beta 默认值重新开始，不能在
+已获得的连续 x/y/H 上单独审计角度。v11 新增：
+
+```text
+--initial_pose_csv PATH
+```
+
+该 CSV 必须按 `stroke_id + point_id` 与 `--trajectory_csv` 选中的样本严格匹配，
+x/y 使用输入轨迹坐标系，z 使用 mm，alpha/beta/gamma 使用 rad。当前轴对称原型
+仍要求 gamma 为 0。工具会用原始轨迹的同一个画布变换映射 CSV x/y，并把逐点
+H/alpha/beta 最小二乘拟合回每笔有效 CGL 节点，然后从该状态继续 LM。
+
+使用当前最佳 v10 轨迹，仅执行一次 H/alpha/beta 可观测性审计而不更新参数：
+
+```bash
+python -u tools/invert_paper_trajectory.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --initial_pose_csv \
+    outputs/wu_paper_inverse_v10_velocity8_w0258/wu_trajectory.csv \
+  --target_image assets/targets/wu_kaishu_target.png \
+  --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
+  --character 武 \
+  --output_dir outputs/wu_paper_inverse_v11_pose_audit \
+  --output_stem wu \
+  --device cuda \
+  --padding 16 \
+  --order 8 \
+  --cap_order_to_points \
+  --optimization_size 32 \
+  --max_steps 0 \
+  --jacobian_mode finite_difference \
+  --finite_difference_eps 0.01 \
+  --field_mode auto \
+  --min_relative_median_sensitivity 0.45 \
+  --dynamic_profile wang2020_figure4_digitized_v1 \
+  --offset_transfer_scale 1.0 \
+  --pixel_weight 5 \
+  --h_point_velocity_weight 8.0 \
+  --h_point_acceleration_weight 4.0 \
+  --h_prior_weight 0.001 \
+  --h_smoothness_weight 0.02 \
+  --alpha_prior_weight 0.05 \
+  --beta_prior_weight 0.05 \
+  --alpha_smoothness_weight 0.10 \
+  --beta_smoothness_weight 0.10 \
+  --footprint_longitudinal_scale 0.22 \
+  --footprint_transverse_scale 0.258 \
+  --render_max_step_px 2.0
+```
+
+报告格式为 `paper_psoc_lm_v11_staged_pose`，并在 `initialization` 和
+`lm.diagnostics.regularization.initial_posture_source` 中记录初始化来源。只有
+alpha/beta 的 `relative_median` 达到门槛，且后续留出目标验证不出现边界饱和时，
+才能进入角度优化；gamma 在加入非轴对称笔刷观测或真实姿态标定前继续固定为 0。

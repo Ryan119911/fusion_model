@@ -309,6 +309,7 @@ class PaperPSOCLM:
         damping: float = 0.05,
         max_steps: int = 15,
         pixel_weight: float = 3.0,
+        initial_posture: np.ndarray | None = None,
     ) -> PaperLMResult:
         xy = torch.as_tensor(
             xy_canvas, dtype=torch.float32, device=self.device
@@ -336,30 +337,58 @@ class PaperPSOCLM:
             render_indices_np, dtype=torch.long, device=self.device
         )
 
-        initial = np.asarray(
+        default_initial = np.asarray(
             [initial_h_mm, initial_alpha_rad, initial_beta_rad],
             dtype=np.float32,
         )
-        if np.any(initial < PAPER_POSTURE_MIN) or np.any(
-            initial > PAPER_POSTURE_MAX
+        if initial_posture is None:
+            initial_points = np.tile(default_initial, (len(xy), 1))
+            initial_posture_source = "command_line_defaults"
+        else:
+            initial_points = np.asarray(initial_posture, dtype=np.float32)
+            if initial_points.shape != (len(xy), 3):
+                raise ValueError(
+                    "initial_posture must have shape [trajectory_points, 3]"
+                )
+            initial_posture_source = "initial_pose_csv"
+        if np.any(initial_points < PAPER_POSTURE_MIN) or np.any(
+            initial_points > PAPER_POSTURE_MAX
         ):
             raise ValueError(
                 "Initial posture is outside H=11-20 mm, alpha=0-10 deg, "
                 "beta=0-5 deg"
             )
-        normalized_initial = (initial - PAPER_POSTURE_MIN) / (
+        normalized_initial_points = (
+            initial_points - PAPER_POSTURE_MIN
+        ) / (
             PAPER_POSTURE_MAX - PAPER_POSTURE_MIN
         )
         # A value exactly on a bound has zero useful logistic derivative.
-        normalized_for_audit = np.clip(normalized_initial, 0.02, 0.98)
-        logits = np.log(
+        normalized_for_audit = np.clip(
+            normalized_initial_points, 0.02, 0.98
+        )
+        point_logits = np.log(
             normalized_for_audit / (1.0 - normalized_for_audit)
         )
+        initial_node_logits = np.zeros(
+            (len(matrices), 3, self.order + 1), dtype=np.float32
+        )
+        for stroke_index, (matrix, indices, effective_order) in enumerate(
+            zip(matrices, point_indices, effective_orders)
+        ):
+            compact_matrix = (
+                matrix[:, : effective_order + 1].detach().cpu().numpy()
+            )
+            fitted, _, _, _ = np.linalg.lstsq(
+                compact_matrix,
+                point_logits[indices],
+                rcond=None,
+            )
+            initial_node_logits[
+                stroke_index, :, : effective_order + 1
+            ] = fitted.T
         posture_decision = torch.as_tensor(
-            np.tile(
-                logits[None, :, None],
-                (len(matrices), 1, self.order + 1),
-            ).reshape(-1),
+            initial_node_logits.reshape(-1),
             dtype=torch.float32,
             device=self.device,
         )
@@ -382,13 +411,18 @@ class PaperPSOCLM:
             )
         else:
             decision = posture_decision
+        initial_decision = decision.detach().clone()
         prior = torch.as_tensor(
-            np.tile(
-                normalized_initial[None, :, None],
-                (len(matrices), 1, self.order + 1),
+            1.0
+            / (
+                1.0
+                + np.exp(-np.clip(initial_node_logits, -30.0, 30.0))
             ),
             dtype=decision.dtype,
             device=decision.device,
+        )
+        initial_points_tensor = torch.as_tensor(
+            initial_points, dtype=decision.dtype, device=decision.device
         )
         node_count = self.order + 1
         layout = np.arange(posture_decision_count, dtype=np.int64).reshape(
@@ -559,7 +593,9 @@ class PaperPSOCLM:
                 )
                 for field_index, field_name in enumerate(self.FIELD_NAMES):
                     if field_name not in active_fields:
-                        posture[:, field_index] = float(initial[field_index])
+                        posture[:, field_index] = initial_points_tensor[
+                            :, field_index
+                        ]
                 rendered_xy = xy
                 if self.optimize_xy:
                     xy_offsets, _ = self._decode_xy_offsets(
@@ -673,14 +709,12 @@ class PaperPSOCLM:
         ) -> torch.Tensor:
             fixed = vector.clone()
             active = set(active_field_names)
-            bounded = np.clip(normalized_initial, 1e-7, 1.0 - 1e-7)
-            fixed_logits = np.log(bounded / (1.0 - bounded))
-            for field_index, field_name in enumerate(self.FIELD_NAMES):
+            for field_name in self.FIELD_NAMES:
                 if field_name in active:
                     continue
-                fixed[field_columns[field_name]] = float(
-                    fixed_logits[field_index]
-                )
+                fixed[field_columns[field_name]] = initial_decision[
+                    field_columns[field_name]
+                ]
             return fixed
 
         audit_sensitivity: Dict[str, Dict[str, float]] = {}
@@ -836,7 +870,9 @@ class PaperPSOCLM:
             )
             for field_index, field_name in enumerate(self.FIELD_NAMES):
                 if field_name not in active_fields:
-                    posture[:, field_index] = float(initial[field_index])
+                    posture[:, field_index] = initial_points_tensor[
+                        :, field_index
+                    ]
             optimized_xy = xy
             xy_offsets = torch.zeros_like(xy)
             if self.optimize_xy:
@@ -860,6 +896,7 @@ class PaperPSOCLM:
                 "returned_best_checkpoint": best_step != completed_steps,
             },
             "regularization": {
+                "initial_posture_source": initial_posture_source,
                 "field_order": list(self.FIELD_NAMES),
                 "smoothness_weights": self.smoothness_weights.tolist(),
                 "posture_prior_weights": self.posture_prior_weights.tolist(),
@@ -1026,7 +1063,15 @@ class PaperPSOCLM:
                 reason = "optimized_above_observability_threshold"
             decisions[field_name] = {
                 "optimized": optimized,
-                "source": "lm_optimized" if optimized else "initial_default",
+                "source": (
+                    "lm_optimized"
+                    if optimized
+                    else (
+                        "initial_pose_csv"
+                        if initial_posture_source == "initial_pose_csv"
+                        else "initial_default"
+                    )
+                ),
                 "confidence": confidence,
                 "reason": reason,
                 "initial_relative_median_sensitivity": relative,

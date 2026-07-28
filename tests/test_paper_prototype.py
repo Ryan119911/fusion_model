@@ -1,4 +1,7 @@
+import csv
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 
@@ -22,6 +25,90 @@ from models.paper_calibration import (
     wang2020_curves_numpy,
 )
 from tools.build_paper_bbsmg_dataset import build_dataset
+from tools.validate_robot_brush_calibration import validate_calibration_csv
+
+
+class RobotBrushCalibrationTests(unittest.TestCase):
+    fields = [
+        "trial_id",
+        "point_id",
+        "timestamp_s",
+        "x_mm",
+        "y_mm",
+        "z_mm",
+        "alpha_rad",
+        "beta_rad",
+        "gamma_rad",
+        "contact",
+        "footprint_width_mm",
+    ]
+
+    def _write(self, rows):
+        temporary = tempfile.TemporaryDirectory()
+        path = Path(temporary.name) / "calibration.csv"
+        with path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=self.fields)
+            writer.writeheader()
+            writer.writerows(rows)
+        return temporary, path
+
+    def test_calibration_report_separates_excitation_from_observability(self):
+        poses = [
+            (11.0, 0.0, 0.0, 0.0),
+            (20.0, 0.174533, 0.087266, 0.349066),
+        ]
+        rows = [
+            {
+                "trial_id": "a",
+                "point_id": index,
+                "timestamp_s": index * 0.01,
+                "x_mm": index,
+                "y_mm": 0,
+                "z_mm": z,
+                "alpha_rad": alpha,
+                "beta_rad": beta,
+                "gamma_rad": gamma,
+                "contact": 1,
+                "footprint_width_mm": 1.0 + index,
+            }
+            for index, (z, alpha, beta, gamma) in enumerate(poses)
+        ]
+        temporary, path = self._write(rows)
+        self.addCleanup(temporary.cleanup)
+        report = validate_calibration_csv(path)
+        self.assertTrue(report["excitation_audit"]["z_mm"]["excitation_ready"])
+        self.assertTrue(
+            report["excitation_audit"]["alpha_rad"]["excitation_ready"]
+        )
+        self.assertTrue(
+            report["excitation_audit"]["beta_rad"]["excitation_ready"]
+        )
+        self.assertTrue(
+            report["excitation_audit"]["gamma_rad"]["excitation_ready"]
+        )
+        self.assertEqual(report["observability_status"]["state"], "not_tested")
+
+    def test_calibration_rejects_non_monotonic_trial_time(self):
+        rows = [
+            {
+                "trial_id": "a",
+                "point_id": index,
+                "timestamp_s": 0.0,
+                "x_mm": index,
+                "y_mm": 0,
+                "z_mm": 15.5,
+                "alpha_rad": 0,
+                "beta_rad": 0,
+                "gamma_rad": 0,
+                "contact": 1,
+                "footprint_width_mm": 1,
+            }
+            for index in range(2)
+        ]
+        temporary, path = self._write(rows)
+        self.addCleanup(temporary.cleanup)
+        with self.assertRaisesRegex(ValueError, "strictly increase"):
+            validate_calibration_csv(path)
 
 
 class CanvasTransformTests(unittest.TestCase):
@@ -227,6 +314,51 @@ try:
             torch.testing.assert_close(
                 torch.cat(residuals),
                 torch.tensor([1.0, 1.0, 0.0, 0.0]),
+            )
+
+        def test_staged_posture_is_preserved_when_pose_fields_are_fixed(self):
+            from optim.paper_psoc_lm import PaperPSOCLM
+
+            class ConstantRenderer(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.bbsmg = nn.Linear(1, 1, bias=False)
+
+                def forward(self, xy, posture, stroke_ids):
+                    return posture[:, 0].mean().expand(1, 1, 8, 8) / 20.0
+
+            initial = np.asarray(
+                [
+                    [12.0, 0.01, 0.005],
+                    [15.0, 0.02, 0.010],
+                    [18.0, 0.03, 0.015],
+                ],
+                dtype=np.float32,
+            )
+            solver = PaperPSOCLM(
+                ConstantRenderer(),
+                order=2,
+                optimization_size=8,
+                field_mode="xy_only",
+                optimize_xy=True,
+                cap_order_to_points=True,
+            )
+            result = solver.optimize(
+                xy_canvas=np.asarray(
+                    [[1.0, 1.0], [3.0, 3.0], [5.0, 5.0]],
+                    dtype=np.float32,
+                ),
+                stroke_ids=np.zeros(3, dtype=np.int64),
+                target_image=np.zeros((8, 8), dtype=np.float32),
+                max_steps=0,
+                initial_posture=initial,
+            )
+            np.testing.assert_allclose(result.posture, initial, atol=1e-5)
+            self.assertEqual(
+                result.diagnostics["regularization"][
+                    "initial_posture_source"
+                ],
+                "initial_pose_csv",
             )
 
         def test_posture_is_bounded_between_cgl_nodes(self):
