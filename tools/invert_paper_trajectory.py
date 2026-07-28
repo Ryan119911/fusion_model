@@ -370,7 +370,7 @@ def main(args: argparse.Namespace) -> None:
         or args.h_point_acceleration_weight > 0
     )
     output_format = (
-        "paper_psoc_lm_v14_node_snr_gate"
+        "paper_psoc_lm_v15_joint_identifiability"
         if args.observability_gate_mode == "node_snr"
         else (
             "paper_psoc_lm_v12_nonaxisymmetric_gamma"
@@ -767,6 +767,9 @@ def main(args: argparse.Namespace) -> None:
             "optimization_size": args.optimization_size,
             "recommended_minimum_optimization_size_for_pose_recovery": 64,
             "external_observation_required_for_robot_ground_truth": True,
+            "joint_jacobian_audit": result.diagnostics[
+                "observability_gate"
+            ].get("joint_identifiability", {}),
             "note": (
                 "Image similarity and per-node SNR do not prove unique "
                 "H/alpha/beta/gamma recovery because fields can compensate "
@@ -849,6 +852,24 @@ def main(args: argparse.Namespace) -> None:
             f"{selection['evaluated_nodes']}, "
             f"median_snr={selection['median_snr']:.6f}, "
             f"max_snr={selection['max_snr']:.6f}"
+        )
+    joint_audit = result.diagnostics["observability_gate"].get(
+        "joint_identifiability", {}
+    )
+    if joint_audit:
+        condition = joint_audit.get("condition_number")
+        correlation = joint_audit.get(
+            "max_field_canonical_correlation"
+        )
+        print(
+            "[JOINT AUDIT] effective_rank="
+            f"{joint_audit['effective_rank']}/"
+            f"{joint_audit['selected_columns']}, "
+            "condition="
+            f"{condition if condition is not None else 'n/a'}, "
+            "max_field_correlation="
+            f"{correlation if correlation is not None else 'n/a'}, "
+            f"identifiable={joint_audit['jointly_identifiable']}"
         )
     for field_name, fractions in result.diagnostics[
         "bound_fraction_within_1pct"

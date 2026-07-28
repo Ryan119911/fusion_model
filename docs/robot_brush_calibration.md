@@ -251,3 +251,53 @@ gamma   0.034907 -> 0.080182 rad
 - 接触力或压深；
 - 笔触宽度、长度和主轴角；
 - 同一轨迹在独立姿态激励下的多幅标定图像。
+
+## v15 联合 Jacobian 审计与姿态降阶
+
+v14 的节点 SNR 是必要条件，不是充分条件。v15 对所有入选姿态节点按完整物理
+范围缩放 Jacobian，并继续计算有效秩、条件数和字段子空间的典型相关系数。默认
+保守阈值为：
+
+```text
+effective_rank / selected_columns >= 0.90
+condition_number <= 100
+max_field_canonical_correlation <= 0.95
+```
+
+任一条件失败时，报告仍允许保留仿真消融结果，但所有参与联合优化的姿态字段都
+写为：
+
+```text
+confidence = low
+reason = optimized_but_jointly_nonidentifiable
+jointly_identifiable = false
+```
+
+同一个“武”字合成闭环的阶数对照：
+
+```text
+order 3:
+  selected/effective rank = 126/116
+  condition number = 83792.86
+  max correlation = 0.994769 (alpha/beta)
+
+order 1:
+  selected/effective rank = 64/64
+  condition number = 32.77
+  max correlation = 0.959469 (alpha/gamma)
+```
+
+order 1 的五步 LM 将图像 MSE 从 `0.001328` 降到 `0.000063`，但姿态真值恢复
+并不一致：
+
+```text
+姿态 RMSE（扰动初值 -> order 1 LM）
+H       0.400000 -> 0.079988 mm
+alpha   0.008727 -> 0.024171 rad
+beta    0.004363 -> 0.005666 rad
+gamma   0.034907 -> 0.023450 rad
+```
+
+因此降阶显著改善了数值条件和 H/gamma，但 alpha 仍被 gamma 补偿。当前推荐用
+`--order 1 --optimization_size 64` 做仿真研究，同时保留联合审计；不能因为
+Dice/IoU 很高就把 alpha/beta/gamma 当作真实标签。

@@ -69,6 +69,129 @@ def trajectory_difference_residuals(
     return residuals
 
 
+def summarize_joint_identifiability(
+    pixel_jacobian: torch.Tensor,
+    field_column_positions: Dict[str, torch.Tensor],
+    relative_rank_threshold: float = 1e-3,
+    min_rank_fraction: float = 0.90,
+    max_condition_number: float = 1e2,
+    max_canonical_correlation: float = 0.95,
+) -> Dict[str, Any]:
+    """Diagnose whether selected pose columns are jointly distinguishable.
+
+    Individual column SNR only establishes that a perturbation changes the
+    image. This audit additionally detects rank loss and overlapping field
+    subspaces, which allow H/alpha/beta/gamma to compensate for one another.
+    Columns are expected to be scaled to one normalized physical range.
+    """
+    if pixel_jacobian.ndim != 2:
+        raise ValueError("pixel_jacobian must have shape [pixels, columns]")
+    column_count = int(pixel_jacobian.shape[1])
+    if column_count == 0:
+        return {
+            "selected_columns": 0,
+            "effective_rank": 0,
+            "rank_fraction": 0.0,
+            "condition_number": None,
+            "max_field_canonical_correlation": None,
+            "max_correlated_field_pair": None,
+            "jointly_identifiable": False,
+            "reason": "no_selected_pose_columns",
+        }
+    if not 0.0 < relative_rank_threshold < 1.0:
+        raise ValueError("relative_rank_threshold must be in (0,1)")
+    if not 0.0 < min_rank_fraction <= 1.0:
+        raise ValueError("min_rank_fraction must be in (0,1]")
+    if max_condition_number <= 1.0:
+        raise ValueError("max_condition_number must be > 1")
+    if not 0.0 <= max_canonical_correlation <= 1.0:
+        raise ValueError("max_canonical_correlation must be in [0,1]")
+
+    norms = torch.linalg.vector_norm(pixel_jacobian, dim=0).clamp_min(1e-12)
+    directions = pixel_jacobian / norms
+    singular = torch.linalg.svdvals(directions)
+    largest = float(singular[0])
+    rank_threshold = largest * relative_rank_threshold
+    effective_rank = int((singular >= rank_threshold).sum())
+    rank_fraction = effective_rank / max(column_count, 1)
+    smallest = float(singular[-1])
+    condition_number = (
+        largest / smallest
+        if smallest > torch.finfo(singular.dtype).eps
+        else float("inf")
+    )
+
+    field_bases: Dict[str, torch.Tensor] = {}
+    field_ranks: Dict[str, int] = {}
+    for field_name, positions in field_column_positions.items():
+        positions = positions.to(
+            dtype=torch.long, device=pixel_jacobian.device
+        )
+        if int(positions.numel()) == 0:
+            field_ranks[field_name] = 0
+            continue
+        field_matrix = directions[:, positions]
+        basis, field_singular, _ = torch.linalg.svd(
+            field_matrix, full_matrices=False
+        )
+        field_cutoff = float(field_singular[0]) * relative_rank_threshold
+        field_rank = int((field_singular >= field_cutoff).sum())
+        field_ranks[field_name] = field_rank
+        field_bases[field_name] = basis[:, :field_rank]
+
+    pairwise: Dict[str, float] = {}
+    names = list(field_bases)
+    for left_index, left_name in enumerate(names):
+        for right_name in names[left_index + 1 :]:
+            overlap = (
+                field_bases[left_name].T @ field_bases[right_name]
+            )
+            correlation = float(torch.linalg.svdvals(overlap)[0])
+            pairwise[f"{left_name}__{right_name}"] = min(correlation, 1.0)
+    max_pair = max(pairwise, key=pairwise.get) if pairwise else None
+    max_correlation = pairwise[max_pair] if max_pair is not None else None
+
+    rank_ok = rank_fraction >= min_rank_fraction
+    condition_ok = condition_number <= max_condition_number
+    correlation_ok = (
+        max_correlation is None
+        or max_correlation <= max_canonical_correlation
+    )
+    jointly_identifiable = rank_ok and condition_ok and correlation_ok
+    failed = []
+    if not rank_ok:
+        failed.append("rank_fraction_below_threshold")
+    if not condition_ok:
+        failed.append("condition_number_above_threshold")
+    if not correlation_ok:
+        failed.append("field_subspaces_overlap")
+    return {
+        "selected_columns": column_count,
+        "effective_rank": effective_rank,
+        "rank_fraction": rank_fraction,
+        "condition_number": condition_number,
+        "stable_rank": float((singular**2).sum() / singular[0] ** 2),
+        "relative_rank_threshold": relative_rank_threshold,
+        "min_rank_fraction": min_rank_fraction,
+        "max_condition_number": max_condition_number,
+        "max_allowed_field_canonical_correlation": (
+            max_canonical_correlation
+        ),
+        "field_effective_ranks": field_ranks,
+        "pairwise_field_canonical_correlation": pairwise,
+        "max_field_canonical_correlation": max_correlation,
+        "max_correlated_field_pair": max_pair,
+        "largest_singular_value": largest,
+        "smallest_singular_value": smallest,
+        "jointly_identifiable": jointly_identifiable,
+        "reason": (
+            "passed_joint_jacobian_audit"
+            if jointly_identifiable
+            else ",".join(failed)
+        ),
+    }
+
+
 @dataclass
 class PaperLMResult:
     xy_canvas: np.ndarray
@@ -888,16 +1011,13 @@ class PaperPSOCLM:
             ).detach()
             return full[:, columns_to_evaluate]
 
-        def normalized_column_sensitivity(
+        def full_range_normalized_pixel_jacobian(
             jacobian: torch.Tensor,
             columns_evaluated: torch.Tensor,
             vector: torch.Tensor,
-        ) -> tuple[torch.Tensor, torch.Tensor]:
-            """Return per-column L2 and pixel RMS for a normalized full range."""
+        ) -> torch.Tensor:
+            """Scale pixel Jacobian columns to one full normalized range."""
             pixel_rows = self.optimization_size * self.optimization_size
-            column_norms = torch.linalg.vector_norm(
-                jacobian[:pixel_rows], dim=0
-            )
             normalized_nodes = torch.sigmoid(vector)
             parameter_slope = (
                 normalized_nodes * (1.0 - normalized_nodes)
@@ -910,7 +1030,27 @@ class PaperPSOCLM:
                 parameter_slope[gamma_start:gamma_stop] = (
                     1.0 - gamma_normalized**2
                 ).clamp_min(1e-4)
-            l2 = column_norms / parameter_slope[columns_evaluated]
+            return (
+                jacobian[:pixel_rows]
+                / parameter_slope[columns_evaluated][None, :]
+            )
+
+        def normalized_column_sensitivity(
+            jacobian: torch.Tensor,
+            columns_evaluated: torch.Tensor,
+            vector: torch.Tensor,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            """Return per-column L2 and pixel RMS for a normalized full range."""
+            pixel_rows = self.optimization_size * self.optimization_size
+            normalized_pixel_jacobian = (
+                full_range_normalized_pixel_jacobian(
+                    jacobian, columns_evaluated, vector
+                )
+            )
+            column_norms = torch.linalg.vector_norm(
+                normalized_pixel_jacobian, dim=0
+            )
+            l2 = column_norms
             return l2, l2 / float(pixel_rows) ** 0.5
 
         def summarize_sensitivity(
@@ -1010,6 +1150,7 @@ class PaperPSOCLM:
 
         audit_sensitivity: Dict[str, Dict[str, float]] = {}
         node_gate_diagnostics: Dict[str, Dict[str, Any]] = {}
+        joint_identifiability: Dict[str, Any] = {}
         selected_columns_by_field: Dict[str, torch.Tensor] = {}
         available_field_names = list(self.FIELD_NAMES) + (
             ["gamma"] if self.optimize_gamma else []
@@ -1080,6 +1221,37 @@ class PaperPSOCLM:
                             int(value) for value in selected.cpu().tolist()
                         ],
                     }
+                selected_audit_mask = torch.zeros(
+                    len(all_audit_columns),
+                    dtype=torch.bool,
+                    device=decision.device,
+                )
+                for selected in selected_columns_by_field.values():
+                    selected_audit_mask |= torch.isin(
+                        all_audit_columns, selected
+                    )
+                selected_audit_columns = all_audit_columns[
+                    selected_audit_mask
+                ]
+                normalized_audit_jacobian = (
+                    full_range_normalized_pixel_jacobian(
+                        audit_jacobian, all_audit_columns, decision
+                    )[:, selected_audit_mask]
+                )
+                field_positions = {
+                    field_name: torch.nonzero(
+                        torch.isin(
+                            selected_audit_columns,
+                            selected_columns_by_field[field_name],
+                        ),
+                        as_tuple=False,
+                    ).flatten()
+                    for field_name in available_field_names
+                }
+                joint_identifiability = summarize_joint_identifiability(
+                    normalized_audit_jacobian,
+                    field_positions,
+                )
                 counts = ",".join(
                     f"{name}:{node_gate_diagnostics[name]['selected_nodes']}/"
                     f"{node_gate_diagnostics[name]['evaluated_nodes']}"
@@ -1090,6 +1262,26 @@ class PaperPSOCLM:
                     f"{counts}, noise_rmse="
                     f"{self.observability_noise_rmse:.6f}, "
                     f"min_snr={self.min_observability_snr:.3f}",
+                    flush=True,
+                )
+                condition = joint_identifiability["condition_number"]
+                correlation = joint_identifiability[
+                    "max_field_canonical_correlation"
+                ]
+                condition_text = (
+                    "n/a" if condition is None else f"{condition:.3e}"
+                )
+                correlation_text = (
+                    "n/a" if correlation is None else f"{correlation:.6f}"
+                )
+                print(
+                    "[JOINT AUDIT] rank="
+                    f"{joint_identifiability['effective_rank']}/"
+                    f"{joint_identifiability['selected_columns']}, "
+                    f"condition={condition_text}, "
+                    f"max_field_correlation={correlation_text}, "
+                    "identifiable="
+                    f"{joint_identifiability['jointly_identifiable']}",
                     flush=True,
                 )
             else:
@@ -1378,6 +1570,7 @@ class PaperPSOCLM:
                 ],
                 "selected_node_columns": node_gate_diagnostics,
                 "initial_image_jacobian_sensitivity": audit_sensitivity,
+                "joint_identifiability": joint_identifiability,
             },
         }
         if last_jacobian is not None:
@@ -1472,6 +1665,10 @@ class PaperPSOCLM:
             audit_sensitivity
             or diagnostics.get("image_jacobian_sensitivity", {})
         )
+        joint_audit_applied = bool(joint_identifiability)
+        joint_pose_identifiable = bool(
+            joint_identifiability.get("jointly_identifiable", True)
+        )
         for field_name in self.FIELD_NAMES:
             optimized = field_name in active_fields
             selected_node_count = int(
@@ -1495,6 +1692,9 @@ class PaperPSOCLM:
                     if self.field_mode == "xy_only"
                     else "fixed_below_observability_threshold"
                 )
+            elif joint_audit_applied and not joint_pose_identifiable:
+                confidence = "low"
+                reason = "optimized_but_jointly_nonidentifiable"
             elif boundary_total > 0.25:
                 confidence = "low"
                 reason = "optimized_but_boundary_saturated"
@@ -1538,6 +1738,11 @@ class PaperPSOCLM:
                 "optimized_node_fraction": (
                     selected_node_count / max(available_node_count, 1)
                 ),
+                "jointly_identifiable": (
+                    joint_pose_identifiable
+                    if joint_audit_applied and optimized
+                    else None
+                ),
                 "boundary_fraction": boundary_total if optimized else None,
                 "fixed_value_on_physical_boundary": (
                     None if optimized else boundary_total > 0.0
@@ -1579,10 +1784,24 @@ class PaperPSOCLM:
             ),
             "confidence": (
                 "medium_simulation"
-                if gamma_optimized and gamma_boundary <= 0.25
+                if (
+                    gamma_optimized
+                    and gamma_boundary <= 0.25
+                    and (
+                        not joint_audit_applied
+                        or joint_pose_identifiable
+                    )
+                )
                 else "low"
             ),
             "reason": (
+                "optimized_but_jointly_nonidentifiable"
+                if (
+                    gamma_optimized
+                    and joint_audit_applied
+                    and not joint_pose_identifiable
+                )
+                else
                 (
                     "partially_optimized_above_snr"
                     if gamma_selected_nodes < gamma_available_nodes
@@ -1609,6 +1828,11 @@ class PaperPSOCLM:
                 gamma_selected_nodes / max(gamma_available_nodes, 1)
                 if gamma_available_nodes
                 else 0.0
+            ),
+            "jointly_identifiable": (
+                joint_pose_identifiable
+                if joint_audit_applied and gamma_optimized
+                else None
             ),
             "boundary_fraction": gamma_boundary if gamma_optimized else None,
             "fixed_value_on_physical_boundary": (

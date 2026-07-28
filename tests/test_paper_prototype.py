@@ -417,9 +417,50 @@ try:
     import torch  # noqa: F401
     import torch.nn as nn
 
-    from optim.paper_psoc_lm import cgl_interpolation_matrix
+    from optim.paper_psoc_lm import (
+        cgl_interpolation_matrix,
+        summarize_joint_identifiability,
+    )
 
     class PaperPSOCTests(unittest.TestCase):
+        def test_joint_identifiability_detects_cross_field_aliasing(self):
+            orthogonal = summarize_joint_identifiability(
+                torch.eye(4),
+                {
+                    "H": torch.tensor([0, 1]),
+                    "alpha": torch.tensor([2]),
+                    "beta": torch.tensor([3]),
+                },
+            )
+            self.assertTrue(orthogonal["jointly_identifiable"])
+            self.assertEqual(orthogonal["effective_rank"], 4)
+            self.assertAlmostEqual(
+                orthogonal["max_field_canonical_correlation"], 0.0
+            )
+
+            aliased = summarize_joint_identifiability(
+                torch.tensor(
+                    [
+                        [1.0, 1.0, 0.0],
+                        [0.0, 0.0, 1.0],
+                        [0.0, 0.0, 0.0],
+                    ]
+                ),
+                {
+                    "H": torch.tensor([0]),
+                    "alpha": torch.tensor([1]),
+                    "beta": torch.tensor([2]),
+                },
+            )
+            self.assertFalse(aliased["jointly_identifiable"])
+            self.assertEqual(aliased["effective_rank"], 2)
+            self.assertAlmostEqual(
+                aliased["pairwise_field_canonical_correlation"][
+                    "H__alpha"
+                ],
+                1.0,
+            )
+
         def test_renderer_loads_v13_six_dimensional_checkpoint(self):
             from models.bbsmg import build_bbsmg
             from models.paper_fusion_renderer import PaperFusionRenderer

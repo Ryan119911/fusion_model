@@ -1176,3 +1176,25 @@ v13 的 6D B-BSMG 让 gamma 真正进入神经渲染器；v14 进一步把整字
 `tools/evaluate_paper_pose_recovery.py` 做已知真值的局部闭环测试。完整 v13 训练、
 v14 审计、闭环命令和真实机器人标定边界见
 [`docs/robot_brush_calibration.md`](docs/robot_brush_calibration.md)。
+
+### 11.15 v15：联合 Jacobian 可辨识性与姿态降阶
+
+单节点 SNR 高只表示该节点能够改变图像，不表示多个姿态字段能够被分别恢复。
+v15 对通过 SNR 的完整像素 Jacobian 继续计算：
+
+```text
+有效秩及秩比例
+条件数
+H/alpha/beta/gamma 字段子空间的两两典型相关系数
+```
+
+保守验收条件为有效秩比例不低于 `0.90`、条件数不超过 `100`、最大字段相关性
+不超过 `0.95`。未通过时，所有参与联合优化的姿态字段自动标记
+`confidence=low`、`reason=optimized_but_jointly_nonidentifiable`。
+
+“武”字合成闭环中，order 3 的 126 个节点只有 116 个有效秩，条件数约
+`8.38e4`；降到每笔 order 1 后变为 64/64、条件数约 `32.77`。这说明姿态反演
+应先降低自由度，再考虑增加 LM 迭代。即使 order 1 图像 MSE 达到 `0.000063`，
+alpha 与 gamma 的字段相关性仍约 `0.95947`，超过保守阈值，因此角度仍不能作为
+机器人真值。完整数据和解释见
+[`docs/robot_brush_calibration.md`](docs/robot_brush_calibration.md)。
