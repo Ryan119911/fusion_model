@@ -86,3 +86,61 @@ gamma   0.1078
 因此阈值 `0.45` 下仍只开放 H，gamma 保持初始 0。不能为了得到非零角度而降低
 门槛；应先通过真实非轴对称笔锋的 `footprint_angle_rad` 或同步外部姿态观测完成
 标定。
+
+## v13 姿态敏感 B-BSMG
+
+v12 的 5D checkpoint 不把 gamma 输入神经网络，只能用几何旋转近似。v13 新增
+6D checkpoint：
+
+```text
+H_mm, alpha_rad, beta_rad, gamma_rad, x0_px, y0_px
+```
+
+合成数据使用拉丁超立方分层采样，使各姿态变量独立覆盖其范围：
+
+```bash
+python -u tools/build_paper_bbsmg_dataset.py \
+  --output_npz data/processed/paper_bbsmg_gamma_v13.npz \
+  --count 50000 \
+  --image_size 128 \
+  --pixels_per_model_unit 20 \
+  --supersample 4 \
+  --include_gamma \
+  --gamma_max_abs_deg 30 \
+  --sampling_mode latin_hypercube \
+  --seed 42
+```
+
+训练：
+
+```bash
+python -u tools/train_bbsmg.py \
+  --config configs/paper_bbsmg_gamma_v13.yaml \
+  --npz_path data/processed/paper_bbsmg_gamma_v13.npz \
+  --val_ratio 0.1 \
+  --epochs 50 \
+  --output_dir outputs/paper_bbsmg_gamma_v13
+```
+
+常规验证：
+
+```bash
+PYTHONPATH=. python -u tools/evaluate_bbsmg.py \
+  --config configs/paper_bbsmg_gamma_v13.yaml \
+  --npz_path data/processed/paper_bbsmg_gamma_v13.npz \
+  --checkpoint outputs/paper_bbsmg_gamma_v13/bbsmg_best.pt \
+  --output_dir outputs/eval_paper_bbsmg_gamma_v13
+```
+
+姿态独立扫描：
+
+```bash
+python -u tools/evaluate_paper_pose_sensitivity.py \
+  --checkpoint outputs/paper_bbsmg_gamma_v13/bbsmg_best.pt \
+  --output_json outputs/eval_paper_bbsmg_gamma_v13/pose_sensitivity.json \
+  --device cuda \
+  --samples_per_field 9
+```
+
+`response_ratio` 接近 1 表示网络复现了对应姿态端点之间的解析笔触变化。该指标只
+验证仿真网络是否使用了该输入，不证明真实毛笔姿态可以从单张图像唯一反演。

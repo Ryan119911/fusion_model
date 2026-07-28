@@ -168,6 +168,7 @@ def render_bbsm_mask(
     pixels_per_model_unit: float = 20.0,
     supersample: int = 4,
     angle_basis: str = PAPER_ANGLE_BASIS_RADIAN,
+    gamma_rad: float = 0.0,
 ) -> np.ndarray:
     """Rasterize one analytic B-BSM target with background=0 and ink=1."""
     h, alpha, beta = np.asarray(posture, dtype=np.float64).tolist()
@@ -176,7 +177,11 @@ def render_bbsm_mask(
         angle_basis=angle_basis,
     )[0]
     points = bbsm_boundary(float(lt), float(lh), float(lr))
-    c, s = np.cos(beta), np.sin(beta)
+    if not np.isfinite(gamma_rad):
+        raise ValueError("gamma_rad must be finite")
+    c, s = np.cos(beta + float(gamma_rad)), np.sin(
+        beta + float(gamma_rad)
+    )
     points = points @ np.asarray([[c, -s], [s, c]], dtype=np.float64).T
     points *= float(pixels_per_model_unit)
     points += np.asarray([x0, y0], dtype=np.float64)

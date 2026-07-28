@@ -177,6 +177,57 @@ class PaperBBSMTests(unittest.TestCase):
         self.assertGreaterEqual(float(mask.min()), 0.0)
         self.assertLessEqual(float(mask.max()), 1.0)
 
+    def test_gamma_rotates_analytic_footprint(self):
+        posture = np.asarray([15.5, 0.0, 0.0], dtype=np.float32)
+        horizontal = render_bbsm_mask(
+            posture, 64.0, 64.0, gamma_rad=0.0
+        )
+        vertical = render_bbsm_mask(
+            posture, 64.0, 64.0, gamma_rad=np.pi / 2.0
+        )
+        horizontal_y, horizontal_x = np.nonzero(horizontal >= 0.5)
+        vertical_y, vertical_x = np.nonzero(vertical >= 0.5)
+        self.assertGreater(
+            horizontal_x.max() - horizontal_x.min(),
+            horizontal_y.max() - horizontal_y.min(),
+        )
+        self.assertGreater(
+            vertical_y.max() - vertical_y.min(),
+            vertical_x.max() - vertical_x.min(),
+        )
+        self.assertAlmostEqual(
+            float(horizontal.sum()), float(vertical.sum()), delta=3.0
+        )
+
+    def test_v13_dataset_has_independent_gamma_feature_contract(self):
+        inputs, targets, metadata = build_dataset(
+            count=32,
+            image_size=64,
+            pixels_per_model_unit=10.0,
+            supersample=1,
+            seed=7,
+            include_gamma=True,
+            gamma_max_abs_rad=np.deg2rad(30.0),
+            sampling_mode="latin_hypercube",
+        )
+        self.assertEqual(inputs.shape, (32, 6))
+        self.assertEqual(targets.shape, (32, 1, 64, 64))
+        self.assertEqual(metadata["format"], "paper_bbsmg_gamma_v13")
+        self.assertEqual(
+            metadata["feature_names"],
+            [
+                "H_mm",
+                "alpha_rad",
+                "beta_rad",
+                "gamma_rad",
+                "x0_px",
+                "y0_px",
+            ],
+        )
+        self.assertEqual(metadata["input_normalization"]["input_dim"], 6)
+        self.assertLess(float(inputs[:, 3].min()), 0.0)
+        self.assertGreater(float(inputs[:, 3].max()), 0.0)
+
     def test_dataset_records_units_and_angle_scales(self):
         inputs, targets, metadata = build_dataset(
             count=4,
@@ -263,6 +314,54 @@ try:
     from optim.paper_psoc_lm import cgl_interpolation_matrix
 
     class PaperPSOCTests(unittest.TestCase):
+        def test_renderer_loads_v13_six_dimensional_checkpoint(self):
+            from models.bbsmg import build_bbsmg
+            from models.paper_fusion_renderer import PaperFusionRenderer
+
+            model = build_bbsmg(
+                input_dim=6,
+                latent_dim=16,
+                base_channels=8,
+                image_size=128,
+            )
+            temporary = tempfile.TemporaryDirectory()
+            self.addCleanup(temporary.cleanup)
+            path = Path(temporary.name) / "gamma_v13.pt"
+            torch.save(
+                {
+                    "format": "paper_bbsmg_gamma_v13",
+                    "model_config": {
+                        "input_dim": 6,
+                        "latent_dim": 16,
+                        "base_channels": 8,
+                    },
+                    "model_state": model.state_dict(),
+                    "input_normalization": {
+                        "input_dim": 6,
+                        "scales": [
+                            20.0,
+                            float(np.deg2rad(10.0)),
+                            float(np.deg2rad(5.0)),
+                            float(np.deg2rad(30.0)),
+                            128.0,
+                            128.0,
+                        ],
+                        "feature_names": [
+                            "H_mm",
+                            "alpha_rad",
+                            "beta_rad",
+                            "gamma_rad",
+                            "x0_px",
+                            "y0_px",
+                        ],
+                        "regression_angle_basis": "paper_declared_radian",
+                    },
+                },
+                path,
+            )
+            renderer = PaperFusionRenderer.from_checkpoint(path)
+            self.assertTrue(renderer.gamma_conditioned)
+
         def test_cgl_interpolation_preserves_constant(self):
             matrix = cgl_interpolation_matrix(order=3, num_samples=17)
             np.testing.assert_allclose(

@@ -96,10 +96,12 @@ class PaperFusionRenderer(nn.Module):
         point_batch_size: int = 128,
     ):
         super().__init__()
-        if int(input_normalization.get("input_dim", -1)) != 5:
+        input_dim = int(input_normalization.get("input_dim", -1))
+        if input_dim not in {5, 6}:
             raise ValueError(
-                "PaperFusionRenderer requires a 5D paper B-BSMG checkpoint"
+                "PaperFusionRenderer requires a 5D or 6D paper B-BSMG checkpoint"
             )
+        self.gamma_conditioned = input_dim == 6
         self.bbsmg = bbsmg.eval()
         for parameter in self.bbsmg.parameters():
             parameter.requires_grad_(False)
@@ -151,12 +153,13 @@ class PaperFusionRenderer(nn.Module):
         checkpoint = torch.load(checkpoint_path, map_location=device)
         state = checkpoint.get("model_state", checkpoint)
         config = checkpoint.get("model_config") or _infer_model_config(state)
-        if int(config["input_dim"]) != 5:
+        input_dim = int(config["input_dim"])
+        if input_dim not in {5, 6}:
             raise ValueError(
-                "Incompatible checkpoint: expected paper B-BSMG input_dim=5"
+                "Incompatible checkpoint: expected paper B-BSMG input_dim=5 or 6"
             )
         model = build_bbsmg(
-            input_dim=5,
+            input_dim=input_dim,
             latent_dim=int(config["latent_dim"]),
             base_channels=int(config["base_channels"]),
             out_channels=1,
@@ -168,21 +171,39 @@ class PaperFusionRenderer(nn.Module):
         if normalization is None:
             raise ValueError("Checkpoint does not contain input_normalization")
         feature_names = normalization.get("feature_names")
-        expected_features = [
+        five_features = [
             "H_mm",
             "alpha_rad",
             "beta_rad",
             "x0_px",
             "y0_px",
         ]
+        six_features = [
+            "H_mm",
+            "alpha_rad",
+            "beta_rad",
+            "gamma_rad",
+            "x0_px",
+            "y0_px",
+        ]
+        expected_features = (
+            six_features if input_dim == 6 else five_features
+        )
         checkpoint_format = checkpoint.get("format")
         regression_angle_basis = normalization.get(
             "regression_angle_basis", PAPER_ANGLE_BASIS_RADIAN
         )
-        expected_formats = {
-            PAPER_ANGLE_BASIS_RADIAN: "paper_bbsmg_v1",
-            PAPER_ANGLE_BASIS_DEGREE_FITTED: "paper_bbsmg_degree_fitted_v2",
-        }
+        expected_formats = (
+            {
+                PAPER_ANGLE_BASIS_RADIAN: "paper_bbsmg_gamma_v13",
+                PAPER_ANGLE_BASIS_DEGREE_FITTED: "paper_bbsmg_gamma_v13",
+            }
+            if input_dim == 6
+            else {
+                PAPER_ANGLE_BASIS_RADIAN: "paper_bbsmg_v1",
+                PAPER_ANGLE_BASIS_DEGREE_FITTED: "paper_bbsmg_degree_fitted_v2",
+            }
+        )
         if regression_angle_basis not in expected_formats:
             raise ValueError(
                 "Checkpoint declares an unsupported regression angle basis: "
@@ -196,7 +217,10 @@ class PaperFusionRenderer(nn.Module):
                 "Checkpoint format and paper posture features are incompatible"
             )
         allowed_formats = {expected_formats[regression_angle_basis]}
-        if regression_angle_basis == PAPER_ANGLE_BASIS_RADIAN:
+        if (
+            input_dim == 5
+            and regression_angle_basis == PAPER_ANGLE_BASIS_RADIAN
+        ):
             allowed_formats.add(None)
         if checkpoint_format not in allowed_formats:
             raise ValueError(
@@ -410,8 +434,21 @@ class PaperFusionRenderer(nn.Module):
         )
         virtual_posture = states["virtual_posture"]
         contact_xy = states["contact_xy"]
-        heading = states["heading"] + render_gamma
-        raw_params = torch.cat([virtual_posture, contact_xy], dim=-1)
+        # A 6D checkpoint already renders gamma in its local footprint.
+        # A legacy 5D checkpoint receives gamma through geometric rotation.
+        heading = states["heading"] + (
+            torch.zeros_like(render_gamma)
+            if self.gamma_conditioned
+            else render_gamma
+        )
+        raw_params = (
+            torch.cat(
+                [virtual_posture, render_gamma[:, None], contact_xy],
+                dim=-1,
+            )
+            if self.gamma_conditioned
+            else torch.cat([virtual_posture, contact_xy], dim=-1)
+        )
         normalized = normalize_bbsmg_inputs(
             raw_params, self.input_normalization
         )
