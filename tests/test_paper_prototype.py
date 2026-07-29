@@ -419,6 +419,7 @@ try:
 
     from optim.paper_psoc_lm import (
         cgl_interpolation_matrix,
+        prune_jointly_aliased_fields,
         summarize_joint_identifiability,
     )
 
@@ -459,6 +460,36 @@ try:
                     "H__alpha"
                 ],
                 1.0,
+            )
+
+        def test_joint_pruning_removes_weaker_correlated_field(self):
+            correlation = 0.96
+            orthogonal = float(np.sqrt(1.0 - correlation**2))
+            jacobian = torch.tensor(
+                [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, correlation, 0.0, 1.0],
+                    [0.0, orthogonal, 0.0, 0.0],
+                ]
+            )
+            result = prune_jointly_aliased_fields(
+                jacobian,
+                {
+                    "H": torch.tensor([0]),
+                    "alpha": torch.tensor([1]),
+                    "beta": torch.tensor([2]),
+                    "gamma": torch.tensor([3]),
+                },
+                {"H": 10.0, "alpha": 1.0, "beta": 5.0, "gamma": 8.0},
+            )
+            self.assertTrue(result["passed"])
+            self.assertEqual(
+                result["kept_fields"], ["H", "beta", "gamma"]
+            )
+            self.assertEqual(
+                [item["field"] for item in result["removed_fields"]],
+                ["alpha"],
             )
 
         def test_renderer_loads_v13_six_dimensional_checkpoint(self):

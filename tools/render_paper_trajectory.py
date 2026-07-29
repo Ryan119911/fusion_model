@@ -157,9 +157,13 @@ def save_dynamic_states(sample, xy, posture, gamma, states, path: Path) -> None:
 
 
 def main(args: argparse.Namespace) -> None:
-    device = torch.device(
-        args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu"
-    )
+    device = torch.device(args.device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(
+            f"CUDA device '{args.device}' was requested, but PyTorch cannot "
+            "initialize CUDA. Check nvidia-smi and the NVIDIA driver instead "
+            "of silently rendering on CPU."
+        )
     sample = pick_sample(
         load_trajectory_csv(args.trajectory_csv),
         sample_id=args.sample_id,

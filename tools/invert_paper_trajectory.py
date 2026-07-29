@@ -370,7 +370,11 @@ def main(args: argparse.Namespace) -> None:
         or args.h_point_acceleration_weight > 0
     )
     output_format = (
-        "paper_psoc_lm_v15_joint_identifiability"
+        (
+            "paper_psoc_lm_v16_joint_field_pruning"
+            if args.joint_gate_action == "prune"
+            else "paper_psoc_lm_v15_joint_identifiability"
+        )
         if args.observability_gate_mode == "node_snr"
         else (
             "paper_psoc_lm_v12_nonaxisymmetric_gamma"
@@ -386,9 +390,13 @@ def main(args: argparse.Namespace) -> None:
             )
         )
     )
-    device = torch.device(
-        args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu"
-    )
+    device = torch.device(args.device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(
+            f"CUDA device '{args.device}' was requested, but PyTorch cannot "
+            "initialize CUDA. Check nvidia-smi and the NVIDIA driver instead "
+            "of silently running the PSOC/LM inversion on CPU."
+        )
     samples = load_trajectory_csv(args.trajectory_csv)
     sample = pick_sample(
         samples,
@@ -514,6 +522,7 @@ def main(args: argparse.Namespace) -> None:
             observability_gate_mode=args.observability_gate_mode,
             observability_noise_rmse=args.observability_noise_rmse,
             min_observability_snr=args.min_observability_snr,
+            joint_gate_action=args.joint_gate_action,
         )
         candidate = solver.optimize(
             xy_canvas,
@@ -871,6 +880,20 @@ def main(args: argparse.Namespace) -> None:
             f"{correlation if correlation is not None else 'n/a'}, "
             f"identifiable={joint_audit['jointly_identifiable']}"
         )
+    joint_pruning = result.diagnostics["observability_gate"].get(
+        "joint_pruning", {}
+    )
+    if joint_pruning:
+        print(
+            "[JOINT PRUNE] kept="
+            f"{','.join(joint_pruning['kept_fields']) or 'none'}, "
+            "removed="
+            + ",".join(
+                item["field"]
+                for item in joint_pruning["removed_fields"]
+            )
+            + f", passed={joint_pruning['passed']}"
+        )
     for field_name, fractions in result.diagnostics[
         "bound_fraction_within_1pct"
     ].items():
@@ -1047,6 +1070,15 @@ if __name__ == "__main__":
         "--min_observability_snr",
         type=float,
         default=1.0,
+    )
+    parser.add_argument(
+        "--joint_gate_action",
+        choices=["report", "prune"],
+        default="report",
+        help=(
+            "report joint ambiguity only, or conservatively fix the weaker "
+            "field in correlated pairs until the retained pose passes"
+        ),
     )
     parser.add_argument("--initial_h_mm", type=float, default=15.5)
     parser.add_argument("--initial_alpha_deg", type=float, default=0.0)

@@ -192,6 +192,114 @@ def summarize_joint_identifiability(
     }
 
 
+def prune_jointly_aliased_fields(
+    pixel_jacobian: torch.Tensor,
+    field_column_positions: Dict[str, torch.Tensor],
+    field_scores: Dict[str, float],
+    preserve_fields: Sequence[str] = ("H",),
+    relative_rank_threshold: float = 1e-3,
+    min_rank_fraction: float = 0.90,
+    max_condition_number: float = 1e2,
+    max_canonical_correlation: float = 0.95,
+) -> Dict[str, Any]:
+    """Greedily remove the weaker field from an ambiguous pose pair.
+
+    The routine operates at field granularity. It never fabricates a unique
+    pose: pruning stops when the retained Jacobian passes the conservative
+    joint audit or only one field remains. ``preserve_fields`` are removed
+    last when an equally safe non-preserved candidate exists.
+    """
+    kept = [
+        name
+        for name, positions in field_column_positions.items()
+        if int(positions.numel()) > 0
+    ]
+    preserved = set(preserve_fields)
+    removed: List[Dict[str, Any]] = []
+
+    def audit(field_names: Sequence[str]) -> Dict[str, Any]:
+        if not field_names:
+            return summarize_joint_identifiability(
+                pixel_jacobian[:, :0],
+                {},
+                relative_rank_threshold=relative_rank_threshold,
+                min_rank_fraction=min_rank_fraction,
+                max_condition_number=max_condition_number,
+                max_canonical_correlation=max_canonical_correlation,
+            )
+        global_positions = torch.cat(
+            [field_column_positions[name] for name in field_names]
+        )
+        global_positions = torch.sort(global_positions).values
+        local_positions = {
+            name: torch.nonzero(
+                torch.isin(
+                    global_positions, field_column_positions[name]
+                ),
+                as_tuple=False,
+            ).flatten()
+            for name in field_names
+        }
+        return summarize_joint_identifiability(
+            pixel_jacobian[:, global_positions],
+            local_positions,
+            relative_rank_threshold=relative_rank_threshold,
+            min_rank_fraction=min_rank_fraction,
+            max_condition_number=max_condition_number,
+            max_canonical_correlation=max_canonical_correlation,
+        )
+
+    diagnostics = audit(kept)
+    while not diagnostics["jointly_identifiable"] and len(kept) > 1:
+        correlated_pair = diagnostics.get("max_correlated_field_pair")
+        correlation = diagnostics.get(
+            "max_field_canonical_correlation"
+        )
+        if (
+            correlated_pair
+            and correlation is not None
+            and correlation > max_canonical_correlation
+        ):
+            candidates = correlated_pair.split("__")
+            reason = "field_subspaces_overlap"
+        else:
+            candidates = list(kept)
+            reason = "joint_rank_or_condition_failed"
+        non_preserved = [
+            name for name in candidates if name not in preserved
+        ]
+        removable = non_preserved or candidates
+        dropped = min(
+            removable,
+            key=lambda name: (float(field_scores.get(name, 0.0)), name),
+        )
+        removed.append(
+            {
+                "field": dropped,
+                "reason": reason,
+                "field_score": float(field_scores.get(dropped, 0.0)),
+                "correlated_pair": (
+                    correlated_pair if reason == "field_subspaces_overlap"
+                    else None
+                ),
+                "pair_canonical_correlation": (
+                    float(correlation)
+                    if reason == "field_subspaces_overlap"
+                    else None
+                ),
+            }
+        )
+        kept.remove(dropped)
+        diagnostics = audit(kept)
+    return {
+        "kept_fields": kept,
+        "removed_fields": removed,
+        "final_joint_identifiability": diagnostics,
+        "passed": bool(diagnostics["jointly_identifiable"]),
+        "preserve_fields": list(preserve_fields),
+    }
+
+
 @dataclass
 class PaperLMResult:
     xy_canvas: np.ndarray
@@ -241,6 +349,7 @@ class PaperPSOCLM:
         observability_gate_mode: str = "field_relative",
         observability_noise_rmse: float | None = None,
         min_observability_snr: float = 1.0,
+        joint_gate_action: str = "report",
     ):
         if order < 1:
             raise ValueError("order must be >= 1")
@@ -320,6 +429,8 @@ class PaperPSOCLM:
             raise ValueError("observability_noise_rmse must be positive")
         if min_observability_snr <= 0:
             raise ValueError("min_observability_snr must be positive")
+        if joint_gate_action not in {"report", "prune"}:
+            raise ValueError("joint_gate_action must be report or prune")
         self.observability_gate_mode = observability_gate_mode
         checkpoint_rmse = getattr(
             renderer, "checkpoint_validation_rmse", None
@@ -334,6 +445,7 @@ class PaperPSOCLM:
             )
         )
         self.min_observability_snr = float(min_observability_snr)
+        self.joint_gate_action = joint_gate_action
         if (
             self.field_mode == "auto"
             and self.observability_gate_mode == "node_snr"
@@ -1151,6 +1263,7 @@ class PaperPSOCLM:
         audit_sensitivity: Dict[str, Dict[str, float]] = {}
         node_gate_diagnostics: Dict[str, Dict[str, Any]] = {}
         joint_identifiability: Dict[str, Any] = {}
+        joint_pruning: Dict[str, Any] = {}
         selected_columns_by_field: Dict[str, torch.Tensor] = {}
         available_field_names = list(self.FIELD_NAMES) + (
             ["gamma"] if self.optimize_gamma else []
@@ -1252,6 +1365,73 @@ class PaperPSOCLM:
                     normalized_audit_jacobian,
                     field_positions,
                 )
+                if (
+                    self.joint_gate_action == "prune"
+                    and not joint_identifiability[
+                        "jointly_identifiable"
+                    ]
+                ):
+                    joint_pruning = prune_jointly_aliased_fields(
+                        normalized_audit_jacobian,
+                        field_positions,
+                        {
+                            name: float(
+                                audit_sensitivity.get(name, {}).get(
+                                    "median_snr", 0.0
+                                )
+                            )
+                            for name in active_fields
+                        },
+                    )
+                    retained = set(joint_pruning["kept_fields"])
+                    removed_by_name = {
+                        item["field"]: item
+                        for item in joint_pruning["removed_fields"]
+                    }
+                    for field_name in list(active_fields):
+                        if field_name in retained:
+                            continue
+                        selected_columns_by_field[field_name] = (
+                            torch.empty(
+                                0,
+                                dtype=torch.long,
+                                device=decision.device,
+                            )
+                        )
+                        node_gate_diagnostics[field_name][
+                            "snr_selected_nodes_before_joint_pruning"
+                        ] = node_gate_diagnostics[field_name][
+                            "selected_nodes"
+                        ]
+                        node_gate_diagnostics[field_name][
+                            "selected_nodes"
+                        ] = 0
+                        node_gate_diagnostics[field_name][
+                            "selected_fraction"
+                        ] = 0.0
+                        node_gate_diagnostics[field_name][
+                            "selected_decision_columns"
+                        ] = []
+                        node_gate_diagnostics[field_name][
+                            "pruned_by_joint_gate"
+                        ] = True
+                        node_gate_diagnostics[field_name][
+                            "joint_pruning_reason"
+                        ] = removed_by_name[field_name]
+                    active_fields = [
+                        name for name in active_fields if name in retained
+                    ]
+                    joint_identifiability = joint_pruning[
+                        "final_joint_identifiability"
+                    ]
+                    print(
+                        "[JOINT PRUNE] kept="
+                        f"{','.join(active_fields) or 'none'}, removed="
+                        + ",".join(removed_by_name)
+                        + ", passed="
+                        f"{joint_pruning['passed']}",
+                        flush=True,
+                    )
                 counts = ",".join(
                     f"{name}:{node_gate_diagnostics[name]['selected_nodes']}/"
                     f"{node_gate_diagnostics[name]['evaluated_nodes']}"
@@ -1538,6 +1718,7 @@ class PaperPSOCLM:
             "observability_gate": {
                 "mode": self.field_mode,
                 "gate_mode": self.observability_gate_mode,
+                "joint_gate_action": self.joint_gate_action,
                 "min_relative_median_sensitivity": (
                     self.min_relative_median_sensitivity
                 ),
@@ -1571,6 +1752,7 @@ class PaperPSOCLM:
                 "selected_node_columns": node_gate_diagnostics,
                 "initial_image_jacobian_sensitivity": audit_sensitivity,
                 "joint_identifiability": joint_identifiability,
+                "joint_pruning": joint_pruning,
             },
         }
         if last_jacobian is not None:
@@ -1669,6 +1851,10 @@ class PaperPSOCLM:
         joint_pose_identifiable = bool(
             joint_identifiability.get("jointly_identifiable", True)
         )
+        joint_pruned_field_names = {
+            item["field"]
+            for item in joint_pruning.get("removed_fields", [])
+        }
         for field_name in self.FIELD_NAMES:
             optimized = field_name in active_fields
             selected_node_count = int(
@@ -1688,9 +1874,13 @@ class PaperPSOCLM:
             if not optimized:
                 confidence = "low"
                 reason = (
-                    "fixed_for_xy_only_ablation"
-                    if self.field_mode == "xy_only"
-                    else "fixed_below_observability_threshold"
+                    "fixed_by_joint_identifiability_pruning"
+                    if field_name in joint_pruned_field_names
+                    else (
+                        "fixed_for_xy_only_ablation"
+                        if self.field_mode == "xy_only"
+                        else "fixed_below_observability_threshold"
+                    )
                 )
             elif joint_audit_applied and not joint_pose_identifiable:
                 confidence = "low"
@@ -1813,8 +2003,15 @@ class PaperPSOCLM:
                     if gamma_optimized
                     else (
                         "fixed_below_observability_threshold"
-                        if self.optimize_gamma
-                        else "gamma_channel_disabled"
+                        if (
+                            self.optimize_gamma
+                            and "gamma" not in joint_pruned_field_names
+                        )
+                        else (
+                            "fixed_by_joint_identifiability_pruning"
+                            if "gamma" in joint_pruned_field_names
+                            else "gamma_channel_disabled"
+                        )
                     )
                 )
             ),
