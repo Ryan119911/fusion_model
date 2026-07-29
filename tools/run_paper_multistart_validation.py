@@ -27,7 +27,7 @@ def build_inversion_command(
     initial_pose_csv: Path,
     run_dir: Path,
 ) -> list[str]:
-    return [
+    command = [
         sys.executable,
         "-u",
         "tools/invert_paper_trajectory.py",
@@ -84,6 +84,14 @@ def build_inversion_command(
         str(args.pose_smoothness_weight),
         "--gamma_smoothness_weight",
         str(args.pose_smoothness_weight),
+        "--h_prior_weight",
+        str(args.pose_prior_weight),
+        "--alpha_prior_weight",
+        str(args.pose_prior_weight),
+        "--beta_prior_weight",
+        str(args.pose_prior_weight),
+        "--gamma_prior_weight",
+        str(args.pose_prior_weight),
         "--footprint_longitudinal_scale",
         str(args.footprint_longitudinal_scale),
         "--footprint_transverse_scale",
@@ -91,6 +99,14 @@ def build_inversion_command(
         "--render_max_step_px",
         str(args.render_max_step_px),
     ]
+    if args.posture_prior_pose_csv:
+        command.extend(
+            [
+                "--posture_prior_pose_csv",
+                args.posture_prior_pose_csv,
+            ]
+        )
+    return command
 
 
 def run_logged(command: list[str], log_path: Path) -> None:
@@ -117,6 +133,19 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--trajectory_csv", required=True)
     parser.add_argument("--truth_pose_csv", required=True)
+    parser.add_argument(
+        "--initial_base_pose_csv",
+        default=None,
+        help=(
+            "Optional v20 basin center used to generate initial guesses; "
+            "truth_pose_csv remains the independent evaluation reference"
+        ),
+    )
+    parser.add_argument(
+        "--posture_prior_pose_csv",
+        default=None,
+        help="Shared v21 prior center used by every local-basin start",
+    )
     parser.add_argument("--target_image", required=True)
     parser.add_argument("--bbsmg_ckpt", required=True)
     parser.add_argument("--character", default="武")
@@ -139,6 +168,12 @@ def main() -> None:
     parser.add_argument("--offset_transfer_scale", type=float, default=1.0)
     parser.add_argument("--pixel_weight", type=float, default=5.0)
     parser.add_argument("--pose_smoothness_weight", type=float, default=0.001)
+    parser.add_argument(
+        "--pose_prior_weight",
+        type=float,
+        default=0.0,
+        help="Common initial-pose prior weight for synthetic recovery tests",
+    )
     parser.add_argument("--footprint_longitudinal_scale", type=float, default=0.22)
     parser.add_argument("--footprint_transverse_scale", type=float, default=0.258)
     parser.add_argument("--render_max_step_px", type=float, default=2.0)
@@ -155,9 +190,17 @@ def main() -> None:
     root.mkdir(parents=True, exist_ok=True)
     estimates: dict[str, str] = {}
     manifest = {
-        "format": "paper_pose_multistart_runner_v17",
+        "format": (
+            "paper_pose_selected_basin_runner_v20"
+            if args.initial_base_pose_csv
+            else "paper_pose_multistart_runner_v17"
+        ),
         "simulation_only": True,
         "truth_pose_csv": args.truth_pose_csv,
+        "initial_base_pose_csv": (
+            args.initial_base_pose_csv or args.truth_pose_csv
+        ),
+        "posture_prior_pose_csv": args.posture_prior_pose_csv,
         "target_image": args.target_image,
         "perturbation_scales": args.perturbation_scales,
         "runs": {},
@@ -168,7 +211,7 @@ def main() -> None:
         initial_csv = run_dir / "initial_pose.csv"
         estimate_csv = run_dir / f"{args.output_stem}_trajectory.csv"
         build_probe(
-            args.truth_pose_csv,
+            args.initial_base_pose_csv or args.truth_pose_csv,
             str(initial_csv),
             profile="perturbed_initial",
             perturbation_scale=scale,

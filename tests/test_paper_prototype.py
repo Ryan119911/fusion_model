@@ -33,6 +33,7 @@ from tools.run_paper_staged_multistart_v18 import (
     GROUPED_STAGES,
     SEPARATE_STAGES,
 )
+from tools.select_paper_multistart_candidate import select_candidate
 from tools.validate_robot_brush_calibration import validate_calibration_csv
 from tools.render_paper_trajectory import load_pose_csv
 from utils.types import (
@@ -178,10 +179,18 @@ class PaperForwardPoseCsvTests(unittest.TestCase):
                 str(truth),
                 {"truth_a": str(truth), "truth_b": str(truth)},
             )
+            selection_input = dict(summary)
+            selection_input["run_quality"] = {
+                "truth_a": {"passed": True, "plain_mse": 2e-6},
+                "truth_b": {"passed": True, "plain_mse": 1e-6},
+            }
+            selection = select_candidate(selection_input)
         self.assertEqual(positive_report["perturbation"]["z"], 0.8)
         self.assertEqual(negative_report["perturbation"]["z"], -0.8)
         self.assertEqual(truth_rows["metrics"]["gamma"]["rmse"], 0.0)
         self.assertTrue(summary["overall_passed"])
+        self.assertEqual(selection["selected_label"], "truth_b")
+        self.assertTrue(selection["selected_accuracy_passed"])
         self.assertEqual(scale_label(-0.5), "m0p5")
         self.assertEqual(scale_label(2.0), "p2")
         self.assertEqual(GROUPED_STAGES[1][1], ("alpha", "beta"))
@@ -690,6 +699,7 @@ try:
                 target_image=np.zeros((8, 8), dtype=np.float32),
                 max_steps=0,
                 initial_posture=initial,
+                prior_posture=initial.copy(),
             )
             np.testing.assert_allclose(result.posture, initial, atol=1e-5)
             self.assertEqual(
@@ -697,6 +707,12 @@ try:
                     "initial_posture_source"
                 ],
                 "initial_pose_csv",
+            )
+            self.assertEqual(
+                result.diagnostics["regularization"][
+                    "posture_prior_source"
+                ],
+                "shared_prior_pose_csv",
             )
 
         def test_gamma_requires_nonaxisymmetric_footprint(self):
@@ -874,6 +890,8 @@ try:
                 stroke_ids=np.zeros(3, dtype=np.int64),
                 target_image=np.zeros((8, 8), dtype=np.float32),
                 max_steps=0,
+                initial_gamma=np.full(3, 0.4, dtype=np.float32),
+                prior_gamma=np.full(3, -0.2, dtype=np.float32),
             )
             gate = result.diagnostics["observability_gate"]
             gamma_gate = gate["selected_node_columns"]["gamma"]
@@ -887,6 +905,8 @@ try:
                 ],
                 "lm_optimized_selected_nodes",
             )
+            self.assertLess(float(result.gamma.min()), -0.15)
+            self.assertGreater(float(result.gamma.max()), 0.30)
 
         def test_v14_audit_preserves_exact_zero_angle_boundary(self):
             from optim.paper_psoc_lm import PaperPSOCLM

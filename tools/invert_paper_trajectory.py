@@ -441,6 +441,13 @@ def main(args: argparse.Namespace) -> None:
             np.deg2rad(args.initial_gamma_deg),
             dtype=np.float32,
         )
+    if args.posture_prior_pose_csv:
+        prior_pose, _, prior_gamma = load_initial_pose_csv(
+            args.posture_prior_pose_csv, sample
+        )
+    else:
+        prior_pose = None
+        prior_gamma = None
     target = load_target_image(args.target_image, image_size=args.image_size)
     dynamic = PaperDynamicConfig(
         width_inertia=args.width_inertia,
@@ -541,6 +548,8 @@ def main(args: argparse.Namespace) -> None:
             pixel_weight=args.pixel_weight,
             initial_posture=initial_pose,
             initial_gamma=initial_gamma,
+            prior_posture=prior_pose,
+            prior_gamma=prior_gamma,
         )
         candidate_metrics = binary_metrics(candidate.rendered_image, target)
         candidates.append(
@@ -644,6 +653,7 @@ def main(args: argparse.Namespace) -> None:
                 else "command_line_defaults"
             ),
             "initial_pose_csv": args.initial_pose_csv,
+            "posture_prior_pose_csv": args.posture_prior_pose_csv,
             "initial_xy_source_frame": "input_trajectory_coordinates",
             "initial_posture_ranges": {
                 "H_mm": [
@@ -932,6 +942,14 @@ if __name__ == "__main__":
         help=(
             "staged x/y/z/alpha/beta/gamma CSV keyed by stroke_id and point_id; "
             "uses mm/rad and must match the selected base trajectory exactly"
+        ),
+    )
+    parser.add_argument(
+        "--posture_prior_pose_csv",
+        default=None,
+        help=(
+            "Optional shared z/alpha/beta/gamma prior center independent "
+            "from the per-run initial_pose_csv; x/y are ignored"
         ),
     )
     parser.add_argument("--target_image", required=True)

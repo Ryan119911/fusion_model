@@ -663,6 +663,8 @@ class PaperPSOCLM:
         pixel_weight: float = 3.0,
         initial_posture: np.ndarray | None = None,
         initial_gamma: np.ndarray | None = None,
+        prior_posture: np.ndarray | None = None,
+        prior_gamma: np.ndarray | None = None,
     ) -> PaperLMResult:
         xy = torch.as_tensor(
             xy_canvas, dtype=torch.float32, device=self.device
@@ -729,6 +731,42 @@ class PaperPSOCLM:
             raise ValueError(
                 "Initial gamma exceeds configured symmetric angular bounds"
             )
+        prior_points = (
+            initial_points
+            if prior_posture is None
+            else np.asarray(prior_posture, dtype=np.float32)
+        )
+        if prior_points.shape != (len(xy), 3):
+            raise ValueError(
+                "prior_posture must have shape [trajectory_points, 3]"
+            )
+        if np.any(prior_points < PAPER_POSTURE_MIN) or np.any(
+            prior_points > PAPER_POSTURE_MAX
+        ):
+            raise ValueError(
+                "Prior posture is outside H=11-20 mm, alpha=0-10 deg, "
+                "beta=0-5 deg"
+            )
+        prior_gamma_points = (
+            initial_gamma_points
+            if prior_gamma is None
+            else np.asarray(prior_gamma, dtype=np.float32)
+        )
+        if prior_gamma_points.shape != (len(xy),):
+            raise ValueError(
+                "prior_gamma must have shape [trajectory_points]"
+            )
+        if not np.all(np.isfinite(prior_gamma_points)) or np.any(
+            np.abs(prior_gamma_points) > self.gamma_max_abs_rad + 1e-6
+        ):
+            raise ValueError(
+                "Prior gamma exceeds configured symmetric angular bounds"
+            )
+        posture_prior_source = (
+            "shared_prior_pose_csv"
+            if prior_posture is not None
+            else initial_posture_source
+        )
         normalized_initial_points = (
             initial_points - PAPER_POSTURE_MIN
         ) / (
@@ -758,6 +796,35 @@ class PaperPSOCLM:
                 rcond=None,
             )
             initial_node_logits[
+                stroke_index, :, : effective_order + 1
+            ] = fitted.T
+        normalized_prior_points = (
+            prior_points - PAPER_POSTURE_MIN
+        ) / (
+            PAPER_POSTURE_MAX - PAPER_POSTURE_MIN
+        )
+        normalized_prior_for_audit = (
+            epsilon
+            + (1.0 - 2.0 * epsilon)
+            * np.clip(normalized_prior_points, 0.0, 1.0)
+        )
+        prior_point_logits = np.log(
+            normalized_prior_for_audit
+            / (1.0 - normalized_prior_for_audit)
+        )
+        prior_node_logits = np.zeros_like(initial_node_logits)
+        for stroke_index, (matrix, indices, effective_order) in enumerate(
+            zip(matrices, point_indices, effective_orders)
+        ):
+            compact_matrix = (
+                matrix[:, : effective_order + 1].detach().cpu().numpy()
+            )
+            fitted, _, _, _ = np.linalg.lstsq(
+                compact_matrix,
+                prior_point_logits[indices],
+                rcond=None,
+            )
+            prior_node_logits[
                 stroke_index, :, : effective_order + 1
             ] = fitted.T
         posture_decision = torch.as_tensor(
@@ -810,6 +877,49 @@ class PaperPSOCLM:
                     device=posture_decision.device,
                 )
             )
+        prior_gamma_node_logits = np.zeros_like(
+            initial_gamma_node_logits
+        )
+        if gamma_decision_count:
+            normalized_prior_gamma = np.clip(
+                prior_gamma_points / self.gamma_max_abs_rad,
+                -0.98,
+                0.98,
+            )
+            prior_gamma_point_logits = np.arctanh(
+                normalized_prior_gamma
+            )
+            for stroke_index, (
+                matrix,
+                indices,
+                effective_order,
+            ) in enumerate(zip(matrices, point_indices, effective_orders)):
+                compact_matrix = (
+                    matrix[:, : effective_order + 1].detach().cpu().numpy()
+                )
+                fitted, _, _, _ = np.linalg.lstsq(
+                    compact_matrix,
+                    prior_gamma_point_logits[indices],
+                    rcond=None,
+                )
+                prior_gamma_node_logits[
+                    stroke_index, : effective_order + 1
+                ] = fitted
+        prior_decision_parts = [
+            torch.as_tensor(
+                prior_node_logits.reshape(-1),
+                dtype=posture_decision.dtype,
+                device=posture_decision.device,
+            )
+        ]
+        if gamma_decision_count:
+            prior_decision_parts.append(
+                torch.as_tensor(
+                    prior_gamma_node_logits.reshape(-1),
+                    dtype=posture_decision.dtype,
+                    device=posture_decision.device,
+                )
+            )
         if xy_decision_count:
             decision_parts.append(
                 torch.zeros(
@@ -818,10 +928,18 @@ class PaperPSOCLM:
                     device=posture_decision.device,
                 )
             )
+            prior_decision_parts.append(
+                torch.zeros(
+                    xy_decision_count,
+                    dtype=posture_decision.dtype,
+                    device=posture_decision.device,
+                )
+            )
         decision = torch.cat(decision_parts)
+        prior_decision = torch.cat(prior_decision_parts)
         initial_decision = decision.detach().clone()
         prior_sigmoid = 1.0 / (
-            1.0 + np.exp(-np.clip(initial_node_logits, -30.0, 30.0))
+            1.0 + np.exp(-np.clip(prior_node_logits, -30.0, 30.0))
         )
         prior = torch.as_tensor(
             np.clip(
@@ -835,10 +953,27 @@ class PaperPSOCLM:
         initial_points_tensor = torch.as_tensor(
             initial_points, dtype=decision.dtype, device=decision.device
         )
+        fixed_posture_tensor = torch.as_tensor(
+            prior_points if prior_posture is not None else initial_points,
+            dtype=decision.dtype,
+            device=decision.device,
+        )
         initial_gamma_tensor = torch.as_tensor(
             initial_gamma_points,
             dtype=decision.dtype,
             device=decision.device,
+        )
+        fixed_gamma_tensor = torch.as_tensor(
+            (
+                prior_gamma_points
+                if prior_gamma is not None
+                else initial_gamma_points
+            ),
+            dtype=decision.dtype,
+            device=decision.device,
+        )
+        shared_prior_enabled = (
+            prior_posture is not None or prior_gamma is not None
         )
         node_count = self.order + 1
         layout = np.arange(posture_decision_count, dtype=np.int64).reshape(
@@ -908,7 +1043,7 @@ class PaperPSOCLM:
         ).view(1, 3, 1)
         gamma_prior = torch.tanh(
             torch.as_tensor(
-                initial_gamma_node_logits,
+                prior_gamma_node_logits,
                 dtype=decision.dtype,
                 device=decision.device,
             )
@@ -925,7 +1060,7 @@ class PaperPSOCLM:
             if gated_active_fields is not None:
                 for field_index, field_name in enumerate(self.FIELD_NAMES):
                     if field_name not in gated_active_fields:
-                        posture[:, field_index] = initial_points_tensor[
+                        posture[:, field_index] = fixed_posture_tensor[
                             :, field_index
                         ]
             rendered_xy = xy
@@ -943,7 +1078,7 @@ class PaperPSOCLM:
                     gated_active_fields is not None
                     and "gamma" not in gated_active_fields
                 ):
-                    gamma_points = initial_gamma_tensor
+                    gamma_points = fixed_gamma_tensor
             if self.optimize_xy:
                 xy_offsets, xy_nodes = self._decode_xy_offsets(
                     vector[gamma_stop:],
@@ -1267,15 +1402,18 @@ class PaperPSOCLM:
             vector: torch.Tensor, active_field_names: Sequence[str]
         ) -> torch.Tensor:
             fixed = vector.clone()
+            reference = (
+                prior_decision if shared_prior_enabled else initial_decision
+            )
             active = set(active_field_names)
             for field_name in self.FIELD_NAMES:
                 if field_name in active:
                     continue
-                fixed[field_columns[field_name]] = initial_decision[
+                fixed[field_columns[field_name]] = reference[
                     field_columns[field_name]
                 ]
             if self.optimize_gamma and "gamma" not in active:
-                fixed[gamma_columns] = initial_decision[gamma_columns]
+                fixed[gamma_columns] = reference[gamma_columns]
             return fixed
 
         audit_sensitivity: Dict[str, Dict[str, float]] = {}
@@ -1532,6 +1670,19 @@ class PaperPSOCLM:
         )
         if self.optimize_xy:
             active_columns = torch.cat([active_columns, xy_columns])
+        if shared_prior_enabled:
+            all_pose_columns = all_posture_columns
+            if self.optimize_gamma:
+                all_pose_columns = torch.cat(
+                    [all_pose_columns, gamma_columns]
+                )
+            inactive_pose_columns = all_pose_columns[
+                ~torch.isin(all_pose_columns, active_columns)
+            ]
+            decision = decision.clone()
+            decision[inactive_pose_columns] = prior_decision[
+                inactive_pose_columns
+            ]
 
         current_cost = evaluate_cost(decision)
         initial_cost = current_cost
@@ -1698,6 +1849,7 @@ class PaperPSOCLM:
             },
             "regularization": {
                 "initial_posture_source": initial_posture_source,
+                "posture_prior_source": posture_prior_source,
                 "field_order": list(self.FIELD_NAMES),
                 "smoothness_weights": self.smoothness_weights.tolist(),
                 "posture_prior_weights": self.posture_prior_weights.tolist(),

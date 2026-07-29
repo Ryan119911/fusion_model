@@ -1214,6 +1214,62 @@ python -u tools/run_paper_multistart_validation.py \
   --resume_completed
 ```
 
+### 11.21 v21：共享盆地中心先验
+
+v20 局部复验中 z/alpha/beta/gamma 的真值精度、IoU、Jacobian 和边界均通过，
+但 alpha/beta 的跨初值离散度略高于 `0.02`。v21 将“每次不同的优化初值”和
+“所有运行共享的物理先验中心”分离。`--posture_prior_pose_csv` 只定义正则化
+中心，不覆盖每次扰动初值：
+
+```bash
+python -u tools/run_paper_multistart_validation.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --truth_pose_csv outputs/wu_paper_roundtrip_v14/wu_truth.csv \
+  --initial_base_pose_csv \
+    outputs/wu_paper_single_field_multistart_v19/p0p5/wu_trajectory.csv \
+  --posture_prior_pose_csv \
+    outputs/wu_paper_single_field_multistart_v19/p0p5/wu_trajectory.csv \
+  --target_image outputs/wu_paper_roundtrip_v14/wu_truth_render.png \
+  --bbsmg_ckpt outputs/paper_bbsmg_gamma_v13/bbsmg_best.pt \
+  --character 武 \
+  --output_dir outputs/wu_paper_shared_prior_v21 \
+  --device cuda \
+  --perturbation_scales -0.5 -0.25 0.25 0.5 \
+  --order 1 \
+  --optimization_size 64 \
+  --max_steps 8 \
+  --pose_prior_weight 0.005 \
+  --resume_completed
+```
+
+共享先验还定义节点 SNR 门控后的回退值：不可观测、被联合剪枝或未选中的姿态节点
+回到 `--posture_prior_pose_csv`，而不是保留每次不同的扰动初值。这样局部稳定性统计
+只衡量可观测节点的优化差异，不会被明确不可观测的自由变量人为放大。
+
+v22 使用这一回退语义完成“武”字四初值合成闭环验收：
+
+```text
+字段    worst normalized RMSE    cross-start normalized RMS std
+z       0.006760                 0.000749
+alpha   0.043674                 0.018525
+beta    0.033467                 0.017420
+gamma   0.013930                 0.005507
+
+minimum IoU              0.994798
+joint Jacobian           passed
+maximum boundary fraction 0
+overall_passed           true
+```
+
+完整机器可读报告：
+
+```text
+outputs/wu_paper_shared_prior_nodes_v22/multistart_summary.json
+```
+
+这只证明同一仿真正向模型上的局部反演已经达到既定精度和稳定性，不证明输出是现实
+机器人的安全姿态。真实部署前仍必须采集毛笔高度/姿态/足迹及机器人坐标系标定数据。
+
 各初值的日志、CSV、图像和单次恢复指标保存在对应的 `m2/m1/m0p5/p0p5/p1/p2`
 子目录。最终汇总为：
 
@@ -1255,6 +1311,43 @@ python -u tools/run_paper_staged_multistart_v18.py \
   --stage_steps 5 \
   --order 1 \
   --optimization_size 64 \
+  --pose_prior_weight 0 \
+  --resume_completed
+```
+
+### 11.20 v20：全局候选选择与局部盆地复验
+
+宽范围初值用于发现多个优化盆地，不要求所有局部盆地给出同一姿态。v20 先从 v19
+结果中筛除 IoU、不满足联合 Jacobian 或存在边界饱和的候选，再按全分辨率 MSE
+选择最佳候选，同时保留近最优候选的姿态离散度作为全局歧义证据：
+
+```bash
+python -u tools/select_paper_multistart_candidate.py \
+  --summary_json \
+    outputs/wu_paper_single_field_multistart_v19/multistart_summary.json \
+  --near_optimal_factor 2 \
+  --output_json \
+    outputs/wu_paper_selected_basin_v20/candidate_selection.json
+```
+
+随后围绕所选候选做更小的局部扰动；真值 CSV 仍独立用于合成验收，不能用候选自身
+替代真值：
+
+```bash
+python -u tools/run_paper_multistart_validation.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --truth_pose_csv outputs/wu_paper_roundtrip_v14/wu_truth.csv \
+  --initial_base_pose_csv \
+    outputs/wu_paper_single_field_multistart_v19/p0p5/wu_trajectory.csv \
+  --target_image outputs/wu_paper_roundtrip_v14/wu_truth_render.png \
+  --bbsmg_ckpt outputs/paper_bbsmg_gamma_v13/bbsmg_best.pt \
+  --character 武 \
+  --output_dir outputs/wu_paper_selected_basin_v20 \
+  --device cuda \
+  --perturbation_scales -0.5 -0.25 0.25 0.5 \
+  --order 1 \
+  --optimization_size 64 \
+  --max_steps 8 \
   --pose_prior_weight 0 \
   --resume_completed
 ```
