@@ -1262,6 +1262,31 @@ python -u tools/run_paper_staged_multistart_v18.py \
 该零先验只用于已知真值的仿真可辨识性测试。真实字帖反演仍必须使用经过物理标定
 的姿态先验和不确定度，不能把仿真零先验直接解释为安全机器人命令。
 
+### 11.19 v19：α/β 单字段坐标下降
+
+v18 三循环表明，把 alpha 与 beta 放在同一阶段仍允许二者互相补偿。v19 使用同一
+工具的 `--stage_scheme separate`，把每轮拆成 H→alpha→beta→gamma 四个单字段
+信赖域阶段；每阶段的联合 Jacobian 退化为单字段审计，后续循环再处理字段间耦合。
+
+```bash
+python -u tools/run_paper_staged_multistart_v18.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --truth_pose_csv outputs/wu_paper_roundtrip_v14/wu_truth.csv \
+  --target_image outputs/wu_paper_roundtrip_v14/wu_truth_render.png \
+  --bbsmg_ckpt outputs/paper_bbsmg_gamma_v13/bbsmg_best.pt \
+  --character 武 \
+  --output_dir outputs/wu_paper_single_field_multistart_v19 \
+  --device cuda \
+  --perturbation_scales -2 -1 -0.5 0.5 1 2 \
+  --stage_scheme separate \
+  --cycles 3 \
+  --stage_steps 5 \
+  --order 1 \
+  --optimization_size 64 \
+  --pose_prior_weight 0 \
+  --resume_completed
+```
+
 ### 11.15 v15：联合 Jacobian 可辨识性与姿态降阶
 
 单节点 SNR 高只表示该节点能够改变图像，不表示多个姿态字段能够被分别恢复。

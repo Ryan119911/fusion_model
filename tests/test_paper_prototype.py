@@ -29,6 +29,10 @@ from tools.build_paper_roundtrip_probe import build_probe
 from tools.evaluate_paper_multistart import evaluate_multistart
 from tools.evaluate_paper_pose_recovery import evaluate as evaluate_pose_recovery
 from tools.run_paper_multistart_validation import scale_label
+from tools.run_paper_staged_multistart_v18 import (
+    GROUPED_STAGES,
+    SEPARATE_STAGES,
+)
 from tools.validate_robot_brush_calibration import validate_calibration_csv
 from tools.render_paper_trajectory import load_pose_csv
 from utils.types import (
@@ -180,6 +184,11 @@ class PaperForwardPoseCsvTests(unittest.TestCase):
         self.assertTrue(summary["overall_passed"])
         self.assertEqual(scale_label(-0.5), "m0p5")
         self.assertEqual(scale_label(2.0), "p2")
+        self.assertEqual(GROUPED_STAGES[1][1], ("alpha", "beta"))
+        self.assertEqual(
+            [fields for _, fields in SEPARATE_STAGES],
+            [("H",), ("alpha",), ("beta",), ("gamma",)],
+        )
 
 
 class RobotBrushCalibrationTests(unittest.TestCase):

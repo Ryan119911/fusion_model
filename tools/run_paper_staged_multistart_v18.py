@@ -17,9 +17,16 @@ from tools.evaluate_paper_pose_recovery import evaluate
 from tools.run_paper_multistart_validation import run_logged, scale_label
 
 
-STAGES = (
+GROUPED_STAGES = (
     ("height", ("H",)),
     ("tilt", ("alpha", "beta")),
+    ("gamma", ("gamma",)),
+)
+
+SEPARATE_STAGES = (
+    ("height", ("H",)),
+    ("alpha", ("alpha",)),
+    ("beta", ("beta",)),
     ("gamma", ("gamma",)),
 )
 
@@ -123,6 +130,15 @@ def main() -> None:
         default=[-2.0, -1.0, -0.5, 0.5, 1.0, 2.0],
     )
     parser.add_argument("--cycles", type=int, default=1)
+    parser.add_argument(
+        "--stage_scheme",
+        choices=("grouped", "separate"),
+        default="grouped",
+        help=(
+            "grouped runs alpha+beta jointly; separate is the v19 "
+            "single-field coordinate-descent schedule"
+        ),
+    )
     parser.add_argument("--stage_steps", type=int, default=5)
     parser.add_argument("--order", type=int, default=1)
     parser.add_argument("--optimization_size", type=int, default=64)
@@ -158,17 +174,27 @@ def main() -> None:
 
     root = Path(args.output_dir)
     root.mkdir(parents=True, exist_ok=True)
+    stages = (
+        SEPARATE_STAGES
+        if args.stage_scheme == "separate"
+        else GROUPED_STAGES
+    )
     estimates: dict[str, str] = {}
     manifest = {
-        "format": "paper_pose_staged_multistart_runner_v18",
+        "format": (
+            "paper_pose_single_field_multistart_runner_v19"
+            if args.stage_scheme == "separate"
+            else "paper_pose_staged_multistart_runner_v18"
+        ),
         "simulation_only": True,
         "truth_pose_csv": args.truth_pose_csv,
         "target_image": args.target_image,
         "perturbation_scales": args.perturbation_scales,
         "cycles": args.cycles,
+        "stage_scheme": args.stage_scheme,
         "stages": [
             {"name": name, "allowed_pose_fields": list(fields)}
-            for name, fields in STAGES
+            for name, fields in stages
         ],
         "pose_prior_weight": args.pose_prior_weight,
         "runs": {},
@@ -190,7 +216,7 @@ def main() -> None:
             "stages": [],
         }
         for cycle in range(1, args.cycles + 1):
-            for stage_name, allowed_fields in STAGES:
+            for stage_name, allowed_fields in stages:
                 stage_dir = run_dir / f"cycle_{cycle}" / stage_name
                 estimate_csv = (
                     stage_dir / f"{args.output_stem}_trajectory.csv"
@@ -247,9 +273,14 @@ def main() -> None:
         stability_limit=args.stability_limit,
         require_run_reports=True,
     )
-    summary["format"] = "paper_pose_staged_multistart_v18"
+    summary["format"] = (
+        "paper_pose_single_field_multistart_v19"
+        if args.stage_scheme == "separate"
+        else "paper_pose_staged_multistart_v18"
+    )
     summary["stages"] = manifest["stages"]
     summary["cycles"] = args.cycles
+    summary["stage_scheme"] = args.stage_scheme
     summary["pose_prior_weight"] = args.pose_prior_weight
     (root / "multistart_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2),
