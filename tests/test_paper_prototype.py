@@ -26,7 +26,9 @@ from models.paper_calibration import (
 )
 from tools.build_paper_bbsmg_dataset import build_dataset
 from tools.build_paper_roundtrip_probe import build_probe
+from tools.evaluate_paper_multistart import evaluate_multistart
 from tools.evaluate_paper_pose_recovery import evaluate as evaluate_pose_recovery
+from tools.run_paper_multistart_validation import scale_label
 from tools.validate_robot_brush_calibration import validate_calibration_csv
 from tools.render_paper_trajectory import load_pose_csv
 from utils.types import (
@@ -132,6 +134,52 @@ class PaperForwardPoseCsvTests(unittest.TestCase):
         self.assertEqual(report["ranges"]["z"], [13.0, 17.0])
         for metrics in recovery["metrics"].values():
             self.assertEqual(metrics["rmse"], 0.0)
+
+    def test_roundtrip_probe_supports_signed_perturbation_scales(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.csv"
+            truth = Path(directory) / "truth.csv"
+            positive = Path(directory) / "positive.csv"
+            negative = Path(directory) / "negative.csv"
+            with source.open("w", encoding="utf-8", newline="") as stream:
+                writer = csv.DictWriter(
+                    stream,
+                    fieldnames=["stroke_id", "point_id", "x", "y"],
+                )
+                writer.writeheader()
+                for point_id in range(3):
+                    writer.writerow(
+                        {
+                            "stroke_id": 0,
+                            "point_id": point_id,
+                            "x": point_id,
+                            "y": point_id,
+                        }
+                    )
+            build_probe(str(source), str(truth))
+            positive_report = build_probe(
+                str(truth),
+                str(positive),
+                profile="perturbed_initial",
+                perturbation_scale=2.0,
+            )
+            negative_report = build_probe(
+                str(truth),
+                str(negative),
+                profile="perturbed_initial",
+                perturbation_scale=-2.0,
+            )
+            truth_rows = evaluate_pose_recovery(str(truth), str(truth))
+            summary = evaluate_multistart(
+                str(truth),
+                {"truth_a": str(truth), "truth_b": str(truth)},
+            )
+        self.assertEqual(positive_report["perturbation"]["z"], 0.8)
+        self.assertEqual(negative_report["perturbation"]["z"], -0.8)
+        self.assertEqual(truth_rows["metrics"]["gamma"]["rmse"], 0.0)
+        self.assertTrue(summary["overall_passed"])
+        self.assertEqual(scale_label(-0.5), "m0p5")
+        self.assertEqual(scale_label(2.0), "p2")
 
 
 class RobotBrushCalibrationTests(unittest.TestCase):

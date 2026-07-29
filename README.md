@@ -1177,6 +1177,55 @@ v13 的 6D B-BSMG 让 gamma 真正进入神经渲染器；v14 进一步把整字
 v14 审计、闭环命令和真实机器人标定边界见
 [`docs/robot_brush_calibration.md`](docs/robot_brush_calibration.md)。
 
+### 11.16 v16：联合剪枝与显式 CUDA 失败
+
+v16 在节点 SNR 门控后重新审计联合 Jacobian。如果字段间典型相关性超过门槛，
+`--joint_gate_action prune` 会依次固定较弱字段，直到保留的姿态变量通过有效秩、
+条件数和字段相关性检查。显式传入 `--device cuda` 时，如果 PyTorch 无法初始化
+CUDA，反演和渲染工具会直接报错，不再静默回退 CPU。
+
+### 11.17 v17：多初值姿态稳定性验证
+
+单次反演得到很高的图像 IoU，并不能证明 z/alpha/beta/gamma 是唯一解。v17 对同一
+组合成真值施加正负、多幅度初始扰动，顺序执行 v16 反演，并同时检查：
+
+```text
+每次反演相对已知真值的 normalized RMSE
+不同初值解之间的 normalized cross-start RMS standard deviation
+每次反演的 IoU、联合 Jacobian 可辨识性和物理边界饱和
+每个姿态字段是否允许进入仿真共识输出
+```
+
+“武”字完整 GPU 验证命令：
+
+```bash
+python -u tools/run_paper_multistart_validation.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --truth_pose_csv outputs/wu_paper_roundtrip_v14/wu_truth.csv \
+  --target_image outputs/wu_paper_roundtrip_v14/wu_truth_render.png \
+  --bbsmg_ckpt outputs/paper_bbsmg_gamma_v13/bbsmg_best.pt \
+  --character 武 \
+  --output_dir outputs/wu_paper_multistart_v17 \
+  --device cuda \
+  --perturbation_scales -2 -1 -0.5 0.5 1 2 \
+  --order 1 \
+  --optimization_size 64 \
+  --max_steps 5 \
+  --resume_completed
+```
+
+各初值的日志、CSV、图像和单次恢复指标保存在对应的 `m2/m1/m0p5/p0p5/p1/p2`
+子目录。最终汇总为：
+
+```text
+outputs/wu_paper_multistart_v17/multistart_summary.json
+```
+
+默认验收线为 z normalized RMSE 不超过 `0.01`，alpha/beta 不超过 `0.06`，
+gamma 不超过 `0.04`，且每个字段的跨初值 normalized RMS 标准差不超过 `0.02`。
+未通过字段会标记为 `withhold_unstable_or_inaccurate`。该结论只适用于仿真闭环，
+不能替代真实毛笔和机器人的姿态标定。
+
 ### 11.15 v15：联合 Jacobian 可辨识性与姿态降阶
 
 单节点 SNR 高只表示该节点能够改变图像，不表示多个姿态字段能够被分别恢复。

@@ -15,8 +15,19 @@ from pathlib import Path
 import numpy as np
 
 
+DEFAULT_PERTURBATION = {
+    "z": 0.4,
+    "alpha": float(np.deg2rad(0.5)),
+    "beta": float(np.deg2rad(-0.25)),
+    "gamma": float(np.deg2rad(2.0)),
+}
+
+
 def build_probe(
-    input_csv: str, output_csv: str, profile: str = "truth"
+    input_csv: str,
+    output_csv: str,
+    profile: str = "truth",
+    perturbation_scale: float = 1.0,
 ) -> dict:
     with open(input_csv, "r", encoding="utf-8-sig", newline="") as stream:
         reader = csv.DictReader(stream)
@@ -70,12 +81,22 @@ def build_probe(
                 source = "synthetic_known_ground_truth"
             else:
                 row["z"] = repr(
-                    float(np.clip(float(row["z"]) + 0.4, 11.0, 20.0))
+                    float(
+                        np.clip(
+                            float(row["z"])
+                            + perturbation_scale
+                            * DEFAULT_PERTURBATION["z"],
+                            11.0,
+                            20.0,
+                        )
+                    )
                 )
                 row["alpha"] = repr(
                     float(
                         np.clip(
-                            float(row["alpha"]) + np.deg2rad(0.5),
+                            float(row["alpha"])
+                            + perturbation_scale
+                            * DEFAULT_PERTURBATION["alpha"],
                             0.0,
                             np.deg2rad(10.0),
                         )
@@ -84,7 +105,9 @@ def build_probe(
                 row["beta"] = repr(
                     float(
                         np.clip(
-                            float(row["beta"]) - np.deg2rad(0.25),
+                            float(row["beta"])
+                            + perturbation_scale
+                            * DEFAULT_PERTURBATION["beta"],
                             0.0,
                             np.deg2rad(5.0),
                         )
@@ -93,7 +116,9 @@ def build_probe(
                 row["gamma"] = repr(
                     float(
                         np.clip(
-                            float(row["gamma"]) + np.deg2rad(2.0),
+                            float(row["gamma"])
+                            + perturbation_scale
+                            * DEFAULT_PERTURBATION["gamma"],
                             -np.deg2rad(30.0),
                             np.deg2rad(30.0),
                         )
@@ -134,6 +159,17 @@ def build_probe(
         "stroke_count": len(grouped),
         "angle_unit": "rad",
         "pose_frame": "paper_model",
+        "perturbation_scale": (
+            float(perturbation_scale)
+            if profile == "perturbed_initial"
+            else 0.0
+        ),
+        "perturbation": {
+            field: float(value * perturbation_scale)
+            for field, value in DEFAULT_PERTURBATION.items()
+        }
+        if profile == "perturbed_initial"
+        else {field: 0.0 for field in DEFAULT_PERTURBATION},
         "ranges": {
             field: [float(values.min()), float(values.max())]
             for field, values in arrays.items()
@@ -158,8 +194,22 @@ def main() -> None:
         choices=("truth", "perturbed_initial"),
         default="truth",
     )
+    parser.add_argument(
+        "--perturbation_scale",
+        type=float,
+        default=1.0,
+        help=(
+            "Signed multiplier for the deterministic z/alpha/beta/gamma "
+            "perturbation used by profile=perturbed_initial"
+        ),
+    )
     args = parser.parse_args()
-    report = build_probe(args.input_pose_csv, args.output_pose_csv, args.profile)
+    report = build_probe(
+        args.input_pose_csv,
+        args.output_pose_csv,
+        args.profile,
+        args.perturbation_scale,
+    )
     print(
         f"[DONE] Synthetic pose probe: points={report['point_count']}, "
         f"strokes={report['stroke_count']}, output={args.output_pose_csv}"
