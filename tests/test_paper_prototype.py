@@ -713,6 +713,39 @@ try:
                     optimize_gamma=True,
                 )
 
+        def test_v18_allowed_pose_fields_validate_staged_blocks(self):
+            from types import SimpleNamespace
+
+            from optim.paper_psoc_lm import PaperPSOCLM
+
+            renderer = SimpleNamespace(
+                bbsmg=nn.Linear(1, 1),
+                dynamic=SimpleNamespace(
+                    longitudinal_scale=0.30,
+                    transverse_scale=0.15,
+                ),
+            )
+            solver = PaperPSOCLM(
+                renderer,
+                optimization_size=8,
+                optimize_gamma=True,
+                allowed_pose_fields=["gamma"],
+            )
+            self.assertEqual(solver.allowed_pose_fields, ("gamma",))
+            with self.assertRaisesRegex(ValueError, "non-empty subset"):
+                PaperPSOCLM(
+                    renderer,
+                    optimization_size=8,
+                    optimize_gamma=True,
+                    allowed_pose_fields=["unknown"],
+                )
+            with self.assertRaisesRegex(ValueError, "optimize_gamma"):
+                PaperPSOCLM(
+                    renderer,
+                    optimization_size=8,
+                    allowed_pose_fields=["gamma"],
+                )
+
         def test_observable_gamma_is_gated_and_optimized(self):
             from types import SimpleNamespace
 

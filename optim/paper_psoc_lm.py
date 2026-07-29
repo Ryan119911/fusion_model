@@ -350,6 +350,7 @@ class PaperPSOCLM:
         observability_noise_rmse: float | None = None,
         min_observability_snr: float = 1.0,
         joint_gate_action: str = "report",
+        allowed_pose_fields: Sequence[str] | None = None,
     ):
         if order < 1:
             raise ValueError("order must be >= 1")
@@ -418,6 +419,23 @@ class PaperPSOCLM:
         self.gamma_max_abs_rad = float(gamma_max_abs_rad)
         self.gamma_smoothness_weight = float(gamma_smoothness_weight)
         self.gamma_prior_weight = float(gamma_prior_weight)
+        valid_pose_fields = set(self.FIELD_NAMES) | {"gamma"}
+        if allowed_pose_fields is None:
+            self.allowed_pose_fields = None
+        else:
+            unique_fields = tuple(dict.fromkeys(allowed_pose_fields))
+            unknown_fields = set(unique_fields) - valid_pose_fields
+            if not unique_fields or unknown_fields:
+                raise ValueError(
+                    "allowed_pose_fields must be a non-empty subset of "
+                    "H/alpha/beta/gamma"
+                )
+            if "gamma" in unique_fields and not self.optimize_gamma:
+                raise ValueError(
+                    "allowed_pose_fields includes gamma but optimize_gamma "
+                    "is disabled"
+                )
+            self.allowed_pose_fields = unique_fields
         if observability_gate_mode not in {
             "field_relative",
             "node_snr",
@@ -1268,6 +1286,11 @@ class PaperPSOCLM:
         available_field_names = list(self.FIELD_NAMES) + (
             ["gamma"] if self.optimize_gamma else []
         )
+        if self.allowed_pose_fields is not None:
+            allowed = set(self.allowed_pose_fields)
+            available_field_names = [
+                name for name in available_field_names if name in allowed
+            ]
         available_columns = {
             **field_columns,
             "gamma": gamma_columns,
@@ -1281,11 +1304,7 @@ class PaperPSOCLM:
                 + " before gated LM",
                 flush=True,
             )
-            all_audit_columns = all_posture_columns
-            if self.optimize_gamma:
-                all_audit_columns = torch.cat(
-                    [all_audit_columns, gamma_columns]
-                )
+            all_audit_columns = columns_for_fields(available_field_names)
             if self.jacobian_mode == "finite_difference":
                 audit_jacobian = finite_difference_jacobian(
                     decision, audit_residual, all_audit_columns
@@ -1486,13 +1505,13 @@ class PaperPSOCLM:
                     flush=True,
                 )
         elif self.field_mode == "h_only":
-            active_fields = ["H"]
+            active_fields = (
+                ["H"] if "H" in available_field_names else []
+            )
         elif self.field_mode == "xy_only":
             active_fields = []
         else:
-            active_fields = list(self.FIELD_NAMES) + (
-                ["gamma"] if self.optimize_gamma else []
-            )
+            active_fields = list(available_field_names)
         if not selected_columns_by_field:
             selected_columns_by_field = {
                 name: available_columns[name] for name in active_fields
@@ -1719,6 +1738,11 @@ class PaperPSOCLM:
                 "mode": self.field_mode,
                 "gate_mode": self.observability_gate_mode,
                 "joint_gate_action": self.joint_gate_action,
+                "allowed_pose_fields": (
+                    list(self.allowed_pose_fields)
+                    if self.allowed_pose_fields is not None
+                    else None
+                ),
                 "min_relative_median_sensitivity": (
                     self.min_relative_median_sensitivity
                 ),

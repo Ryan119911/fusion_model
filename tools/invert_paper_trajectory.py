@@ -370,6 +370,9 @@ def main(args: argparse.Namespace) -> None:
         or args.h_point_acceleration_weight > 0
     )
     output_format = (
+        "paper_psoc_lm_v18_staged_trust_region"
+        if args.allowed_pose_fields is not None
+        else
         (
             "paper_psoc_lm_v16_joint_field_pruning"
             if args.joint_gate_action == "prune"
@@ -523,6 +526,7 @@ def main(args: argparse.Namespace) -> None:
             observability_noise_rmse=args.observability_noise_rmse,
             min_observability_snr=args.min_observability_snr,
             joint_gate_action=args.joint_gate_action,
+            allowed_pose_fields=args.allowed_pose_fields,
         )
         candidate = solver.optimize(
             xy_canvas,
@@ -1041,6 +1045,16 @@ if __name__ == "__main__":
             "auto audits enabled posture fields once and optimizes observable "
             "ones; all reproduces unconstrained A/B runs; h_only skips audit; "
             "xy_only fixes H/alpha/beta for a planar-geometry ablation"
+        ),
+    )
+    parser.add_argument(
+        "--allowed_pose_fields",
+        nargs="+",
+        choices=["H", "alpha", "beta", "gamma"],
+        default=None,
+        help=(
+            "v18 block-coordinate whitelist applied before observability "
+            "gating; inactive posture fields preserve initial_pose_csv values"
         ),
     )
     parser.add_argument(

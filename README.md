@@ -1226,6 +1226,42 @@ gamma 不超过 `0.04`，且每个字段的跨初值 normalized RMS 标准差不
 未通过字段会标记为 `withhold_unstable_or_inaccurate`。该结论只适用于仿真闭环，
 不能替代真实毛笔和机器人的姿态标定。
 
+### 11.18 v18：分阶段信赖域与零初值锚定偏差验证
+
+v17 的六初值实验发现，默认 alpha/beta/gamma 姿态先验会把解锚定到不同初值。
+v18 在合成唯一性测试中将姿态初值先验设为 0，并用
+`--allowed_pose_fields` 依次执行三个块坐标阶段：
+
+```text
+H
+alpha + beta
+gamma
+```
+
+每阶段只更新白名单字段，其余字段严格继承上一阶段 CSV。每个阶段仍执行节点 SNR
+和联合 Jacobian 检查，避免通过关闭可观测性验证来获得表面更好的结果。
+
+```bash
+python -u tools/run_paper_staged_multistart_v18.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --truth_pose_csv outputs/wu_paper_roundtrip_v14/wu_truth.csv \
+  --target_image outputs/wu_paper_roundtrip_v14/wu_truth_render.png \
+  --bbsmg_ckpt outputs/paper_bbsmg_gamma_v13/bbsmg_best.pt \
+  --character 武 \
+  --output_dir outputs/wu_paper_staged_multistart_v18 \
+  --device cuda \
+  --perturbation_scales -2 -1 -0.5 0.5 1 2 \
+  --cycles 1 \
+  --stage_steps 5 \
+  --order 1 \
+  --optimization_size 64 \
+  --pose_prior_weight 0 \
+  --resume_completed
+```
+
+该零先验只用于已知真值的仿真可辨识性测试。真实字帖反演仍必须使用经过物理标定
+的姿态先验和不确定度，不能把仿真零先验直接解释为安全机器人命令。
+
 ### 11.15 v15：联合 Jacobian 可辨识性与姿态降阶
 
 单节点 SNR 高只表示该节点能够改变图像，不表示多个姿态字段能够被分别恢复。
