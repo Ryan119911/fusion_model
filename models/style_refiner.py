@@ -53,12 +53,15 @@ class StyleRefinerUNet(nn.Module):
         values = self.dropout(values)
         for up, skip in zip(self.up_blocks, reversed(skips[:-1])):
             values = up(values, skip)
-        # Channel zero is the geometry mask. A bounded logit residual makes
-        # initialization an identity mapping, rather than an arbitrary gray image.
-        geometry = features[:, :1].clamp(1e-4, 1.0 - 1e-4)
-        base_logits = torch.logit(geometry)
-        residual = 3.0 * torch.tanh(self.output_layer(values))
-        return torch.sigmoid(base_logits + residual)
+        # Channel zero is a hard geometry mask. Keep it as an explicit output
+        # gate so appearance learning can never conceal a wrong trajectory by
+        # creating ink elsewhere. Inside the support, a moderate base logit and
+        # wide residual range allow the network to learn real gray ink values;
+        # using logit(binary_mask) here would saturate and suppress gradients.
+        geometry = features[:, :1].clamp(0.0, 1.0)
+        residual = 8.0 * torch.tanh(self.output_layer(values))
+        appearance = torch.sigmoid(4.0 + residual)
+        return geometry * appearance
 
 
 def build_style_refiner(

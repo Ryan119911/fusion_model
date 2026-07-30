@@ -6,12 +6,19 @@ from tools.build_kaishu_style_dataset import geometry_features
 from tools.train_kaishu_style_refiner import grouped_split, ranked_adaptation_split
 
 
-def test_style_refiner_shape_and_identity_initialization():
+def test_style_refiner_shape_and_geometry_gate_initialization():
     model = StyleRefinerUNet(base_channels=8, depth=2, dropout=0)
     values = torch.rand(2, 4, 32, 32)
     prediction = model(values)
     assert prediction.shape == (2, 1, 32, 32)
-    assert torch.allclose(prediction, values[:, :1], atol=1e-4)
+    assert torch.allclose(
+        prediction / values[:, :1].clamp_min(1e-6),
+        torch.full_like(prediction, torch.sigmoid(torch.tensor(4.0))),
+        atol=1e-4,
+    )
+    zeros = values.clone()
+    zeros[:, 0] = 0
+    assert torch.count_nonzero(model(zeros)) == 0
 
 
 def test_geometry_features_are_finite():
