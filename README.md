@@ -1532,3 +1532,9 @@ python -u tools/compare_xy_refinements.py \
 z/alpha/beta/gamma 是否逐点完全不变。默认只在边界比例不超过 5%、平均位移不
 超过 2 px、目标覆盖率不低于 0.99 的候选中按 IoU 选择结果；不合格候选不会因
 像素误差较低而被选中。
+# Restart-stability audit
+
+For simulation-only pose restarts without real pose truth, use
+`tools/compare_pose_refinements.py`. The complete command, thresholds, and
+physical-calibration limitation are documented in
+`docs/pose_restart_stability.md`.
