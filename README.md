@@ -1513,3 +1513,20 @@ loss 与 MSE，否则 `style_refiner_selected.pt` 自动回退到通用检查点
 若当前阶段只优化 x/y，额外传入
 `--posture_report outputs/wu_kaishu_target_v26_gamma_safe/wu_report.json`，
 以继承被冻结姿态的联合 Jacobian 审计，同时仍从当前报告读取 x/y 位移和边界比例。
+
+不同阻尼或差分步长的 x/y 独立复验完成后，量化跨运行离散度：
+
+```bash
+python -u tools/compare_xy_refinements.py \
+  --trajectory_csvs \
+    outputs/wu_kaishu_target_v28b_xy_stability/wu_trajectory.csv \
+    outputs/wu_kaishu_target_v28c_xy_restart/wu_trajectory.csv \
+  --report_jsons \
+    outputs/wu_kaishu_target_v28b_xy_stability/wu_report.json \
+    outputs/wu_kaishu_target_v28c_xy_restart/wu_report.json \
+  --output_json outputs/wu_kaishu_target_v28_xy_stability.json \
+  --max_normalized_rms_std 0.02
+```
+
+报告同时检查 x/y 的 normalized RMS 标准差、画布像素差，以及
+z/alpha/beta/gamma 是否逐点完全不变。
