@@ -69,6 +69,37 @@ def image_metrics(
     }
 
 
+def solve_clipped_ink_gain(
+    prediction: np.ndarray,
+    target_mean: float,
+    min_gain: float,
+    max_gain: float,
+    iterations: int = 48,
+) -> float:
+    """Solve mean(clip(prediction * gain)) under explicit gain bounds."""
+    if min_gain <= 0 or max_gain < min_gain:
+        raise ValueError("ink gain bounds must satisfy 0 < min <= max")
+    prediction = np.clip(
+        np.asarray(prediction, dtype=np.float32), 0.0, 1.0
+    )
+    target_mean = float(np.clip(target_mean, 0.0, 1.0))
+    low_mean = float(np.clip(prediction * min_gain, 0, 1).mean())
+    high_mean = float(np.clip(prediction * max_gain, 0, 1).mean())
+    if target_mean <= low_mean:
+        return float(min_gain)
+    if target_mean >= high_mean:
+        return float(max_gain)
+    low, high = float(min_gain), float(max_gain)
+    for _ in range(iterations):
+        middle = 0.5 * (low + high)
+        value = float(np.clip(prediction * middle, 0, 1).mean())
+        if value < target_mean:
+            low = middle
+        else:
+            high = middle
+    return 0.5 * (low + high)
+
+
 def pose_continuity(csv_path: str) -> dict[str, Any]:
     with open(csv_path, "r", encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
@@ -169,12 +200,11 @@ def main(args: argparse.Namespace) -> None:
         )[0, 0].cpu().numpy()
     geometry = image_metrics(render, target, args.metric_threshold)
     appearance = image_metrics(refined, target, args.metric_threshold)
-    calibration_gain = float(
-        np.clip(
-            (target.mean() + 1e-8) / (refined.mean() + 1e-8),
-            args.min_ink_gain,
-            args.max_ink_gain,
-        )
+    calibration_gain = solve_clipped_ink_gain(
+        refined,
+        float(target.mean()),
+        args.min_ink_gain,
+        args.max_ink_gain,
     )
     calibrated = np.clip(refined * calibration_gain, 0.0, 1.0)
     calibrated_appearance = image_metrics(
@@ -203,6 +233,9 @@ def main(args: argparse.Namespace) -> None:
         "appearance_after_refinement": appearance,
         "ink_calibrated_appearance": calibrated_appearance,
         "ink_calibration_gain": calibration_gain,
+        "ink_calibration_method": (
+            "bounded_bisection_after_output_clipping"
+        ),
         "appearance_accepted": appearance_accepted,
         "appearance_acceptance_rule": (
             "MSE must improve, IoU may fall by at most 0.002, and ink-balance "

@@ -9,6 +9,7 @@ from tools.evaluate_style_refined_render import (
     image_metrics,
     pose_continuity,
     pose_safety,
+    solve_clipped_ink_gain,
 )
 
 
@@ -29,6 +30,21 @@ def test_exact_canvas_preserves_blank_margins(tmp_path):
     canvas = exact_canvas(str(path), 32)
     assert canvas.shape == (32, 32)
     assert np.count_nonzero(canvas[:10]) == 0
+
+
+def test_clipped_ink_gain_matches_reachable_target_mean():
+    prediction = np.asarray([[0.2, 0.8], [0.9, 1.0]], dtype=np.float32)
+    target_mean = 0.8
+    gain = solve_clipped_ink_gain(prediction, target_mean, 0.8, 2.0)
+    calibrated = np.clip(prediction * gain, 0, 1)
+    assert abs(float(calibrated.mean()) - target_mean) < 1e-6
+    assert gain > target_mean / float(prediction.mean())
+
+
+def test_clipped_ink_gain_respects_unreachable_bound():
+    prediction = np.full((4, 4), 0.1, dtype=np.float32)
+    gain = solve_clipped_ink_gain(prediction, 0.9, 0.8, 1.25)
+    assert gain == 1.25
 
 
 def test_pose_safety_keeps_geometry_diagnostics(tmp_path):
