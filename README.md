@@ -76,6 +76,27 @@ v8 必须重新构建数据并从头训练，不能从 v7 checkpoint 恢复或�
 
 旧 v7 数据和 checkpoint 仍可用于只读评估，但不能进入 v8 训练。
 
+### 楷书目标的骨架驱动 x/y 初始化
+
+当外部楷书目标与输入轨迹的笔画位置不一致时，不能先用 H/姿态角补偿二维结构
+误差。先将现有轨迹在局部范围内吸附到目标骨架：
+
+```bash
+python -u tools/snap_trajectory_to_target.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --pose_csv outputs/wu_kaishu_target_v25_xy_refine/wu_trajectory.csv \
+  --target_image data/raw/targets/wu_kaishu_target.png \
+  --output_csv outputs/wu_kaishu_target_v26_skeleton/wu_initialized.csv \
+  --character 武 \
+  --max_snap_px 10 \
+  --blend 0.8 \
+  --smooth_sigma 0.75
+```
+
+工具输出新的 x/y、骨架覆盖图和 JSON 距离报告，保留原有 z/alpha/beta/gamma。
+随后再用 `invert_paper_trajectory.py` 分阶段优化姿态。该初始化仅是图像坐标配准，
+输出仍是仿真候选，不是经过机器人坐标系标定的安全轨迹。
+
 ## 3. Ubuntu 环境
 
 ```bash
