@@ -2,8 +2,10 @@ import csv
 import json
 
 import numpy as np
+from PIL import Image
 
 from tools.evaluate_style_refined_render import (
+    exact_canvas,
     image_metrics,
     pose_continuity,
     pose_safety,
@@ -17,6 +19,16 @@ def test_image_metrics_identical_masks():
     assert metrics["mse"] == 0
     assert metrics["iou"] == 1
     assert metrics["symmetric_skeleton_distance_px"] == 0
+
+
+def test_exact_canvas_preserves_blank_margins(tmp_path):
+    image = np.full((64, 64), 255, dtype=np.uint8)
+    image[24:40, 28:36] = 0
+    path = tmp_path / "glyph.png"
+    Image.fromarray(image).save(path)
+    canvas = exact_canvas(str(path), 32)
+    assert canvas.shape == (32, 32)
+    assert np.count_nonzero(canvas[:10]) == 0
 
 
 def test_pose_safety_keeps_geometry_diagnostics(tmp_path):
