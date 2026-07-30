@@ -17,3 +17,13 @@ __pycache__/
 !assets/targets/*.jpg
 *.mp4
 download/
+
+# Canonical complete-character target used by the paper inversion workflow.
+# Keep the rest of data/ ignored because it contains multi-GB local datasets.
+!data/
+data/*
+!data/raw/
+data/raw/*
+!data/raw/targets/
+data/raw/targets/*
+!data/raw/targets/wu_kaishu_target.png

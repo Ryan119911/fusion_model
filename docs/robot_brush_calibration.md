@@ -54,7 +54,7 @@ v12 把 gamma 定义为笔触局部足迹相对于轨迹切向的附加轴向角
 python -u tools/invert_paper_trajectory.py \
   --trajectory_csv data/raw/trajectories.csv \
   --initial_pose_csv outputs/wu_paper_inverse_v10_velocity8_w0258/wu_trajectory.csv \
-  --target_image assets/targets/wu_kaishu_target.png \
+  --target_image data/raw/targets/wu_kaishu_target.png \
   --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
   --character 武 \
   --output_dir outputs/wu_paper_inverse_v12_gamma_audit \

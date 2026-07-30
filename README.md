@@ -5,6 +5,12 @@
 - 单笔 B-BSMG：保留原有单笔训练与推理代码。
 - 整字 U-Net：输入一条完整汉字轨迹，一次生成完整 `128×128` 字形。
 
+本项目后续统一使用楷书目标
+`data/raw/targets/wu_kaishu_target.png`。旧的 `武.png` 和
+`wu_target_xingkai.png` 属于已经废弃的行楷参考，不得用于训练、反演、渲染或
+指标比较。整字目标只进入反演/评价流程；B-BSMG 仍使用姿态—足迹配对数据训练，
+不能把单张“武”字当作 B-BSMG 训练样本。
+
 当前整字主流程是 **v8 轨迹几何优先模型**。它解决 v7 中最关键的数据冲突：
 
 ```text
@@ -262,7 +268,7 @@ python -u tools/predict_character.py \
   --trajectory_csv data/raw/trajectories.csv \
   --checkpoint outputs/character_trajectory_faithful_v8/character_best.pt \
   --character 武 \
-  --target_image assets/targets/wu_kaishu_target.png \
+  --target_image data/raw/targets/wu_kaishu_target.png \
   --output_dir outputs/wu_trajectory_faithful_v8 \
   --output_stem wu_v8 \
   --trajectory_padding 16 \
@@ -502,7 +508,7 @@ radian v1 大 24%，因此先对整字比例做独立扫描：
 for SCALE in 0.18 0.20 0.22; do
   python -u tools/render_paper_trajectory.py \
     --trajectory_csv data/raw/trajectories.csv \
-    --target_image assets/targets/wu_kaishu_target.png \
+    --target_image data/raw/targets/wu_kaishu_target.png \
     --bbsmg_ckpt outputs/paper_bbsmg_degree_fitted_v2/bbsmg_best.pt \
     --character 武 \
     --h_mm 15.5 \
@@ -556,7 +562,7 @@ python -u tools/render_paper_trajectory.py \
 ```bash
 python -u tools/invert_paper_trajectory.py \
   --trajectory_csv data/raw/trajectories.csv \
-  --target_image assets/targets/wu_kaishu_target.png \
+  --target_image data/raw/targets/wu_kaishu_target.png \
   --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
   --character 武 \
   --output_dir outputs/wu_paper_inverse_v5_radian \
@@ -587,7 +593,7 @@ python -u tools/invert_paper_trajectory.py \
 ```bash
 python -u tools/invert_paper_trajectory.py \
   --trajectory_csv data/raw/trajectories.csv \
-  --target_image assets/targets/wu_kaishu_target.png \
+  --target_image data/raw/targets/wu_kaishu_target.png \
   --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
   --character 武 \
   --output_dir outputs/wu_paper_inverse_smoke \
@@ -652,7 +658,7 @@ degree-fitted checkpoint 训练完成后，用完全相同的优化配置执行 
 ```bash
 python -u tools/invert_paper_trajectory.py \
   --trajectory_csv data/raw/trajectories.csv \
-  --target_image assets/targets/wu_kaishu_target.png \
+  --target_image data/raw/targets/wu_kaishu_target.png \
   --bbsmg_ckpt outputs/paper_bbsmg_degree_fitted_v2/bbsmg_best.pt \
   --character 武 \
   --output_dir outputs/wu_paper_inverse_v5_degree \
@@ -695,7 +701,7 @@ degree-fitted 只有在图像指标不下降、角度贴边显著减少且中位
 ```bash
 python -u tools/invert_paper_trajectory.py \
   --trajectory_csv data/raw/trajectories.csv \
-  --target_image assets/targets/wu_kaishu_target.png \
+  --target_image data/raw/targets/wu_kaishu_target.png \
   --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
   --character 武 \
   --output_dir outputs/wu_paper_inverse_v6_gated \
@@ -774,7 +780,7 @@ JSON 的 `paper_calibration`，对应代码在
 ```bash
 python -u tools/render_paper_trajectory.py \
   --trajectory_csv data/raw/trajectories.csv \
-  --target_image assets/targets/wu_kaishu_target.png \
+  --target_image data/raw/targets/wu_kaishu_target.png \
   --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
   --character 武 \
   --h_mm 15.5 \
@@ -799,7 +805,7 @@ python -u tools/render_paper_trajectory.py \
 for OFFSET_SCALE in 0.0 0.25 0.5 0.75 1.0; do
   python -u tools/render_paper_trajectory.py \
     --trajectory_csv data/raw/trajectories.csv \
-    --target_image assets/targets/wu_kaishu_target.png \
+    --target_image data/raw/targets/wu_kaishu_target.png \
     --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
     --character 武 \
     --h_mm 15.5 \
@@ -822,7 +828,7 @@ read -p "BEST_OFFSET_SCALE: " BEST_OFFSET_SCALE
 
 python -u tools/invert_paper_trajectory.py \
   --trajectory_csv data/raw/trajectories.csv \
-  --target_image assets/targets/wu_kaishu_target.png \
+  --target_image data/raw/targets/wu_kaishu_target.png \
   --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
   --character 武 \
   --output_dir outputs/wu_paper_inverse_v7_wang \
@@ -926,7 +932,7 @@ v8 只优化 H/alpha/beta，严格锁定输入 x/y。“武”字在固定 x/y �
 ```bash
 python -u tools/invert_paper_trajectory.py \
   --trajectory_csv data/raw/trajectories.csv \
-  --target_image assets/targets/wu_kaishu_target.png \
+  --target_image data/raw/targets/wu_kaishu_target.png \
   --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
   --character 武 \
   --output_dir outputs/wu_paper_inverse_v9_xy6 \
@@ -980,7 +986,7 @@ v9 报告格式为 `paper_psoc_lm_v9_bounded_xy`，新增
 ```bash
 python -u tools/invert_paper_trajectory.py \
   --trajectory_csv data/raw/trajectories.csv \
-  --target_image assets/targets/wu_kaishu_target.png \
+  --target_image data/raw/targets/wu_kaishu_target.png \
   --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
   --character 武 \
   --output_dir outputs/wu_paper_inverse_v9_xy_only \
@@ -1045,7 +1051,7 @@ v10 新增三个显式开关，默认值保持 v9 行为：
 ```bash
 python -u tools/invert_paper_trajectory.py \
   --trajectory_csv data/raw/trajectories.csv \
-  --target_image assets/targets/wu_kaishu_target.png \
+  --target_image data/raw/targets/wu_kaishu_target.png \
   --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
   --character 武 \
   --output_dir outputs/wu_paper_inverse_v10_point_continuity \
@@ -1118,7 +1124,7 @@ python -u tools/invert_paper_trajectory.py \
   --trajectory_csv data/raw/trajectories.csv \
   --initial_pose_csv \
     outputs/wu_paper_inverse_v10_velocity8_w0258/wu_trajectory.csv \
-  --target_image assets/targets/wu_kaishu_target.png \
+  --target_image data/raw/targets/wu_kaishu_target.png \
   --bbsmg_ckpt outputs/paper_bbsmg_v1/bbsmg_best.pt \
   --character 武 \
   --output_dir outputs/wu_paper_inverse_v11_pose_audit \
