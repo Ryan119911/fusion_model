@@ -1510,6 +1510,30 @@ Jacobian 审计，同时重新计算 z/alpha/beta/gamma 的逐笔连续性。它
 标定，默认增益限制为 0.8–1.25；只有 MSE 改善、IoU 基本不退化且墨量平衡不下降
 时才标记为 `appearance_accepted`。少样本适配同样必须同时改善 20 个留出候选的
 loss 与 MSE，否则 `style_refiner_selected.pt` 自动回退到通用检查点。
+
+v33 起，风格细化损失额外约束全局墨量、16×16 局部墨量和支持域内欠墨/过墨。
+其中欠墨惩罚高于过墨惩罚，因为硬几何门已经禁止网络在轨迹支持域外补结构。
+训练报告新增 `ink_loss`、`local_ink_loss`、`under_ink`、`over_ink`、
+`ink_ratio` 和 `ink_balance_score`；少样本适配除 loss/MSE 外还要求留出集墨量
+平衡下降不超过 0.01。推荐从通用无“武”训练重新开始：
+
+```bash
+python -u tools/train_kaishu_style_refiner.py \
+  --npz data/processed/kaishu_style_v27.npz \
+  --output_dir outputs/kaishu_style_refiner_v33_ink \
+  --epochs 30 \
+  --batch_size 12 \
+  --device cuda \
+  --ink_weight 0.75 \
+  --local_ink_weight 0.75 \
+  --tone_balance_weight 0.25 \
+  --variant_audit_json \
+    outputs/wu_kaishu_variant_audit_v27_baseline/variants.json \
+  --adapt_top_k 5 \
+  --adapt_epochs 20 \
+  --adapt_lr 0.00003
+```
+
 若当前阶段只优化 x/y，额外传入
 `--posture_report outputs/wu_kaishu_target_v26_gamma_safe/wu_report.json`，
 以继承被冻结姿态的联合 Jacobian 审计，同时仍从当前报告读取 x/y 位移和边界比例。

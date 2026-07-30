@@ -3,7 +3,11 @@ import torch
 
 from models.style_refiner import StyleRefinerUNet
 from tools.build_kaishu_style_dataset import geometry_features
-from tools.train_kaishu_style_refiner import grouped_split, ranked_adaptation_split
+from tools.train_kaishu_style_refiner import (
+    grouped_split,
+    loss_components,
+    ranked_adaptation_split,
+)
 
 
 def test_style_refiner_shape_and_geometry_gate_initialization():
@@ -50,3 +54,17 @@ def test_ranked_adaptation_split(tmp_path):
     adapt, test = ranked_adaptation_split(np.arange(3), sources, str(audit), 1)
     assert adapt.tolist() == [0]
     assert test.tolist() == [1, 2]
+
+
+def test_style_loss_penalizes_faint_ink_and_reports_balance():
+    target = torch.zeros(2, 1, 32, 32)
+    target[:, :, 8:24, 10:22] = 0.8
+    geometry = (target > 0).float()
+    exact = loss_components(target, target, geometry)
+    faint = loss_components(target * 0.5, target, geometry)
+    assert exact["ink_balance_score"] == 1
+    assert faint["ink_ratio"] < 0.51
+    assert faint["under_ink"] > 0
+    assert faint["ink_loss"] > exact["ink_loss"]
+    assert faint["local_ink_loss"] > exact["local_ink_loss"]
+    assert faint["loss"] > exact["loss"]

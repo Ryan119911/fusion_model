@@ -84,7 +84,15 @@ def ranked_adaptation_split(
     return adapt, test
 
 
-def loss_components(prediction: torch.Tensor, target: torch.Tensor) -> dict:
+def loss_components(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    geometry: torch.Tensor | None = None,
+    *,
+    ink_weight: float = 0.75,
+    local_ink_weight: float = 0.75,
+    tone_balance_weight: float = 0.25,
+) -> dict:
     dims = (1, 2, 3)
     mse = F.mse_loss(prediction, target)
     mae = F.l1_loss(prediction, target)
@@ -100,17 +108,67 @@ def loss_components(prediction: torch.Tensor, target: torch.Tensor) -> dict:
     boundary = F.l1_loss(grad_pred_x, grad_true_x) + F.l1_loss(
         grad_pred_y, grad_true_y
     )
-    total = mse + 0.35 * mae + 0.35 * dice + 0.25 * boundary
-    return {"loss": total, "mse": mse, "mae": mae, "dice_loss": dice, "boundary": boundary}
+    ink = torch.abs(
+        prediction.mean(dim=dims) - target.mean(dim=dims)
+    ).mean()
+    pool_size = min(16, prediction.shape[-2], prediction.shape[-1])
+    local_ink = F.l1_loss(
+        F.avg_pool2d(prediction, kernel_size=pool_size, stride=pool_size),
+        F.avg_pool2d(target, kernel_size=pool_size, stride=pool_size),
+    )
+    if geometry is None:
+        geometry = torch.ones_like(target)
+    support = geometry[:, :1].clamp(0.0, 1.0)
+    support_area = support.sum(dim=dims).clamp_min(1.0)
+    under_ink = (
+        (F.relu(target - prediction) * support).sum(dim=dims) / support_area
+    ).mean()
+    over_ink = (
+        (F.relu(prediction - target) * support).sum(dim=dims) / support_area
+    ).mean()
+    # Missing ink is more harmful than modest over-ink because the refiner is
+    # already hard-gated and cannot create new structure outside its support.
+    tone_balance = 1.5 * under_ink + 0.5 * over_ink
+    target_ink = target.mean(dim=dims).clamp_min(1e-6)
+    ink_ratio = (prediction.mean(dim=dims) / target_ink).mean()
+    ink_balance_score = torch.exp(
+        -torch.abs(torch.log(ink_ratio.clamp(1e-4, 1e4)))
+    )
+    total = (
+        mse
+        + 0.35 * mae
+        + 0.35 * dice
+        + 0.25 * boundary
+        + ink_weight * ink
+        + local_ink_weight * local_ink
+        + tone_balance_weight * tone_balance
+    )
+    return {
+        "loss": total,
+        "mse": mse,
+        "mae": mae,
+        "dice_loss": dice,
+        "boundary": boundary,
+        "ink_loss": ink,
+        "local_ink_loss": local_ink,
+        "tone_balance_loss": tone_balance,
+        "under_ink": under_ink,
+        "over_ink": over_ink,
+        "ink_ratio": ink_ratio,
+        "ink_balance_score": ink_balance_score,
+    }
 
 
 @torch.no_grad()
-def evaluate(model, loader, device):
+def evaluate(model, loader, device, loss_kwargs=None):
     model.eval()
     totals, count = {}, 0
+    loss_kwargs = loss_kwargs or {}
     for features, targets in loader:
         features, targets = features.to(device), targets.to(device)
-        values = loss_components(model(features), targets)
+        values = loss_components(
+            model(features), targets, features[:, :1], **loss_kwargs
+        )
         batch = features.shape[0]
         for key, value in values.items():
             totals[key] = totals.get(key, 0.0) + float(value) * batch
@@ -170,10 +228,15 @@ def main(args: argparse.Namespace) -> None:
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
+    loss_kwargs = {
+        "ink_weight": args.ink_weight,
+        "local_ink_weight": args.local_ink_weight,
+        "tone_balance_weight": args.tone_balance_weight,
+    }
     best = float("inf")
     history = []
-    initial_validation = evaluate(model, val_loader, device)
-    initial_heldout = evaluate(model, heldout_loader, device)
+    initial_validation = evaluate(model, val_loader, device, loss_kwargs)
+    initial_heldout = evaluate(model, heldout_loader, device, loss_kwargs)
     for epoch in range(1, args.epochs + 1):
         model.train()
         total, count = 0.0, 0
@@ -181,13 +244,18 @@ def main(args: argparse.Namespace) -> None:
             batch_features = batch_features.to(device)
             batch_targets = batch_targets.to(device)
             optimizer.zero_grad(set_to_none=True)
-            components = loss_components(model(batch_features), batch_targets)
+            components = loss_components(
+                model(batch_features),
+                batch_targets,
+                batch_features[:, :1],
+                **loss_kwargs,
+            )
             components["loss"].backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             total += float(components["loss"]) * batch_features.shape[0]
             count += batch_features.shape[0]
-        metrics = evaluate(model, val_loader, device)
+        metrics = evaluate(model, val_loader, device, loss_kwargs)
         record = {"epoch": epoch, "train_loss": total / count, **metrics}
         history.append(record)
         checkpoint = {
@@ -202,6 +270,7 @@ def main(args: argparse.Namespace) -> None:
             },
             "epoch": epoch,
             "metrics": metrics,
+            "loss_config": loss_kwargs,
         }
         torch.save(checkpoint, output / "style_refiner_last.pt")
         if metrics["loss"] < best:
@@ -220,12 +289,15 @@ def main(args: argparse.Namespace) -> None:
         "best_val_loss": best,
         "initial_validation": initial_validation,
         "initial_heldout_wu": initial_heldout,
+        "loss_config": loss_kwargs,
     }
     best_checkpoint = torch.load(
         output / "style_refiner_best.pt", map_location=device, weights_only=False
     )
     model.load_state_dict(best_checkpoint["model_state"])
-    report["generic_heldout_wu"] = evaluate(model, heldout_loader, device)
+    report["generic_heldout_wu"] = evaluate(
+        model, heldout_loader, device, loss_kwargs
+    )
     selected_checkpoint = best_checkpoint
     selected_reason = "generic_checkpoint_without_wu_adaptation"
     save_panels(
@@ -251,7 +323,7 @@ def main(args: argparse.Namespace) -> None:
         test_loader = DataLoader(
             test_dataset, batch_size=args.batch_size, shuffle=False
         )
-        before = evaluate(model, test_loader, device)
+        before = evaluate(model, test_loader, device, loss_kwargs)
         adapter = torch.optim.AdamW(
             model.parameters(), lr=args.adapt_lr, weight_decay=1e-4
         )
@@ -261,13 +333,19 @@ def main(args: argparse.Namespace) -> None:
                 batch_features = batch_features.to(device)
                 batch_targets = batch_targets.to(device)
                 adapter.zero_grad(set_to_none=True)
-                loss = loss_components(model(batch_features), batch_targets)["loss"]
+                loss = loss_components(
+                    model(batch_features),
+                    batch_targets,
+                    batch_features[:, :1],
+                    **loss_kwargs,
+                )["loss"]
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 adapter.step()
-        after = evaluate(model, test_loader, device)
+        after = evaluate(model, test_loader, device, loss_kwargs)
         adaptation_accepted = bool(
             after["loss"] <= before["loss"] and after["mse"] <= before["mse"]
+            and after["ink_balance_score"] >= before["ink_balance_score"] - 0.01
         )
         adapted_checkpoint = dict(best_checkpoint)
         adapted_checkpoint["model_state"] = model.state_dict()
@@ -284,7 +362,8 @@ def main(args: argparse.Namespace) -> None:
             "test_after": after,
             "accepted": adaptation_accepted,
             "acceptance_rule": (
-                "heldout test loss and MSE must both be no worse after adaptation"
+                "heldout test loss and MSE must both be no worse after "
+                "adaptation, and ink balance may fall by at most 0.01"
             ),
         }
         if adaptation_accepted:
@@ -326,4 +405,7 @@ if __name__ == "__main__":
     parser.add_argument("--adapt_top_k", type=int, default=5)
     parser.add_argument("--adapt_epochs", type=int, default=20)
     parser.add_argument("--adapt_lr", type=float, default=3e-5)
+    parser.add_argument("--ink_weight", type=float, default=0.75)
+    parser.add_argument("--local_ink_weight", type=float, default=0.75)
+    parser.add_argument("--tone_balance_weight", type=float, default=0.25)
     main(parser.parse_args())
