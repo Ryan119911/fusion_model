@@ -19,10 +19,7 @@ if str(ROOT) not in sys.path:
 
 from models.style_refiner import build_style_refiner
 from tools.build_kaishu_style_dataset import geometry_features
-from utils.image_preprocessing import (
-    letterbox_character_image,
-    normalize_image_polarity,
-)
+from utils.image_preprocessing import normalize_image_polarity
 from utils.structure_mask import skeletonize_binary
 
 
@@ -40,17 +37,6 @@ def exact_canvas(path: str, image_size: int) -> np.ndarray:
             dtype=np.float32,
         ) / 255.0
     return gray.astype(np.float32)
-
-
-def canonical_canvas(path: str, image_size: int, padding: int) -> np.ndarray:
-    with Image.open(path) as image:
-        gray, _ = letterbox_character_image(
-            image.convert("L"),
-            canvas_size=image_size,
-            padding=padding,
-            crop_foreground=True,
-        )
-    return gray
 
 
 def image_metrics(
@@ -158,7 +144,10 @@ def main(args: argparse.Namespace) -> None:
     model.load_state_dict(checkpoint["model_state"])
     model.eval()
     render = exact_canvas(args.render_image, args.image_size)
-    target = canonical_canvas(args.target_image, args.image_size, args.target_padding)
+    # Match optim.trajectory_optimizer.load_target_image: preserve the original
+    # canvas and resize directly. Re-letterboxing here would enlarge the glyph
+    # and make the post-hoc report incomparable with the inversion objective.
+    target = exact_canvas(args.target_image, args.image_size)
     features = geometry_features(render, threshold=args.structure_threshold)
     with torch.no_grad():
         refined = model(
@@ -166,6 +155,28 @@ def main(args: argparse.Namespace) -> None:
         )[0, 0].cpu().numpy()
     geometry = image_metrics(render, target, args.metric_threshold)
     appearance = image_metrics(refined, target, args.metric_threshold)
+    calibration_gain = float(
+        np.clip(
+            (target.mean() + 1e-8) / (refined.mean() + 1e-8),
+            args.min_ink_gain,
+            args.max_ink_gain,
+        )
+    )
+    calibrated = np.clip(refined * calibration_gain, 0.0, 1.0)
+    calibrated_appearance = image_metrics(
+        calibrated, target, args.metric_threshold
+    )
+    before_ink_balance = float(
+        np.exp(-abs(np.log(max(geometry["ink_ratio"], 1e-8))))
+    )
+    calibrated_ink_balance = float(
+        np.exp(-abs(np.log(max(calibrated_appearance["ink_ratio"], 1e-8))))
+    )
+    appearance_accepted = bool(
+        calibrated_appearance["mse"] < geometry["mse"]
+        and calibrated_appearance["iou"] >= geometry["iou"] - 0.002
+        and calibrated_ink_balance >= before_ink_balance - 0.01
+    )
     report = {
         "format": FORMAT,
         "canonical_target": args.target_image,
@@ -175,6 +186,13 @@ def main(args: argparse.Namespace) -> None:
         "metric_threshold": args.metric_threshold,
         "geometry_before_refinement": geometry,
         "appearance_after_refinement": appearance,
+        "ink_calibrated_appearance": calibrated_appearance,
+        "ink_calibration_gain": calibration_gain,
+        "appearance_accepted": appearance_accepted,
+        "appearance_acceptance_rule": (
+            "MSE must improve, IoU may fall by at most 0.002, and ink-balance "
+            "may fall by at most 0.01; geometry metrics remain authoritative."
+        ),
         "delta_after_minus_before": {
             key: appearance[key] - geometry[key]
             for key in ("mse", "mae", "dice", "iou", "ink_ratio", "symmetric_skeleton_distance_px")
@@ -190,16 +208,22 @@ def main(args: argparse.Namespace) -> None:
     paper_image(target).save(output / "target.png")
     paper_image(render).save(output / "render_geometry.png")
     paper_image(refined).save(output / "render_refined.png")
-    difference = np.abs(refined - target)
+    paper_image(calibrated).save(output / "render_refined_calibrated.png")
+    difference = np.abs(calibrated - target)
     Image.fromarray(np.rint(difference * 255).astype(np.uint8), mode="L").save(
         output / "diff.png"
     )
-    panels = [paper_image(target), paper_image(render), paper_image(refined)]
+    panels = [
+        paper_image(target),
+        paper_image(render),
+        paper_image(refined),
+        paper_image(calibrated),
+    ]
     panels.append(Image.fromarray(np.rint(difference * 255).astype(np.uint8), mode="L"))
-    comparison = Image.new("L", (args.image_size * 4, args.image_size + 18), 255)
+    comparison = Image.new("L", (args.image_size * 5, args.image_size + 18), 255)
     draw = ImageDraw.Draw(comparison)
     for index, (panel, label) in enumerate(
-        zip(panels, ("target", "geometry", "refined", "abs diff"))
+        zip(panels, ("target", "geometry", "refined", "ink calibrated", "abs diff"))
     ):
         comparison.paste(panel, (index * args.image_size, 18))
         draw.text((index * args.image_size + 3, 2), label, fill=0)
@@ -220,7 +244,8 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--image_size", type=int, default=128)
-    parser.add_argument("--target_padding", type=int, default=4)
     parser.add_argument("--structure_threshold", type=float, default=0.35)
     parser.add_argument("--metric_threshold", type=float, default=0.35)
+    parser.add_argument("--min_ink_gain", type=float, default=0.8)
+    parser.add_argument("--max_ink_gain", type=float, default=1.25)
     main(parser.parse_args())

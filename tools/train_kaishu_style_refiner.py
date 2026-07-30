@@ -226,6 +226,8 @@ def main(args: argparse.Namespace) -> None:
     )
     model.load_state_dict(best_checkpoint["model_state"])
     report["generic_heldout_wu"] = evaluate(model, heldout_loader, device)
+    selected_checkpoint = best_checkpoint
+    selected_reason = "generic_checkpoint_without_wu_adaptation"
     save_panels(
         model,
         StyleDataset(features, targets, heldout_idx),
@@ -264,6 +266,9 @@ def main(args: argparse.Namespace) -> None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 adapter.step()
         after = evaluate(model, test_loader, device)
+        adaptation_accepted = bool(
+            after["loss"] <= before["loss"] and after["mse"] <= before["mse"]
+        )
         adapted_checkpoint = dict(best_checkpoint)
         adapted_checkpoint["model_state"] = model.state_dict()
         adapted_checkpoint["adaptation"] = {
@@ -277,7 +282,16 @@ def main(args: argparse.Namespace) -> None:
             **adapted_checkpoint["adaptation"],
             "test_before": before,
             "test_after": after,
+            "accepted": adaptation_accepted,
+            "acceptance_rule": (
+                "heldout test loss and MSE must both be no worse after adaptation"
+            ),
         }
+        if adaptation_accepted:
+            selected_checkpoint = adapted_checkpoint
+            selected_reason = "wu_adaptation_improved_heldout_loss_and_mse"
+        else:
+            selected_reason = "wu_adaptation_rejected_due_to_heldout_regression"
         save_panels(
             model,
             test_dataset,
@@ -285,6 +299,11 @@ def main(args: argparse.Namespace) -> None:
             output / "adapted_wu_test_panels",
             "adapted",
         )
+    selected_checkpoint = dict(selected_checkpoint)
+    selected_checkpoint["selection_reason"] = selected_reason
+    torch.save(selected_checkpoint, output / "style_refiner_selected.pt")
+    report["selected_checkpoint"] = "style_refiner_selected.pt"
+    report["selection_reason"] = selected_reason
     (output / "training_metrics.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )

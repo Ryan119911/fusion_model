@@ -1505,4 +1505,8 @@ python -u tools/evaluate_style_refined_render.py \
 该工具分别记录 `geometry_before_refinement` 与
 `appearance_after_refinement`，并从原姿态报告继承轨迹覆盖率、各字段边界比例和联合
 Jacobian 审计，同时重新计算 z/alpha/beta/gamma 的逐笔连续性。它不会用外观指标
-替代姿态验收。
+替代姿态验收。规范目标在此处与反演器保持一致：保留原始画布空白并直接缩放到
+128×128，不再次裁边或 letterbox。外观输出只允许在原几何硬支持内做全局墨量
+标定，默认增益限制为 0.8–1.25；只有 MSE 改善、IoU 基本不退化且墨量平衡不下降
+时才标记为 `appearance_accepted`。少样本适配同样必须同时改善 20 个留出候选的
+loss 与 MSE，否则 `style_refiner_selected.pt` 自动回退到通用检查点。
