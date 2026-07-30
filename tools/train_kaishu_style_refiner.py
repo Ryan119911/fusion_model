@@ -224,7 +224,10 @@ def main(args: argparse.Namespace) -> None:
         shuffle=False,
         num_workers=args.workers,
     )
-    model = build_style_refiner(base_channels=args.base_channels).to(device)
+    model = build_style_refiner(
+        base_channels=args.base_channels,
+        support_mode=args.support_mode,
+    ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -261,7 +264,11 @@ def main(args: argparse.Namespace) -> None:
         checkpoint = {
             "format": STYLE_REFINER_CHECKPOINT_FORMAT,
             "model_state": model.state_dict(),
-            "model_config": {"input_channels": 4, "base_channels": args.base_channels},
+            "model_config": {
+                "input_channels": 4,
+                "base_channels": args.base_channels,
+                "support_mode": args.support_mode,
+            },
             "split": {
                 "train": len(train_idx),
                 "validation": len(val_idx),
@@ -408,4 +415,13 @@ if __name__ == "__main__":
     parser.add_argument("--ink_weight", type=float, default=0.75)
     parser.add_argument("--local_ink_weight", type=float, default=0.75)
     parser.add_argument("--tone_balance_weight", type=float, default=0.25)
+    parser.add_argument(
+        "--support_mode",
+        choices=("mask_only", "mask_or_soft"),
+        default="mask_or_soft",
+        help=(
+            "geometry output gate; mask_or_soft retains bounded antialiased "
+            "brush support while old checkpoints remain mask_only"
+        ),
+    )
     main(parser.parse_args())

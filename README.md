@@ -1534,6 +1534,30 @@ python -u tools/train_kaishu_style_refiner.py \
   --adapt_lr 0.00003
 ```
 
+v34 修正训练/推理支持域不一致：旧版 `mask_only` 用二值结构掩膜直接裁掉
+B-BSMG 的抗锯齿软边缘，造成规范目标欠墨。新训练默认
+`--support_mode mask_or_soft`，输出门取结构掩膜与软几何支持域的逐像素最大值；
+它仍只来自冻结的正向几何渲染，不引入目标图像或姿态标签。旧检查点没有该字段，
+加载时继续使用 `mask_only`，因此结果可复现。v34 训练命令为：
+
+```bash
+python -u tools/train_kaishu_style_refiner.py \
+  --npz data/processed/kaishu_style_v27.npz \
+  --output_dir outputs/kaishu_style_refiner_v34_soft_support \
+  --epochs 30 \
+  --batch_size 12 \
+  --device cuda \
+  --support_mode mask_or_soft \
+  --ink_weight 0.75 \
+  --local_ink_weight 0.75 \
+  --tone_balance_weight 0.25 \
+  --variant_audit_json \
+    outputs/wu_kaishu_variant_audit_v27_baseline/variants.json \
+  --adapt_top_k 5 \
+  --adapt_epochs 20 \
+  --adapt_lr 0.00003
+```
+
 若当前阶段只优化 x/y，额外传入
 `--posture_report outputs/wu_kaishu_target_v26_gamma_safe/wu_report.json`，
 以继承被冻结姿态的联合 Jacobian 审计，同时仍从当前报告读取 x/y 位移和边界比例。

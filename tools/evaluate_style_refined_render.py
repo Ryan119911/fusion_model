@@ -153,7 +153,8 @@ def paper_image(array: np.ndarray) -> Image.Image:
 def main(args: argparse.Namespace) -> None:
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(args.style_ckpt, map_location=device, weights_only=False)
-    model = build_style_refiner(checkpoint.get("model_config", {})).to(device)
+    model_config = checkpoint.get("model_config", {})
+    model = build_style_refiner(model_config).to(device)
     model.load_state_dict(checkpoint["model_state"])
     model.eval()
     render = exact_canvas(args.render_image, args.image_size)
@@ -195,6 +196,7 @@ def main(args: argparse.Namespace) -> None:
         "canonical_target": args.target_image,
         "render_image": args.render_image,
         "style_checkpoint": args.style_ckpt,
+        "support_mode": model_config.get("support_mode", "mask_only"),
         "device": str(device),
         "metric_threshold": args.metric_threshold,
         "geometry_before_refinement": geometry,
@@ -211,8 +213,12 @@ def main(args: argparse.Namespace) -> None:
             for key in ("mse", "mae", "dice", "iou", "ink_ratio", "symmetric_skeleton_distance_px")
         },
         "geometry_gate": (
-            "Hard support from the unrefined render; the style model cannot create "
-            "ink outside it or serve as a pose label."
+            "Bounded support derived only from the unrefined render's structure "
+            "mask and soft geometry; the style model cannot serve as a pose label."
+            if model_config.get("support_mode") == "mask_or_soft"
+            else
+            "Hard support from the unrefined render; the style model cannot "
+            "create ink outside it or serve as a pose label."
         ),
         "pose_safety": pose_safety(
             args.pose_report,

@@ -25,6 +25,30 @@ def test_style_refiner_shape_and_geometry_gate_initialization():
     assert torch.count_nonzero(model(zeros)) == 0
 
 
+def test_soft_support_mode_retains_bounded_antialiased_geometry():
+    model = StyleRefinerUNet(
+        base_channels=8,
+        depth=2,
+        dropout=0,
+        support_mode="mask_or_soft",
+    )
+    values = torch.zeros(1, 4, 32, 32)
+    values[:, 0, 10:22, 10:22] = 1
+    values[:, 3, 8:24, 8:24] = 0.25
+    prediction = model(values)
+    support = torch.maximum(values[:, :1], values[:, 3:4])
+    active = support > 0
+    assert torch.allclose(
+        prediction[active] / support[active],
+        torch.full_like(
+            prediction[active], torch.sigmoid(torch.tensor(4.0))
+        ),
+        atol=1e-4,
+    )
+    assert torch.count_nonzero(prediction[:, :, :8]) == 0
+    assert torch.count_nonzero(prediction[:, :, 8:10, 8:24]) > 0
+
+
 def test_geometry_features_are_finite():
     gray = np.zeros((32, 32), dtype=np.float32)
     gray[8:24, 13:19] = 1
