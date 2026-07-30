@@ -111,13 +111,24 @@ def find_nested(value: Any, key: str) -> Any:
     return None
 
 
-def pose_safety(report_path: str, trajectory_csv: str) -> dict[str, Any]:
+def pose_safety(
+    report_path: str,
+    trajectory_csv: str,
+    posture_report_path: str | None = None,
+) -> dict[str, Any]:
     report = json.loads(Path(report_path).read_text(encoding="utf-8"))
     decisions = report.get("field_decisions", {})
+    posture_report = (
+        json.loads(Path(posture_report_path).read_text(encoding="utf-8"))
+        if posture_report_path
+        else report
+    )
+    joint_audit = find_nested(posture_report, "joint_jacobian_audit")
     return {
         "simulation_only": bool(report.get("simulation_only", True)),
         "source_report": report_path,
         "trajectory_csv": trajectory_csv,
+        "posture_source_report": posture_report_path or report_path,
         "trajectory_target_coverage_at_5px": report.get(
             "trajectory_target_coverage_at_5px"
         ),
@@ -125,7 +136,9 @@ def pose_safety(report_path: str, trajectory_csv: str) -> dict[str, Any]:
             field: values.get("boundary_fraction")
             for field, values in decisions.items()
         },
-        "joint_jacobian_audit": find_nested(report, "joint_jacobian_audit"),
+        "joint_jacobian_audit": joint_audit,
+        "posture_field_decisions": posture_report.get("field_decisions", {}),
+        "xy_optimization": report.get("xy_optimization"),
         "continuity": pose_continuity(trajectory_csv),
         "warning": report.get("warning"),
     }
@@ -201,7 +214,11 @@ def main(args: argparse.Namespace) -> None:
             "Hard support from the unrefined render; the style model cannot create "
             "ink outside it or serve as a pose label."
         ),
-        "pose_safety": pose_safety(args.pose_report, args.trajectory_csv),
+        "pose_safety": pose_safety(
+            args.pose_report,
+            args.trajectory_csv,
+            posture_report_path=args.posture_report,
+        ),
     }
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -240,6 +257,14 @@ if __name__ == "__main__":
     parser.add_argument("--target_image", required=True)
     parser.add_argument("--style_ckpt", required=True)
     parser.add_argument("--pose_report", required=True)
+    parser.add_argument(
+        "--posture_report",
+        default=None,
+        help=(
+            "Optional parent posture report when the current stage optimizes "
+            "only x/y; its joint Jacobian audit remains authoritative."
+        ),
+    )
     parser.add_argument("--trajectory_csv", required=True)
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--device", default="cuda")

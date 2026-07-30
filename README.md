@@ -1510,3 +1510,6 @@ Jacobian 审计，同时重新计算 z/alpha/beta/gamma 的逐笔连续性。它
 标定，默认增益限制为 0.8–1.25；只有 MSE 改善、IoU 基本不退化且墨量平衡不下降
 时才标记为 `appearance_accepted`。少样本适配同样必须同时改善 20 个留出候选的
 loss 与 MSE，否则 `style_refiner_selected.pt` 自动回退到通用检查点。
+若当前阶段只优化 x/y，额外传入
+`--posture_report outputs/wu_kaishu_target_v26_gamma_safe/wu_report.json`，
+以继承被冻结姿态的联合 Jacobian 审计，同时仍从当前报告读取 x/y 位移和边界比例。

@@ -62,3 +62,26 @@ def test_pose_safety_keeps_geometry_diagnostics(tmp_path):
     assert result["field_boundary_fractions"]["gamma"] == 0.1
     assert result["joint_jacobian_audit"]["passed"]
     assert result["continuity"]["max_adjacent_step"]["z"] == 1
+
+
+def test_xy_stage_inherits_parent_posture_jacobian(tmp_path):
+    trajectory = tmp_path / "pose.csv"
+    trajectory.write_text(
+        "stroke_id,point_id,z,alpha,beta,gamma\n0,0,12,0,0,0\n",
+        encoding="utf-8",
+    )
+    xy_report = tmp_path / "xy.json"
+    xy_report.write_text(
+        json.dumps({"simulation_only": True, "xy_optimization": {"enabled": True}}),
+        encoding="utf-8",
+    )
+    posture_report = tmp_path / "posture.json"
+    posture_report.write_text(
+        json.dumps({"joint_jacobian_audit": {"jointly_identifiable": True}}),
+        encoding="utf-8",
+    )
+    result = pose_safety(
+        str(xy_report), str(trajectory), posture_report_path=str(posture_report)
+    )
+    assert result["joint_jacobian_audit"]["jointly_identifiable"]
+    assert result["xy_optimization"]["enabled"]
