@@ -31,6 +31,9 @@ def compare_runs(
     csv_paths: list[str],
     report_paths: list[str],
     drawable_pixels: float = 96.0,
+    max_bound_fraction: float = 0.05,
+    max_mean_displacement_px: float = 2.0,
+    min_coverage: float = 0.99,
 ) -> dict[str, Any]:
     if len(csv_paths) < 2 or len(csv_paths) != len(report_paths):
         raise ValueError("Need at least two matching CSV/report pairs")
@@ -65,8 +68,7 @@ def compare_runs(
     ]
     summaries = []
     for csv_path, report_path, report in zip(csv_paths, report_paths, reports):
-        summaries.append(
-            {
+        summary = {
                 "trajectory_csv": csv_path,
                 "report": report_path,
                 "metrics": report.get("metrics", {}),
@@ -75,7 +77,30 @@ def compare_runs(
                     "trajectory_target_coverage_at_5px"
                 ),
             }
+        xy = summary["xy_optimization"]
+        coverage = summary["trajectory_target_coverage_at_5px"]
+        summary["eligible"] = bool(
+            xy.get("component_bound_fraction_within_1pct", 1.0)
+            <= max_bound_fraction
+            and xy.get("mean_point_displacement_px", float("inf"))
+            <= max_mean_displacement_px
+            and coverage is not None
+            and coverage >= min_coverage
         )
+        summaries.append(summary)
+    eligible = [
+        index for index, summary in enumerate(summaries) if summary["eligible"]
+    ]
+    selected = (
+        max(
+            eligible,
+            key=lambda index: summaries[index]["metrics"].get(
+                "iou_at_0.5", float("-inf")
+            ),
+        )
+        if eligible
+        else None
+    )
     return {
         "format": FORMAT,
         "run_count": len(csv_paths),
@@ -91,6 +116,15 @@ def compare_runs(
             difference <= 1e-8
             for difference in posture_max_difference.values()
         ),
+        "selection_constraints": {
+            "max_bound_fraction": max_bound_fraction,
+            "max_mean_displacement_px": max_mean_displacement_px,
+            "min_trajectory_target_coverage_at_5px": min_coverage,
+        },
+        "selected_run_index": selected,
+        "selected_trajectory_csv": (
+            summaries[selected]["trajectory_csv"] if selected is not None else None
+        ),
         "runs": summaries,
     }
 
@@ -100,6 +134,9 @@ def main(args: argparse.Namespace) -> None:
         args.trajectory_csvs,
         args.report_jsons,
         drawable_pixels=args.drawable_pixels,
+        max_bound_fraction=args.max_bound_fraction,
+        max_mean_displacement_px=args.max_mean_displacement_px,
+        min_coverage=args.min_coverage,
     )
     report["stability_threshold"] = args.max_normalized_rms_std
     report["stable"] = bool(
@@ -121,4 +158,7 @@ if __name__ == "__main__":
     parser.add_argument("--output_json", required=True)
     parser.add_argument("--drawable_pixels", type=float, default=96.0)
     parser.add_argument("--max_normalized_rms_std", type=float, default=0.02)
+    parser.add_argument("--max_bound_fraction", type=float, default=0.05)
+    parser.add_argument("--max_mean_displacement_px", type=float, default=2.0)
+    parser.add_argument("--min_coverage", type=float, default=0.99)
     main(parser.parse_args())

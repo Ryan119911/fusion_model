@@ -28,7 +28,12 @@ def write_run(tmp_path, name, offset):
         json.dumps(
             {
                 "metrics": {"iou_at_0.5": 0.8},
-                "xy_optimization": {"max_abs_change_px": 1},
+                "xy_optimization": {
+                    "max_abs_change_px": 1,
+                    "mean_point_displacement_px": 0.5,
+                    "component_bound_fraction_within_1pct": 0.0,
+                },
+                "trajectory_target_coverage_at_5px": 1.0,
             }
         ),
         encoding="utf-8",
@@ -45,3 +50,4 @@ def test_compare_xy_refinements_detects_stable_frozen_pose(tmp_path):
     assert result["posture_frozen_exactly"]
     assert result["normalized_rms_std"]["xy"] < 0.01
     assert result["pairwise_canvas_distance"]["0:1"]["rms_canvas_px"] > 0
+    assert result["selected_run_index"] == 0

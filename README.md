@@ -1529,4 +1529,6 @@ python -u tools/compare_xy_refinements.py \
 ```
 
 报告同时检查 x/y 的 normalized RMS 标准差、画布像素差，以及
-z/alpha/beta/gamma 是否逐点完全不变。
+z/alpha/beta/gamma 是否逐点完全不变。默认只在边界比例不超过 5%、平均位移不
+超过 2 px、目标覆盖率不低于 0.99 的候选中按 IoU 选择结果；不合格候选不会因
+像素误差较低而被选中。
