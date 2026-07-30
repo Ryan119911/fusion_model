@@ -1443,3 +1443,48 @@ H/alpha/beta/gamma 字段子空间的两两典型相关系数
 alpha 与 gamma 的字段相关性仍约 `0.95947`，超过保守阈值，因此角度仍不能作为
 机器人真值。完整数据和解释见
 [`docs/robot_brush_calibration.md`](docs/robot_brush_calibration.md)。
+
+### 11.27 v27：多参考楷书外观细化（姿态与风格解耦）
+
+规范目标固定为：
+
+```text
+data/raw/targets/wu_kaishu_target.png
+```
+
+不得再使用已废弃的行楷 `data/raw/targets/武.png` 或
+`wu_target_xingkai.png`。v22 已通过的姿态 B-BSMG 保持冻结；新增的
+`StyleRefinerUNet` 只学习从几何掩膜、骨架、内部距离场和软边界到真实毛笔灰度外观
+的映射，不能被解释为 `H/alpha/beta/gamma` 的真实标签。
+
+先构建所有楷书单字的风格数据。数据文件保留来源图片和字符字段，训练程序按来源作品
+分组切分，并从通用训练/验证中完全排除“武”：
+
+```bash
+python -u tools/build_kaishu_style_dataset.py \
+  --output data/processed/kaishu_style_v27.npz \
+  --heldout_character 武
+```
+
+再进行通用训练。排名前 5 的同字候选只用于低学习率适配，其余候选保持为独立测试；
+排名来自 `audit_character_target_variants.py`，规范目标始终是最终验收对象：
+
+```bash
+python -u tools/train_kaishu_style_refiner.py \
+  --npz data/processed/kaishu_style_v27.npz \
+  --output_dir outputs/kaishu_style_refiner_v27 \
+  --epochs 30 \
+  --batch_size 12 \
+  --device cuda \
+  --variant_audit_json \
+    outputs/wu_kaishu_variant_audit_v27_baseline/variants.json \
+  --adapt_top_k 5 \
+  --adapt_epochs 20 \
+  --adapt_lr 0.00003
+```
+
+输出包括通用/适配检查点、机器可读 `training_metrics.json`，以及
+`generic_wu_panels/` 和 `adapted_wu_test_panels/` 中的
+geometry/refined/target/abs-diff 图。通用验证、少样本适配和留出测试按来源严格隔离。
+最终反演仍需分别报告细化前几何误差和细化后外观误差；若几何 IoU、轨迹覆盖率、
+姿态连续性、边界饱和或联合 Jacobian 不合格，不能用外观细化后的低 MSE 覆盖失败。
