@@ -1488,3 +1488,21 @@ python -u tools/train_kaishu_style_refiner.py \
 geometry/refined/target/abs-diff 图。通用验证、少样本适配和留出测试按来源严格隔离。
 最终反演仍需分别报告细化前几何误差和细化后外观误差；若几何 IoU、轨迹覆盖率、
 姿态连续性、边界饱和或联合 Jacobian 不合格，不能用外观细化后的低 MSE 覆盖失败。
+
+训练完成后，将冻结的 v26 安全姿态渲染与适配后的外观模型组合评估：
+
+```bash
+python -u tools/evaluate_style_refined_render.py \
+  --render_image outputs/wu_kaishu_target_v26_gamma_safe/wu_rendered.png \
+  --target_image data/raw/targets/wu_kaishu_target.png \
+  --style_ckpt outputs/kaishu_style_refiner_v27b/style_refiner_adapted.pt \
+  --pose_report outputs/wu_kaishu_target_v26_gamma_safe/wu_report.json \
+  --trajectory_csv outputs/wu_kaishu_target_v26_gamma_safe/wu_trajectory.csv \
+  --output_dir outputs/wu_kaishu_style_refined_v27 \
+  --device cuda
+```
+
+该工具分别记录 `geometry_before_refinement` 与
+`appearance_after_refinement`，并从原姿态报告继承轨迹覆盖率、各字段边界比例和联合
+Jacobian 审计，同时重新计算 z/alpha/beta/gamma 的逐笔连续性。它不会用外观指标
+替代姿态验收。
