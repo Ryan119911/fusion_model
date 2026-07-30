@@ -19,4 +19,5 @@ The audit requires fixed x/y, normalized pose RMS standard deviation at most
 0.02, an identifiable joint Jacobian, no more than 5% pose-bound saturation,
 and trajectory coverage of at least 0.99. Passing only supports simulation
 restart stability; real brush, camera, TCP, paper, and robot calibration are
-still required.
+still required. If restart stability fails, the report withholds selection
+even when every individual run has a good image score and full-rank Jacobian.

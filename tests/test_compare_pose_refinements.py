@@ -52,3 +52,16 @@ def test_pose_restart_stability_selects_best_eligible_run(tmp_path):
     assert result["xy_frozen_exactly"]
     assert result["fields"]["gamma"]["normalized_rms_std"] < 0.02
     assert result["selected_run_index"] == 1
+
+
+def test_unstable_pose_withholds_selection(tmp_path):
+    first = write_run(tmp_path, "a", -0.3, 0.8)
+    second = write_run(tmp_path, "b", 0.3, 0.9)
+    result = compare_pose_runs(
+        [first[0], second[0]],
+        [first[1], second[1]],
+        ["gamma"],
+    )
+    assert not result["stable"]
+    assert result["selected_run_index"] is None
+    assert result["selected_trajectory_csv"] is None

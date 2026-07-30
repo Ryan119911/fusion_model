@@ -116,6 +116,8 @@ def compare_pose_runs(
         all(item["passed"] for item in field_stability.values())
         and max(xy_max_difference.values(), default=0.0) <= 1e-8
     )
+    if not stable:
+        selected = None
     return {
         "format": FORMAT,
         "run_count": len(csv_paths),
