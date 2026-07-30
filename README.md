@@ -97,6 +97,21 @@ python -u tools/snap_trajectory_to_target.py \
 随后再用 `invert_paper_trajectory.py` 分阶段优化姿态。该初始化仅是图像坐标配准，
 输出仍是仿真候选，不是经过机器人坐标系标定的安全轨迹。
 
+数据库中同一个字存在多个书写样本时，先审计候选，不要直接对灰度图求平均：
+
+```bash
+python -u tools/audit_character_target_variants.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --target_image data/raw/targets/wu_kaishu_target.png \
+  --character 武 \
+  --chirography 楷 \
+  --output_dir outputs/wu_kaishu_variant_audit_v1
+```
+
+排名同时考虑轨迹—候选的对称骨架一致性、候选—规范目标 Dice 和墨量平衡。
+输出的前若干候选可用于几何初始化和风格统计，但它们没有 H/alpha/beta/gamma
+真值，不能直接作为姿态 B-BSMG 的监督样本。
+
 ## 3. Ubuntu 环境
 
 ```bash
