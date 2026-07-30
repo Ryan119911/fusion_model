@@ -1558,6 +1558,28 @@ python -u tools/train_kaishu_style_refiner.py \
   --adapt_lr 0.00003
 ```
 
+训练后不得只按规范目标放大软支持域。v35 使用全部未参与适配的“武”候选作为
+泛化约束，在留出 MSE 回退不超过 0.0001、墨量平衡不下降且规范目标 IoU 不下降
+的候选中，选择规范目标 MSE 最低的尺度，并输出新检查点、JSON 与四联对比图：
+
+```bash
+python -u tools/calibrate_style_support.py \
+  --npz data/processed/kaishu_style_v27.npz \
+  --style_ckpt \
+    outputs/kaishu_style_refiner_v34_soft_support/style_refiner_selected.pt \
+  --render_image \
+    outputs/wu_kaishu_target_v32_width_scan/render_t0.262.png \
+  --target_image data/raw/targets/wu_kaishu_target.png \
+  --output_dir outputs/wu_kaishu_target_v35_support_calibration \
+  --scales 1.0 1.1 1.2 1.3 1.5 1.7 2.0 2.5 \
+  --device cuda
+```
+
+该步骤只校准由冻结几何渲染导出的软支持域，不修改也不识别
+`x/y/z/alpha/beta/gamma`。随后应把
+`style_refiner_support_calibrated.pt` 交给
+`evaluate_style_refined_render.py`，继续执行姿态安全与外观接受门槛。
+
 若当前阶段只优化 x/y，额外传入
 `--posture_report outputs/wu_kaishu_target_v26_gamma_safe/wu_report.json`，
 以继承被冻结姿态的联合 Jacobian 审计，同时仍从当前报告读取 x/y 位移和边界比例。

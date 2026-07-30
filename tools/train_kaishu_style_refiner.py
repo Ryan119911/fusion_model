@@ -227,6 +227,7 @@ def main(args: argparse.Namespace) -> None:
     model = build_style_refiner(
         base_channels=args.base_channels,
         support_mode=args.support_mode,
+        soft_support_scale=args.soft_support_scale,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     output = Path(args.output_dir)
@@ -268,6 +269,7 @@ def main(args: argparse.Namespace) -> None:
                 "input_channels": 4,
                 "base_channels": args.base_channels,
                 "support_mode": args.support_mode,
+                "soft_support_scale": args.soft_support_scale,
             },
             "split": {
                 "train": len(train_idx),
@@ -422,6 +424,15 @@ if __name__ == "__main__":
         help=(
             "geometry output gate; mask_or_soft retains bounded antialiased "
             "brush support while old checkpoints remain mask_only"
+        ),
+    )
+    parser.add_argument(
+        "--soft_support_scale",
+        type=float,
+        default=1.0,
+        help=(
+            "scale applied only to the bounded soft support gate; calibrate "
+            "post-training with heldout constraints instead of guessing"
         ),
     )
     main(parser.parse_args())

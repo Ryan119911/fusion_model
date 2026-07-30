@@ -49,6 +49,30 @@ def test_soft_support_mode_retains_bounded_antialiased_geometry():
     assert torch.count_nonzero(prediction[:, :, 8:10, 8:24]) > 0
 
 
+def test_soft_support_scale_is_bounded_and_validated():
+    model = StyleRefinerUNet(
+        base_channels=8,
+        depth=2,
+        dropout=0,
+        support_mode="mask_or_soft",
+        soft_support_scale=2.0,
+    )
+    values = torch.zeros(1, 4, 32, 32)
+    values[:, 3, 8:24, 8:24] = 0.75
+    prediction = model(values)
+    assert prediction.max() <= 1
+    assert torch.allclose(
+        prediction[:, :, 8:24, 8:24],
+        torch.full_like(
+            prediction[:, :, 8:24, 8:24],
+            torch.sigmoid(torch.tensor(4.0)),
+        ),
+        atol=1e-4,
+    )
+    with np.testing.assert_raises(ValueError):
+        StyleRefinerUNet(soft_support_scale=0)
+
+
 def test_geometry_features_are_finite():
     gray = np.zeros((32, 32), dtype=np.float32)
     gray[8:24, 13:19] = 1

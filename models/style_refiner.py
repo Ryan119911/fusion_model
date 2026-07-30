@@ -22,15 +22,19 @@ class StyleRefinerUNet(nn.Module):
         depth: int = 3,
         dropout: float = 0.1,
         support_mode: str = "mask_only",
+        soft_support_scale: float = 1.0,
     ):
         super().__init__()
         if support_mode not in {"mask_only", "mask_or_soft"}:
             raise ValueError(
                 "support_mode must be 'mask_only' or 'mask_or_soft'"
             )
+        if soft_support_scale <= 0:
+            raise ValueError("soft_support_scale must be positive")
         widths = [base_channels * (2**level) for level in range(depth + 1)]
         self.input_channels = int(input_channels)
         self.support_mode = support_mode
+        self.soft_support_scale = float(soft_support_scale)
         self.input_block = ConvBlock(input_channels, widths[0])
         self.down_blocks = nn.ModuleList(
             [DownBlock(widths[index], widths[index + 1]) for index in range(depth)]
@@ -71,7 +75,10 @@ class StyleRefinerUNet(nn.Module):
                     "mask_or_soft support requires the soft-geometry channel"
                 )
             geometry = torch.maximum(
-                geometry, features[:, 3:4].clamp(0.0, 1.0)
+                geometry,
+                (
+                    self.soft_support_scale * features[:, 3:4]
+                ).clamp(0.0, 1.0),
             )
         residual = 8.0 * torch.tanh(self.output_layer(values))
         appearance = torch.sigmoid(4.0 + residual)
