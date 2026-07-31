@@ -1727,3 +1727,63 @@ errors. High bound saturation means the two paper models need real cross-brush
 calibration; it must be reported rather than hidden by invented non-zero
 angles. Camera, paper, TCP and real-brush calibration remain mandatory before
 robot execution.
+
+## v43: discard x/y inherited from an obsolete target
+
+`--initial_pose_csv` historically initialized both pose and x/y. Therefore an
+old xingkai run could silently replace the current raw kaishu trajectory, and
+the v41 segment constraints would preserve that already-corrupted path. Use
+`--initial_pose_xy_source trajectory` to inherit only H/angles while taking
+x/y from `--trajectory_csv`:
+
+```bash
+python -u tools/invert_paper_trajectory.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --initial_pose_csv outputs/wu_kaishu_target_v42b_fused_pose_smooth/武_paper_inverse_trajectory.csv \
+  --initial_pose_xy_source trajectory \
+  --posture_prior_pose_csv outputs/wu_kaishu_target_v42b_fused_pose_smooth/武_paper_inverse_trajectory.csv \
+  --target_image data/raw/targets/wu_kaishu_target.png \
+  --bbsmg_ckpt outputs/paper_bbsmg_gamma_v13/bbsmg_best.pt \
+  --character 武 \
+  --output_dir outputs/wu_kaishu_target_v43_kaishu_raw_xy \
+  --order 5 --max_steps 15 --damping 0.1 \
+  --field_mode xy_only --optimize_xy --fused_pose_from_height \
+  --pose_inverse_regularization 0.00001 \
+  --xy_max_offset_px 4 --xy_smoothness_weight 0.8 --xy_prior_weight 0.2 \
+  --xy_segment_length_weight 2 --xy_segment_direction_weight 1 \
+  --cap_order_to_points \
+  --footprint_longitudinal_scale 0.22 \
+  --footprint_transverse_scale 0.262 --device cuda
+```
+
+The report field `initialization.initial_pose_xy_source` must be `trajectory`
+for this kaishu reset.
+
+## v44: target-local footprint calibration
+
+After v43 accepts the geometry, measure target width on the path normal and
+local length on its tangent. The reported aspect ratio and confidence feed a
+fixed-H 2-by-2 solve `[Lt+Lh, Lr] -> [alpha, beta]`. x/y and H are preserved;
+gamma is the within-stroke forward `atan2(dy,dx)` direction.
+
+```bash
+python -u tools/calibrate_target_local_footprints.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --pose_csv outputs/wu_kaishu_target_v43_kaishu_raw_xy/武_paper_inverse_trajectory.csv \
+  --target_image data/raw/targets/wu_kaishu_target.png \
+  --bbsmg_ckpt outputs/paper_bbsmg_gamma_v13/bbsmg_best.pt \
+  --character 武 \
+  --output_dir outputs/wu_kaishu_target_v44_target_footprint \
+  --footprint_longitudinal_scale 0.22 \
+  --footprint_transverse_scale 0.262 \
+  --radius_px 12 --ink_threshold 0.35 --target_blend 0.5 \
+  --minimum_confidence 0.1 --angle_regularization 0.01 \
+  --device cuda
+```
+
+Inspect `footprint_overlay.png`, `local_footprints.csv`, `diff.png`, and
+`report.json`. Clipped or off-centre cross sections are blended back toward
+Wang geometry. `acceptance.accepted` is false unless IoU is non-decreasing,
+at least 20 cross sections are valid, and every angle boundary fraction is at
+most 0.25; a rejected candidate has no `recommended_pose_csv`. This is an
+image-derived simulation candidate, not real brush/TCP/robot calibration.

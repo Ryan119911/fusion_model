@@ -520,12 +520,18 @@ def main(args: argparse.Namespace) -> None:
         initial_pose, initial_xy_source, initial_gamma = load_initial_pose_csv(
             args.initial_pose_csv, sample
         )
-        xy_canvas = source_xy_to_canvas(
-            sample,
-            initial_xy_source,
-            args.image_size,
-            args.padding,
-        )
+        if args.initial_pose_xy_source == "csv":
+            xy_canvas = source_xy_to_canvas(
+                sample,
+                initial_xy_source,
+                args.image_size,
+                args.padding,
+            )
+        else:
+            initial_xy_source = np.asarray(
+                [[point.x, point.y] for point in sample.all_points()],
+                dtype=np.float32,
+            )
     else:
         initial_xy_source = np.asarray(
             [[point.x, point.y] for point in sample.all_points()],
@@ -829,6 +835,7 @@ def main(args: argparse.Namespace) -> None:
             "initial_pose_csv": args.initial_pose_csv,
             "posture_prior_pose_csv": args.posture_prior_pose_csv,
             "initial_xy_source_frame": "input_trajectory_coordinates",
+            "initial_pose_xy_source": args.initial_pose_xy_source,
             "initial_posture_ranges": {
                 "H_mm": [
                     float(initial_pose[:, 0].min()),
@@ -1130,6 +1137,17 @@ if __name__ == "__main__":
         help=(
             "staged x/y/z/alpha/beta/gamma CSV keyed by stroke_id and point_id; "
             "uses mm/rad and must match the selected base trajectory exactly"
+        ),
+    )
+    parser.add_argument(
+        "--initial_pose_xy_source",
+        choices=["csv", "trajectory"],
+        default="csv",
+        help=(
+            "Choose whether x/y are inherited from initial_pose_csv or "
+            "kept from trajectory_csv. Use trajectory when a pose CSV comes "
+            "from an older target/style but its H/alpha/beta/gamma remain a "
+            "useful initialization."
         ),
     )
     parser.add_argument(

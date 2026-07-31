@@ -189,6 +189,69 @@ def geometry_to_angles_given_height_torch(
     return torch.maximum(torch.minimum(angles, upper), lower)
 
 
+def drag_width_to_angles_given_height_torch(
+    drag_length: torch.Tensor,
+    half_width: torch.Tensor,
+    height_mm: torch.Tensor,
+    reference_angles: torch.Tensor | None = None,
+    regularization: float = 1e-4,
+    angle_basis: str = PAPER_ANGLE_BASIS_RADIAN,
+) -> torch.Tensor:
+    """Infer alpha/beta from Wang drag and a measured local half-width.
+
+    ``drag_length`` corresponds to ``Lt + Lh`` and ``half_width`` to ``Lr``.
+    These two independent observables give a square 2-by-2 system once H is
+    fixed.  A small reference-pose ridge is retained for noisy image-derived
+    cross sections; returned angles obey the simulation prototype bounds.
+    """
+    if torch is None:
+        raise RuntimeError("PyTorch is required for differentiable rendering")
+    drag_length = drag_length.reshape(-1)
+    half_width = half_width.reshape(-1)
+    height_mm = height_mm.reshape(-1)
+    if not (len(drag_length) == len(half_width) == len(height_mm)):
+        raise ValueError("drag, half_width and height must have equal length")
+    if regularization < 0:
+        raise ValueError("regularization must be non-negative")
+    matrix = torch.as_tensor(
+        regression_matrix_numpy(angle_basis),
+        dtype=height_mm.dtype,
+        device=height_mm.device,
+    )
+    bias = torch.as_tensor(
+        PAPER_REGRESSION_BIAS,
+        dtype=height_mm.dtype,
+        device=height_mm.device,
+    )
+    # Rows are the Wang-compatible longitudinal drag and transverse radius.
+    reduced_matrix = torch.stack((matrix[0] + matrix[1], matrix[2]))
+    reduced_bias = torch.stack((bias[0] + bias[1], bias[2]))
+    observations = torch.stack((drag_length, half_width), dim=1)
+    residual = (
+        observations
+        - reduced_bias[None, :]
+        - height_mm[:, None] * reduced_matrix[:, 0][None, :]
+    )
+    angle_matrix = reduced_matrix[:, 1:]
+    if reference_angles is None:
+        reference_angles = torch.zeros(
+            (len(height_mm), 2), dtype=height_mm.dtype, device=height_mm.device
+        )
+    if reference_angles.shape != (len(height_mm), 2):
+        raise ValueError("reference_angles must have shape [N,2]")
+    eye = torch.eye(2, dtype=height_mm.dtype, device=height_mm.device)
+    lhs = angle_matrix.T @ angle_matrix + float(regularization) * eye
+    rhs = residual @ angle_matrix + float(regularization) * reference_angles
+    angles = torch.linalg.solve(lhs, rhs.T).T
+    lower = torch.as_tensor(
+        PAPER_POSTURE_MIN[1:], dtype=height_mm.dtype, device=height_mm.device
+    )
+    upper = torch.as_tensor(
+        PAPER_POSTURE_MAX[1:], dtype=height_mm.dtype, device=height_mm.device
+    )
+    return torch.maximum(torch.minimum(angles, upper), lower)
+
+
 def clamp_posture_torch(posture: torch.Tensor) -> torch.Tensor:
     if torch is None:
         raise RuntimeError("PyTorch is required for differentiable rendering")

@@ -36,6 +36,10 @@ from tools.run_paper_staged_multistart_v18 import (
 from tools.select_paper_multistart_candidate import select_candidate
 from tools.validate_robot_brush_calibration import validate_calibration_csv
 from tools.render_paper_trajectory import load_pose_csv
+from tools.calibrate_target_local_footprints import (
+    measure_local_footprints,
+    robust_footprint_scales,
+)
 from utils.types import (
     CharacterTrajectory,
     PointState,
@@ -356,6 +360,61 @@ class PaperBBSMTests(unittest.TestCase):
             atol=3e-6,
             rtol=3e-5,
         )
+
+    def test_drag_width_inverse_recovers_angles(self):
+        import torch
+
+        from models.paper_bbsm import drag_width_to_angles_given_height_torch
+
+        posture = np.asarray(
+            [[15.5, np.deg2rad(6.0), np.deg2rad(3.0)]], dtype=np.float32
+        )
+        geometry = posture_to_geometry_numpy(posture)
+        angles = drag_width_to_angles_given_height_torch(
+            torch.tensor(geometry[:, 0] + geometry[:, 1]),
+            torch.tensor(geometry[:, 2]),
+            torch.tensor(posture[:, 0]),
+            regularization=0.0,
+        )
+        torch.testing.assert_close(
+            angles,
+            torch.tensor(posture[:, 1:]),
+            atol=2e-5,
+            rtol=3e-4,
+        )
+
+    def test_local_footprint_measurement_respects_heading(self):
+        target = np.zeros((41, 41), dtype=np.float32)
+        target[17:24, 11:30] = 1.0
+        measured = measure_local_footprints(
+            target,
+            np.asarray([[20.0, 20.0]], dtype=np.float32),
+            np.asarray([0.0], dtype=np.float32),
+            radius_px=15.0,
+            step_px=1.0,
+            threshold=0.5,
+        )
+        self.assertAlmostEqual(float(measured["width_px"][0]), 7.0)
+        self.assertAlmostEqual(float(measured["length_px"][0]), 19.0)
+        self.assertGreater(float(measured["confidence"][0]), 0.9)
+
+    def test_footprint_scale_ignores_invalid_measurements(self):
+        measured = {
+            "width_px": np.asarray([8.0, 0.0]),
+            "length_px": np.asarray([16.0, 99.0]),
+            "confidence": np.asarray([0.8, 0.0]),
+        }
+        longitudinal, transverse, valid = robust_footprint_scales(
+            measured,
+            dynamic_drag=np.asarray([2.0, 2.0]),
+            dynamic_half_width=np.asarray([1.0, 1.0]),
+            pixels_per_model_unit=4.0,
+            base_longitudinal_scale=1.0,
+            base_transverse_scale=1.0,
+        )
+        self.assertAlmostEqual(longitudinal, 1.0)
+        self.assertAlmostEqual(transverse, 1.0)
+        np.testing.assert_array_equal(valid, [True, False])
 
     def test_bezier_peak_and_anchor_geometry(self):
         boundary = bbsm_boundary(lt=1.2, lh=0.4, lr=0.5, samples_per_side=101)
