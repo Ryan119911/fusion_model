@@ -1612,3 +1612,52 @@ For simulation-only pose restarts without real pose truth, use
 `tools/compare_pose_refinements.py`. The complete command, thresholds, and
 physical-calibration limitation are documented in
 `docs/pose_restart_stability.md`.
+
+## v41: prevent false strokes caused by x/y foldbacks
+
+The v31 trajectory has valid DOWN/UP boundaries, but its third stroke contains
+an invalid geometric deformation: a short SVG entry segment was stretched and
+folded back into a long visible connector. This is not an inter-stroke
+pen-lift failure. CGL-node smoothness and a bounded point offset do not prevent
+this failure by themselves.
+
+v41 adds decoded point-space constraints on every segment inside each stroke:
+
+- `--xy_segment_length_weight` preserves the original segment-length ratio.
+- `--xy_segment_direction_weight` prevents segment reversal while still
+  allowing a whole stroke to translate.
+
+Always restart this correction from an undistorted trajectory, not from v31:
+
+```bash
+python -u tools/invert_paper_trajectory.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --initial_pose_csv \
+    outputs/wu_kaishu_target_v26_gamma_safe/wu_trajectory.csv \
+  --posture_prior_pose_csv \
+    outputs/wu_kaishu_target_v26_gamma_safe/wu_trajectory.csv \
+  --target_image data/raw/targets/wu_kaishu_target.png \
+  --bbsmg_ckpt outputs/paper_bbsmg_gamma_v13/bbsmg_best.pt \
+  --character 武 \
+  --output_dir outputs/wu_kaishu_target_v41_shape_safe_a \
+  --order 5 \
+  --max_steps 15 \
+  --damping 0.1 \
+  --field_mode xy_only \
+  --optimize_xy \
+  --xy_max_offset_px 4.0 \
+  --xy_smoothness_weight 0.8 \
+  --xy_prior_weight 0.2 \
+  --xy_segment_length_weight 2.0 \
+  --xy_segment_direction_weight 1.0 \
+  --cap_order_to_points \
+  --footprint_longitudinal_scale 0.22 \
+  --footprint_transverse_scale 0.262
+```
+
+Inspect `diagnostics.xy_optimization.segment_length_ratio` and
+`segment_direction_cosine` in `wu_report.json` together with the rendered
+image. A candidate should normally keep maximum length ratio below 1.5,
+minimum direction cosine above 0.7, mean point displacement below 2 px,
+component-bound fraction below 5%, and target coverage at 1.0. Pixel MSE or
+IoU alone must not select a trajectory that creates a false stroke.

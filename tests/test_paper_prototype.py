@@ -663,6 +663,47 @@ try:
                 torch.tensor([1.0, 1.0, 0.0, 0.0]),
             )
 
+        def test_xy_shape_residuals_preserve_each_stroke_segments(self):
+            from optim.paper_psoc_lm import trajectory_shape_residuals
+
+            reference = torch.tensor(
+                [
+                    [0.0, 0.0],
+                    [1.0, 0.0],
+                    [10.0, 0.0],
+                    [11.0, 0.0],
+                ]
+            )
+            point_indices = [np.arange(2), np.arange(2, 4)]
+            translated = reference.clone()
+            translated[:2] += torch.tensor([2.0, 3.0])
+            translated[2:] += torch.tensor([-4.0, 5.0])
+            residuals = trajectory_shape_residuals(
+                reference,
+                translated,
+                point_indices,
+                segment_length_weight=1.0,
+                segment_direction_weight=1.0,
+            )
+            torch.testing.assert_close(
+                torch.cat(residuals),
+                torch.zeros(6),
+            )
+
+            distorted = reference.clone()
+            distorted[1] = torch.tensor([3.0, 0.0])
+            distorted[3] = torch.tensor([9.0, 0.0])
+            residuals = trajectory_shape_residuals(
+                reference,
+                distorted,
+                point_indices,
+                segment_length_weight=1.0,
+                segment_direction_weight=1.0,
+            )
+            self.assertAlmostEqual(float(residuals[0][0]), 2.0)
+            self.assertAlmostEqual(float(residuals[2][0]), 0.0)
+            self.assertAlmostEqual(float(residuals[3][0]), -2.0)
+
         def test_staged_posture_is_preserved_when_pose_fields_are_fixed(self):
             from optim.paper_psoc_lm import PaperPSOCLM
 

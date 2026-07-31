@@ -69,6 +69,56 @@ def trajectory_difference_residuals(
     return residuals
 
 
+def trajectory_shape_residuals(
+    reference_xy: torch.Tensor,
+    candidate_xy: torch.Tensor,
+    point_indices: Sequence[np.ndarray],
+    segment_length_weight: float,
+    segment_direction_weight: float,
+) -> List[torch.Tensor]:
+    """Preserve within-stroke segment length and direction.
+
+    A bounded point offset alone can still turn a short SVG segment into a
+    long visible connector when adjacent points move in opposite directions.
+    These residuals operate on decoded canvas points and never cross a stroke
+    boundary. Whole-stroke translation remains unpenalized.
+    """
+    residuals: List[torch.Tensor] = []
+    for indices in point_indices:
+        if len(indices) < 2:
+            continue
+        tensor_indices = torch.as_tensor(
+            indices, dtype=torch.long, device=reference_xy.device
+        )
+        reference = reference_xy[tensor_indices]
+        candidate = candidate_xy[tensor_indices]
+        reference_delta = reference[1:] - reference[:-1]
+        candidate_delta = candidate[1:] - candidate[:-1]
+        reference_length = torch.linalg.vector_norm(
+            reference_delta, dim=-1
+        ).clamp_min(1e-3)
+        candidate_length = torch.linalg.vector_norm(
+            candidate_delta, dim=-1
+        ).clamp_min(1e-3)
+        if segment_length_weight > 0:
+            residuals.append(
+                segment_length_weight**0.5
+                * (candidate_length / reference_length - 1.0)
+            )
+        if segment_direction_weight > 0:
+            reference_direction = (
+                reference_delta / reference_length[:, None]
+            )
+            candidate_direction = (
+                candidate_delta / candidate_length[:, None]
+            )
+            residuals.append(
+                segment_direction_weight**0.5
+                * (candidate_direction - reference_direction).flatten()
+            )
+    return residuals
+
+
 def summarize_joint_identifiability(
     pixel_jacobian: torch.Tensor,
     field_column_positions: Dict[str, torch.Tensor],
@@ -339,6 +389,8 @@ class PaperPSOCLM:
         xy_max_offset_px: float = 6.0,
         xy_smoothness_weight: float = 0.10,
         xy_prior_weight: float = 0.05,
+        xy_segment_length_weight: float = 0.0,
+        xy_segment_direction_weight: float = 0.0,
         h_point_velocity_weight: float = 0.0,
         h_point_acceleration_weight: float = 0.0,
         cap_order_to_points: bool = False,
@@ -394,12 +446,23 @@ class PaperPSOCLM:
         self.terminal_lift_nodes = int(terminal_lift_nodes)
         if xy_max_offset_px <= 0:
             raise ValueError("xy_max_offset_px must be positive")
-        if xy_smoothness_weight < 0 or xy_prior_weight < 0:
+        if (
+            xy_smoothness_weight < 0
+            or xy_prior_weight < 0
+            or xy_segment_length_weight < 0
+            or xy_segment_direction_weight < 0
+        ):
             raise ValueError("x/y regularization weights must be non-negative")
         self.optimize_xy = bool(optimize_xy)
         self.xy_max_offset_px = float(xy_max_offset_px)
         self.xy_smoothness_weight = float(xy_smoothness_weight)
         self.xy_prior_weight = float(xy_prior_weight)
+        self.xy_segment_length_weight = float(
+            xy_segment_length_weight
+        )
+        self.xy_segment_direction_weight = float(
+            xy_segment_direction_weight
+        )
         if h_point_velocity_weight < 0 or h_point_acceleration_weight < 0:
             raise ValueError(
                 "H point-space regularization weights must be non-negative"
@@ -1154,6 +1217,16 @@ class PaperPSOCLM:
                         * active_node_mask[:, None, :]
                     ).flatten()
                 )
+            if xy_nodes is not None:
+                residuals.extend(
+                    trajectory_shape_residuals(
+                        xy,
+                        rendered_xy,
+                        point_indices,
+                        self.xy_segment_length_weight,
+                        self.xy_segment_direction_weight,
+                    )
+                )
             normalized_h_points = (
                 posture[:, 0] - float(PAPER_POSTURE_MIN[0])
             ) / float(PAPER_POSTURE_MAX[0] - PAPER_POSTURE_MIN[0])
@@ -1864,6 +1937,12 @@ class PaperPSOCLM:
                 "xy_max_offset_px": self.xy_max_offset_px,
                 "xy_smoothness_weight": self.xy_smoothness_weight,
                 "xy_prior_weight": self.xy_prior_weight,
+                "xy_segment_length_weight": (
+                    self.xy_segment_length_weight
+                ),
+                "xy_segment_direction_weight": (
+                    self.xy_segment_direction_weight
+                ),
                 "h_point_velocity_weight": self.h_point_velocity_weight,
                 "h_point_acceleration_weight": (
                     self.h_point_acceleration_weight
@@ -2002,11 +2081,37 @@ class PaperPSOCLM:
         }
         xy_offsets_np = xy_offsets.cpu().numpy()
         normalized_xy_offset = xy_offsets_np / self.xy_max_offset_px
+        reference_xy_np = xy.cpu().numpy()
+        optimized_xy_np = reference_xy_np + xy_offsets_np
+        segment_length_ratios = []
+        segment_direction_cosines = []
+        for indices in point_indices:
+            if len(indices) < 2:
+                continue
+            reference_delta = np.diff(reference_xy_np[indices], axis=0)
+            optimized_delta = np.diff(optimized_xy_np[indices], axis=0)
+            reference_length = np.maximum(
+                np.linalg.norm(reference_delta, axis=1), 1e-3
+            )
+            optimized_length = np.maximum(
+                np.linalg.norm(optimized_delta, axis=1), 1e-3
+            )
+            segment_length_ratios.extend(
+                (optimized_length / reference_length).tolist()
+            )
+            segment_direction_cosines.extend(
+                (
+                    np.sum(reference_delta * optimized_delta, axis=1)
+                    / (reference_length * optimized_length)
+                ).tolist()
+            )
         diagnostics["xy_optimization"] = {
             "enabled": self.optimize_xy,
             "max_offset_px": self.xy_max_offset_px,
             "smoothness_weight": self.xy_smoothness_weight,
             "prior_weight": self.xy_prior_weight,
+            "segment_length_weight": self.xy_segment_length_weight,
+            "segment_direction_weight": self.xy_segment_direction_weight,
             "max_abs_change_px": float(np.abs(xy_offsets_np).max()),
             "mean_point_displacement_px": float(
                 np.linalg.norm(xy_offsets_np, axis=1).mean()
@@ -2017,6 +2122,25 @@ class PaperPSOCLM:
             "component_bound_fraction_within_1pct": float(
                 np.mean(np.abs(normalized_xy_offset) >= 0.99)
             ),
+            "segment_length_ratio": {
+                "min": float(min(segment_length_ratios, default=1.0)),
+                "max": float(max(segment_length_ratios, default=1.0)),
+                "mean": float(
+                    np.mean(segment_length_ratios)
+                    if segment_length_ratios
+                    else 1.0
+                ),
+            },
+            "segment_direction_cosine": {
+                "min": float(
+                    min(segment_direction_cosines, default=1.0)
+                ),
+                "mean": float(
+                    np.mean(segment_direction_cosines)
+                    if segment_direction_cosines
+                    else 1.0
+                ),
+            },
         }
         decisions = {}
         source_sensitivity = (

@@ -522,6 +522,8 @@ def main(args: argparse.Namespace) -> None:
             xy_max_offset_px=args.xy_max_offset_px,
             xy_smoothness_weight=args.xy_smoothness_weight,
             xy_prior_weight=args.xy_prior_weight,
+            xy_segment_length_weight=args.xy_segment_length_weight,
+            xy_segment_direction_weight=args.xy_segment_direction_weight,
             h_point_velocity_weight=args.h_point_velocity_weight,
             h_point_acceleration_weight=args.h_point_acceleration_weight,
             cap_order_to_points=args.cap_order_to_points,
@@ -1004,6 +1006,24 @@ if __name__ == "__main__":
         type=float,
         default=0.05,
         help="zero-offset prior for normalized x/y CGL offsets",
+    )
+    parser.add_argument(
+        "--xy_segment_length_weight",
+        type=float,
+        default=0.0,
+        help=(
+            "decoded point-space penalty on within-stroke segment length "
+            "ratios; prevents short SVG segments becoming extra strokes"
+        ),
+    )
+    parser.add_argument(
+        "--xy_segment_direction_weight",
+        type=float,
+        default=0.0,
+        help=(
+            "decoded point-space penalty on within-stroke unit directions; "
+            "prevents foldbacks while allowing whole-stroke translation"
+        ),
     )
     parser.add_argument(
         "--cap_order_to_points",
