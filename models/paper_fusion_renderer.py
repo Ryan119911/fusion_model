@@ -21,6 +21,7 @@ from models.paper_bbsm import (
     PAPER_ANGLE_BASIS_DEGREE_FITTED,
     PAPER_ANGLE_BASIS_RADIAN,
     clamp_posture_torch,
+    geometry_to_angles_given_height_torch,
     geometry_to_posture_torch,
     posture_to_geometry_torch,
 )
@@ -47,6 +48,7 @@ class PaperDynamicConfig:
     footprint_longitudinal_scale: float | None = None
     footprint_transverse_scale: float | None = None
     render_max_step_px: float = 2.0
+    fused_pose_from_height: bool = False
 
     @property
     def longitudinal_scale(self) -> float:
@@ -140,6 +142,8 @@ class PaperFusionRenderer(nn.Module):
             raise ValueError("footprint_transverse_scale must be positive")
         if self.dynamic.render_max_step_px <= 0.0:
             raise ValueError("render_max_step_px must be positive")
+        if self.dynamic.inverse_regularization < 0.0:
+            raise ValueError("inverse_regularization must be non-negative")
         self.point_batch_size = int(point_batch_size)
 
     @classmethod
@@ -267,6 +271,31 @@ class PaperFusionRenderer(nn.Module):
             headings[indices] = angles
             step_lengths[indices] = lengths
         return headings, step_lengths
+
+    @staticmethod
+    def forward_trajectory_heading(
+        xy: torch.Tensor, stroke_ids: torch.Tensor
+    ) -> torch.Tensor:
+        """Return gamma from the next x/y point, independently per stroke.
+
+        Every non-terminal point uses atan2(y[i+1]-y[i], x[i+1]-x[i]).
+        The terminal point inherits the final valid direction.  No direction
+        is ever formed across a pen-up/stroke boundary.
+        """
+        headings = torch.zeros(
+            xy.shape[0], dtype=xy.dtype, device=xy.device
+        )
+        for stroke_id in torch.unique_consecutive(stroke_ids):
+            indices = torch.nonzero(
+                stroke_ids == stroke_id, as_tuple=False
+            ).flatten()
+            points = xy[indices]
+            if len(indices) < 2:
+                continue
+            delta = points[1:] - points[:-1]
+            angles = torch.atan2(delta[:, 1], delta[:, 0])
+            headings[indices] = torch.cat([angles, angles[-1:]], dim=0)
+        return headings
 
     def dynamic_posture(
         self,
@@ -429,7 +458,7 @@ class PaperFusionRenderer(nn.Module):
         render_xy, render_posture, render_stroke_ids = (
             self.densify_for_rendering(xy_canvas, posture, stroke_ids)
         )
-        if gamma is None:
+        if gamma is None or self.dynamic.fused_pose_from_height:
             render_gamma = torch.zeros(
                 len(render_xy), dtype=posture.dtype, device=posture.device
             )
@@ -442,11 +471,13 @@ class PaperFusionRenderer(nn.Module):
         )
         virtual_posture = states["virtual_posture"]
         contact_xy = states["contact_xy"]
-        # A 6D checkpoint already renders gamma in its local footprint.
-        # A legacy 5D checkpoint receives gamma through geometric rotation.
+        # In fused mode gamma is the exported trajectory direction, already
+        # represented by the dynamic heading, and must not be applied again.
+        # Otherwise a 6D checkpoint renders axial gamma in its local footprint
+        # while a legacy 5D checkpoint receives it through geometric rotation.
         heading = states["heading"] + (
             torch.zeros_like(render_gamma)
-            if self.gamma_conditioned
+            if self.gamma_conditioned or self.dynamic.fused_pose_from_height
             else render_gamma
         )
         raw_params = (
@@ -612,14 +643,37 @@ class PaperFusionRenderer(nn.Module):
         tangent_heading, step_length = self.trajectory_heading(
             xy_canvas, stroke_ids
         )
-        geometry = self._dynamic_geometry(posture, stroke_ids)
-        virtual_posture = geometry_to_posture_torch(
-            geometry,
-            reference=posture,
-            regularization=self.dynamic.inverse_regularization,
-            angle_basis=self.regression_angle_basis,
-        )
-        virtual_posture = clamp_posture_torch(virtual_posture)
+        if self.dynamic.fused_pose_from_height:
+            height_only_posture = torch.stack(
+                [
+                    posture[:, 0],
+                    torch.zeros_like(posture[:, 0]),
+                    torch.zeros_like(posture[:, 0]),
+                ],
+                dim=-1,
+            )
+            geometry = self._dynamic_geometry(
+                height_only_posture, stroke_ids
+            )
+            derived_angles = geometry_to_angles_given_height_torch(
+                geometry,
+                posture[:, 0],
+                reference_angles=torch.zeros_like(posture[:, 1:]),
+                regularization=self.dynamic.inverse_regularization,
+                angle_basis=self.regression_angle_basis,
+            )
+            virtual_posture = torch.cat(
+                [posture[:, :1], derived_angles], dim=-1
+            )
+        else:
+            geometry = self._dynamic_geometry(posture, stroke_ids)
+            virtual_posture = geometry_to_posture_torch(
+                geometry,
+                reference=posture,
+                regularization=self.dynamic.inverse_regularization,
+                angle_basis=self.regression_angle_basis,
+            )
+            virtual_posture = clamp_posture_torch(virtual_posture)
         dynamic_drag = geometry[:, 0] + geometry[:, 1]
         if self.dynamic.calibration_profile == WANG2020_PROFILE:
             offset_ratio = wang2020_offset_drag_ratio_torch(posture[:, 0])
@@ -705,6 +759,9 @@ class PaperFusionRenderer(nn.Module):
         return {
             "heading": heading,
             "trajectory_heading": tangent_heading,
+            "forward_trajectory_heading": self.forward_trajectory_heading(
+                xy_canvas, stroke_ids
+            ),
             "step_length_px": step_length,
             "virtual_posture": virtual_posture,
             "geometry": geometry,

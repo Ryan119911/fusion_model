@@ -93,6 +93,7 @@ def save_dynamic_states(sample, xy, posture, gamma, states, path: Path) -> None:
     geometry = states["geometry"].cpu().numpy()
     heading = states["heading"].cpu().numpy()
     trajectory_heading = states["trajectory_heading"].cpu().numpy()
+    forward_heading = states["forward_trajectory_heading"].cpu().numpy()
     offset_ratio = states["offset_ratio"].cpu().numpy()
     free_offset = states["free_offset_model_unit"].cpu().numpy()
     held_offset = states["held_offset_model_unit"].cpu().numpy()
@@ -118,6 +119,7 @@ def save_dynamic_states(sample, xy, posture, gamma, states, path: Path) -> None:
         "held_offset_model_unit",
         "offset_model_unit",
         "trajectory_theta_rad",
+        "gamma_forward_xy_rad",
         "brush_theta_rad",
         "contact_x_px",
         "contact_y_px",
@@ -148,6 +150,9 @@ def save_dynamic_states(sample, xy, posture, gamma, states, path: Path) -> None:
                     "offset_model_unit": repr(float(offset[index])),
                     "trajectory_theta_rad": repr(
                         float(trajectory_heading[index])
+                    ),
+                    "gamma_forward_xy_rad": repr(
+                        float(forward_heading[index])
                     ),
                     "brush_theta_rad": repr(float(heading[index])),
                     "contact_x_px": repr(float(contact[index, 0])),
@@ -227,6 +232,8 @@ def main(args: argparse.Namespace) -> None:
             ),
             footprint_transverse_scale=args.footprint_transverse_scale,
             render_max_step_px=args.render_max_step_px,
+            fused_pose_from_height=args.fused_pose_from_height,
+            inverse_regularization=args.pose_inverse_regularization,
         ),
         point_batch_size=args.point_batch_size,
     )
@@ -249,6 +256,16 @@ def main(args: argparse.Namespace) -> None:
         )[0, 0].cpu().numpy()
         contact_shift = torch.linalg.vector_norm(
             states["contact_xy"] - xy_tensor, dim=-1
+        )
+        derived_angle_error = torch.abs(
+            states["virtual_posture"][:, 1:] - posture_tensor[:, 1:]
+        )
+        derived_gamma = states["forward_trajectory_heading"]
+        wrapped_gamma_error = torch.abs(
+            torch.atan2(
+                torch.sin(derived_gamma - gamma_tensor),
+                torch.cos(derived_gamma - gamma_tensor),
+            )
         )
     output = Path(args.output_image)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -299,6 +316,24 @@ def main(args: argparse.Namespace) -> None:
             ),
         },
     }
+    if args.fused_pose_from_height:
+        report["fused_pose_validation"] = {
+            "alpha_beta_recomputed_from_z": True,
+            "gamma_recomputed_from_xy": True,
+            "gamma_double_application_prevented": True,
+            "max_abs_alpha_beta_csv_error_rad": float(
+                derived_angle_error.max().cpu()
+            ),
+            "mean_abs_alpha_beta_csv_error_rad": float(
+                derived_angle_error.mean().cpu()
+            ),
+            "max_abs_gamma_csv_error_rad": float(
+                wrapped_gamma_error.max().cpu()
+            ),
+            "mean_abs_gamma_csv_error_rad": float(
+                wrapped_gamma_error.mean().cpu()
+            ),
+        }
     if args.target_image:
         target = load_target_image(args.target_image, image_size=args.image_size)
         report["target_image"] = args.target_image
@@ -344,8 +379,19 @@ if __name__ == "__main__":
     parser.add_argument("--alpha_deg", type=float, default=0.0)
     parser.add_argument("--beta_deg", type=float, default=0.0)
     parser.add_argument("--gamma_deg", type=float, default=0.0)
+    parser.add_argument(
+        "--fused_pose_from_height",
+        action="store_true",
+        help=(
+            "recompute B-BSMG alpha/beta from Wang geometry at CSV z and "
+            "treat CSV gamma as the per-stroke x/y direction"
+        ),
+    )
     parser.add_argument("--width_inertia", type=float, default=0.02)
     parser.add_argument("--drag_inertia", type=float, default=0.02)
+    parser.add_argument(
+        "--pose_inverse_regularization", type=float, default=1e-4
+    )
     parser.add_argument(
         "--dynamic_profile",
         choices=DYNAMIC_PROFILES,

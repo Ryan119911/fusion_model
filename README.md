@@ -1661,3 +1661,69 @@ image. A candidate should normally keep maximum length ratio below 1.5,
 minimum direction cosine above 0.7, mean point displacement below 2 px,
 component-bound fraction below 5%, and target coverage at 1.0. Pixel MSE or
 IoU alone must not select a trajectory that creates a false stroke.
+
+## v42: fused z/alpha/beta/gamma derivation
+
+v42 implements the project-specific combination of the two papers:
+
+1. PSOC/LM optimizes `H` (prototype CSV `z`, in millimetres) while x/y
+   remains fixed at the accepted v41 trajectory.
+2. The Wang dynamic model converts H into stateful width/drag geometry.
+3. With H fixed, the B-BSMG regression is inverted as a regularized 3-by-2
+   least-squares problem to derive alpha and beta.
+4. Gamma is `atan2(y[i+1]-y[i], x[i+1]-x[i])` within each stroke. The final
+   point inherits the preceding direction; no direction crosses a pen-up.
+
+```bash
+python -u tools/invert_paper_trajectory.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --initial_pose_csv \
+    outputs/wu_kaishu_target_v41_shape_safe_a/武_paper_inverse_trajectory.csv \
+  --posture_prior_pose_csv \
+    outputs/wu_kaishu_target_v41_shape_safe_a/武_paper_inverse_trajectory.csv \
+  --target_image data/raw/targets/wu_kaishu_target.png \
+  --bbsmg_ckpt outputs/paper_bbsmg_gamma_v13/bbsmg_best.pt \
+  --character 武 \
+  --output_dir outputs/wu_kaishu_target_v42b_fused_pose_smooth \
+  --order 5 \
+  --max_steps 15 \
+  --damping 0.1 \
+  --field_mode h_only \
+  --fused_pose_from_height \
+  --pose_inverse_regularization 0.00001 \
+  --cap_order_to_points \
+  --h_smoothness_weight 0.05 \
+  --h_prior_weight 0.01 \
+  --h_point_velocity_weight 0.5 \
+  --h_point_acceleration_weight 1.0 \
+  --footprint_longitudinal_scale 0.22 \
+  --footprint_transverse_scale 0.262 \
+  --device cuda
+```
+
+Forward verification must use the same fusion mode. It recomputes alpha,
+beta and gamma from z/x/y and verifies that the CSV agrees. Gamma is not
+applied a second time as an axial footprint rotation.
+
+```bash
+python -u tools/render_paper_trajectory.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --bbsmg_ckpt outputs/paper_bbsmg_gamma_v13/bbsmg_best.pt \
+  --pose_csv \
+    outputs/wu_kaishu_target_v42b_fused_pose_smooth/武_paper_inverse_trajectory.csv \
+  --character 武 \
+  --target_image data/raw/targets/wu_kaishu_target.png \
+  --output_image outputs/wu_kaishu_target_v42b_forward/render.png \
+  --fused_pose_from_height \
+  --pose_inverse_regularization 0.00001 \
+  --footprint_longitudinal_scale 0.22 \
+  --footprint_transverse_scale 0.262 \
+  --device cuda
+```
+
+Inspect `fused_pose_derivation` for geometry reconstruction error and
+alpha/beta bound fractions, and `fused_pose_validation` for CSV recomputation
+errors. High bound saturation means the two paper models need real cross-brush
+calibration; it must be reported rather than hidden by invented non-zero
+angles. Camera, paper, TCP and real-brush calibration remain mandatory before
+robot execution.

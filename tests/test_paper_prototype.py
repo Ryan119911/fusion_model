@@ -335,6 +335,28 @@ class PaperBBSMTests(unittest.TestCase):
             atol=1e-6,
         )
 
+    def test_fixed_height_inverse_recovers_alpha_beta(self):
+        import torch
+
+        from models.paper_bbsm import geometry_to_angles_given_height_torch
+
+        posture = np.asarray(
+            [[15.5, np.deg2rad(6.0), np.deg2rad(3.0)]],
+            dtype=np.float32,
+        )
+        geometry = torch.as_tensor(posture_to_geometry_numpy(posture))
+        angles = geometry_to_angles_given_height_torch(
+            geometry,
+            torch.tensor([15.5]),
+            regularization=0.0,
+        )
+        torch.testing.assert_close(
+            angles,
+            torch.as_tensor(posture[:, 1:]),
+            atol=3e-6,
+            rtol=3e-5,
+        )
+
     def test_bezier_peak_and_anchor_geometry(self):
         boundary = bbsm_boundary(lt=1.2, lh=0.4, lr=0.5, samples_per_side=101)
         self.assertAlmostEqual(float(boundary[:, 1].max()), 0.5, places=5)
@@ -661,6 +683,29 @@ try:
             torch.testing.assert_close(
                 torch.cat(residuals),
                 torch.tensor([1.0, 1.0, 0.0, 0.0]),
+            )
+
+        def test_forward_gamma_uses_next_point_within_each_stroke(self):
+            from models.paper_fusion_renderer import PaperFusionRenderer
+
+            xy = torch.tensor(
+                [
+                    [0.0, 0.0],
+                    [1.0, 0.0],
+                    [1.0, 2.0],
+                    [9.0, 9.0],
+                    [8.0, 9.0],
+                ]
+            )
+            stroke_ids = torch.tensor([0, 0, 0, 1, 1])
+            gamma = PaperFusionRenderer.forward_trajectory_heading(
+                xy, stroke_ids
+            )
+            torch.testing.assert_close(
+                gamma,
+                torch.tensor(
+                    [0.0, np.pi / 2.0, np.pi / 2.0, np.pi, np.pi]
+                ),
             )
 
         def test_xy_shape_residuals_preserve_each_stroke_segments(self):
@@ -1143,6 +1188,50 @@ try:
             )
             states["contact_xy"].sum().backward()
             self.assertTrue(torch.isfinite(posture.grad).all())
+
+        def test_fused_pose_derives_angles_from_height_only(self):
+            from models.paper_fusion_renderer import (
+                PaperDynamicConfig,
+                PaperFusionRenderer,
+            )
+
+            renderer = object.__new__(PaperFusionRenderer)
+            nn.Module.__init__(renderer)
+            renderer.regression_angle_basis = "paper_declared_radian"
+            renderer.dynamic = PaperDynamicConfig(
+                calibration_profile=WANG2020_PROFILE,
+                fused_pose_from_height=True,
+            )
+            xy = torch.tensor([[0.0, 0.0], [2.0, 1.0], [2.0, 3.0]])
+            stroke_ids = torch.zeros(3, dtype=torch.long)
+            height = torch.tensor([13.0, 15.0, 17.0])
+            posture_a = torch.stack(
+                [height, torch.zeros_like(height), torch.zeros_like(height)],
+                dim=-1,
+            )
+            posture_b = posture_a.clone()
+            posture_b[:, 1] = np.deg2rad(9.0)
+            posture_b[:, 2] = np.deg2rad(4.0)
+            states_a = renderer.compute_dynamic_states(
+                xy, posture_a, stroke_ids
+            )
+            states_b = renderer.compute_dynamic_states(
+                xy, posture_b, stroke_ids
+            )
+            torch.testing.assert_close(
+                states_a["virtual_posture"],
+                states_b["virtual_posture"],
+            )
+            torch.testing.assert_close(
+                states_a["virtual_posture"][:, 0], height
+            )
+            torch.testing.assert_close(
+                states_a["forward_trajectory_heading"],
+                torch.tensor(
+                    [np.arctan2(1.0, 2.0), np.pi / 2.0, np.pi / 2.0],
+                    dtype=torch.float32,
+                ),
+            )
 
         def test_observability_gate_fixes_unobservable_angles(self):
             from optim.paper_psoc_lm import PaperPSOCLM

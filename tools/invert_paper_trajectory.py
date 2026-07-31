@@ -26,7 +26,11 @@ from models.paper_calibration import (
     WANG2020_PROFILE,
     paper_calibration_metadata,
 )
-from models.paper_bbsm import PAPER_POSTURE_MAX, PAPER_POSTURE_MIN
+from models.paper_bbsm import (
+    PAPER_POSTURE_MAX,
+    PAPER_POSTURE_MIN,
+    posture_to_geometry_torch,
+)
 from models.paper_fusion_renderer import PaperDynamicConfig, PaperFusionRenderer
 from optim.paper_psoc_lm import PaperPSOCLM
 from optim.trajectory_optimizer import load_target_image
@@ -302,6 +306,90 @@ def comparison_panel(
     canvas.save(output_path)
 
 
+def derive_fused_export_pose(
+    renderer: PaperFusionRenderer,
+    xy_canvas: np.ndarray,
+    optimized_posture: np.ndarray,
+    stroke_ids: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Derive alpha/beta from dynamic geometry and gamma from forward x/y."""
+    device = next(renderer.bbsmg.parameters()).device
+    with torch.no_grad():
+        xy_tensor = torch.as_tensor(xy_canvas, device=device)
+        posture_tensor = torch.as_tensor(optimized_posture, device=device)
+        stroke_tensor = torch.as_tensor(stroke_ids, device=device)
+        states = renderer.compute_dynamic_states(
+            xy_tensor, posture_tensor, stroke_tensor
+        )
+        fused_posture = states["virtual_posture"]
+        gamma = states["forward_trajectory_heading"]
+        reconstructed = posture_to_geometry_torch(
+            fused_posture, angle_basis=renderer.regression_angle_basis
+        )
+        geometry_error = reconstructed - states["geometry"]
+    pose_np = fused_posture.cpu().numpy()
+    gamma_np = gamma.cpu().numpy()
+    geometry_error_np = geometry_error.cpu().numpy()
+    angle_min = PAPER_POSTURE_MIN[1:]
+    angle_max = PAPER_POSTURE_MAX[1:]
+    angle_span = np.maximum(angle_max - angle_min, 1e-8)
+    normalized_angles = (pose_np[:, 1:] - angle_min) / angle_span
+    gamma_steps = []
+    for stroke_id in np.unique(stroke_ids):
+        indices = np.flatnonzero(stroke_ids == stroke_id)
+        if len(indices) < 2:
+            continue
+        difference = np.diff(gamma_np[indices])
+        wrapped = np.arctan2(np.sin(difference), np.cos(difference))
+        gamma_steps.extend(np.abs(wrapped).tolist())
+    diagnostics = {
+        "mode": "wang_z_to_bbsmg_angles_and_xy_heading",
+        "z_source": "psoc_H_mm",
+        "alpha_beta_source": "fixed_height_dynamic_geometry_inverse",
+        "gamma_source": "forward_xy_tangent_per_stroke",
+        "gamma_applied_twice": False,
+        "geometry_reconstruction_rmse": float(
+            np.sqrt(np.mean(geometry_error_np**2))
+        ),
+        "geometry_reconstruction_max_abs": float(
+            np.max(np.abs(geometry_error_np))
+        ),
+        "alpha_rad": {
+            "min": float(pose_np[:, 1].min()),
+            "max": float(pose_np[:, 1].max()),
+            "mean": float(pose_np[:, 1].mean()),
+            "lower_bound_fraction": float(
+                np.mean(normalized_angles[:, 0] <= 0.01)
+            ),
+            "upper_bound_fraction": float(
+                np.mean(normalized_angles[:, 0] >= 0.99)
+            ),
+        },
+        "beta_rad": {
+            "min": float(pose_np[:, 2].min()),
+            "max": float(pose_np[:, 2].max()),
+            "mean": float(pose_np[:, 2].mean()),
+            "lower_bound_fraction": float(
+                np.mean(normalized_angles[:, 1] <= 0.01)
+            ),
+            "upper_bound_fraction": float(
+                np.mean(normalized_angles[:, 1] >= 0.99)
+            ),
+        },
+        "gamma_rad": {
+            "min": float(gamma_np.min()),
+            "max": float(gamma_np.max()),
+            "mean_abs_wrapped_step": float(
+                np.mean(gamma_steps) if gamma_steps else 0.0
+            ),
+            "max_abs_wrapped_step": float(
+                max(gamma_steps, default=0.0)
+            ),
+        },
+    }
+    return pose_np, gamma_np, diagnostics
+
+
 def binary_metrics(prediction: np.ndarray, target: np.ndarray) -> dict:
     pred = prediction >= 0.5
     truth = target >= 0.5
@@ -364,12 +452,30 @@ def main(args: argparse.Namespace) -> None:
             "Use --optimization_size 64 for pose-recovery validation.",
             flush=True,
         )
+    if args.fused_pose_from_height:
+        if args.field_mode not in {"h_only", "xy_only"}:
+            raise ValueError(
+                "--fused_pose_from_height requires field_mode h_only or "
+                "xy_only because alpha/beta are derived, not LM variables"
+            )
+        if args.optimize_gamma:
+            raise ValueError(
+                "--fused_pose_from_height derives gamma from x/y and cannot "
+                "be combined with --optimize_gamma"
+            )
+        if args.allowed_pose_fields not in (None, ["H"]):
+            raise ValueError(
+                "fused pose derivation only permits --allowed_pose_fields H"
+            )
     v10_continuity_enabled = (
         args.cap_order_to_points
         or args.h_point_velocity_weight > 0
         or args.h_point_acceleration_weight > 0
     )
     output_format = (
+        "paper_psoc_lm_v42_fused_pose"
+        if args.fused_pose_from_height
+        else
         "paper_psoc_lm_v18_staged_trust_region"
         if args.allowed_pose_fields is not None
         else
@@ -461,6 +567,8 @@ def main(args: argparse.Namespace) -> None:
         footprint_longitudinal_scale=args.footprint_longitudinal_scale,
         footprint_transverse_scale=args.footprint_transverse_scale,
         render_max_step_px=args.render_max_step_px,
+        fused_pose_from_height=args.fused_pose_from_height,
+        inverse_regularization=args.pose_inverse_regularization,
     )
     renderer = PaperFusionRenderer.from_checkpoint(
         args.bbsmg_ckpt,
@@ -593,6 +701,57 @@ def main(args: argparse.Namespace) -> None:
     )
     xy_delta_canvas = result.xy_canvas - xy_canvas
     xy_delta_source = optimized_xy_source - original_xy_source
+    export_posture = result.posture
+    export_gamma = result.gamma
+    export_field_decisions = {
+        key: dict(value)
+        for key, value in result.diagnostics["field_decisions"].items()
+    }
+    fused_pose_diagnostics = None
+    if args.fused_pose_from_height:
+        (
+            export_posture,
+            export_gamma,
+            fused_pose_diagnostics,
+        ) = derive_fused_export_pose(
+            renderer,
+            result.xy_canvas,
+            result.posture,
+            stroke_ids,
+        )
+        for field in ("alpha", "beta"):
+            export_field_decisions[field].update(
+                {
+                    "optimized": False,
+                    "source": "dynamic_geometry_fixed_height_inverse",
+                    "confidence": "low_simulation",
+                    "reason": "derived_from_wang_geometry_not_free_lm_variable",
+                    "fixed_value_on_physical_boundary": False,
+                }
+            )
+        export_field_decisions["gamma"].update(
+            {
+                "optimized": False,
+                "source": "forward_xy_tangent_per_stroke",
+                "confidence": "high_geometric_simulation",
+                "reason": "atan2_of_next_xy_point_with_terminal_inheritance",
+                "fixed_value_on_physical_boundary": False,
+            }
+        )
+    lm_optimized_fields = list(
+        result.diagnostics["observability_gate"]["optimized_fields"]
+    )
+    reported_fixed_fields = list(
+        result.diagnostics["observability_gate"]["fixed_fields"]
+    ) + ([] if args.optimize_gamma else ["gamma"])
+    derived_fields = []
+    if args.fused_pose_from_height:
+        derived_fields = ["alpha", "beta", "gamma"]
+        reported_fixed_fields = [
+            field
+            for field in reported_fixed_fields
+            if field not in derived_fields
+        ]
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -602,16 +761,29 @@ def main(args: argparse.Namespace) -> None:
         candidate_dir.mkdir(parents=True, exist_ok=True)
         for order, candidate in candidate_results:
             candidate_stem = f"{stem}_order_{order}"
+            candidate_posture = candidate.posture
+            candidate_gamma = candidate.gamma
+            candidate_decisions = candidate.diagnostics["field_decisions"]
+            if args.fused_pose_from_height:
+                candidate_posture, candidate_gamma, _ = (
+                    derive_fused_export_pose(
+                        renderer,
+                        candidate.xy_canvas,
+                        candidate.posture,
+                        stroke_ids,
+                    )
+                )
+                candidate_decisions = export_field_decisions
             save_gray(
                 candidate.rendered_image,
                 candidate_dir / f"{candidate_stem}_rendered.png",
             )
             save_pose_csv(
                 sample,
-                candidate.posture,
+                candidate_posture,
                 candidate_dir / f"{candidate_stem}_trajectory.csv",
                 renderer.regression_angle_basis,
-                candidate.diagnostics["field_decisions"],
+                candidate_decisions,
                 xy_source=canvas_xy_to_source(
                     sample,
                     candidate.xy_canvas,
@@ -619,17 +791,17 @@ def main(args: argparse.Namespace) -> None:
                     args.padding,
                 ),
                 prototype=output_format,
-                gamma=candidate.gamma,
+                gamma=candidate_gamma,
             )
     save_pose_csv(
         sample,
-        result.posture,
+        export_posture,
         output_dir / f"{stem}_trajectory.csv",
         renderer.regression_angle_basis,
-        result.diagnostics["field_decisions"],
+        export_field_decisions,
         xy_source=optimized_xy_source,
         prototype=output_format,
-        gamma=result.gamma,
+        gamma=export_gamma,
     )
     save_gray(target, output_dir / f"{stem}_target.png")
     save_gray(initial_render, output_dir / f"{stem}_initial.png")
@@ -689,17 +861,14 @@ def main(args: argparse.Namespace) -> None:
                 "they are not calibrated robot coordinates."
             ),
         },
-        "optimized_fields": result.diagnostics["observability_gate"][
-            "optimized_fields"
-        ],
-        "fixed_fields": result.diagnostics["observability_gate"][
-            "fixed_fields"
-        ]
-        + ([] if args.optimize_gamma else ["gamma"]),
-        "field_decisions": result.diagnostics["field_decisions"],
+        "optimized_fields": lm_optimized_fields,
+        "derived_fields": derived_fields,
+        "fixed_fields": reported_fixed_fields,
+        "field_decisions": export_field_decisions,
+        "fused_pose_derivation": fused_pose_diagnostics,
         "gamma_rad": {
-            "min": float(result.gamma.min()),
-            "max": float(result.gamma.max()),
+            "min": float(export_gamma.min()),
+            "max": float(export_gamma.max()),
         },
         "pose_frame": "paper_model",
         "regression_angle_basis": renderer.regression_angle_basis,
@@ -715,6 +884,7 @@ def main(args: argparse.Namespace) -> None:
             "offset_transfer_scale": args.offset_transfer_scale,
             "width_inertia_Kw": args.width_inertia,
             "drag_inertia_Kd": args.drag_inertia,
+            "pose_inverse_regularization": args.pose_inverse_regularization,
             "pixels_per_model_unit": args.pixels_per_model_unit,
             "footprint_scale": args.footprint_scale,
             "footprint_longitudinal_scale": (
@@ -734,6 +904,9 @@ def main(args: argparse.Namespace) -> None:
             "alpha_rad": [0.0, float(np.deg2rad(10.0))],
             "beta_rad": [0.0, float(np.deg2rad(5.0))],
             "gamma_rad": (
+                [-float(np.pi), float(np.pi)]
+                if args.fused_pose_from_height
+                else
                 [
                     -float(np.deg2rad(args.gamma_max_abs_deg)),
                     float(np.deg2rad(args.gamma_max_abs_deg)),
@@ -768,20 +941,20 @@ def main(args: argparse.Namespace) -> None:
         },
         "optimized_range": {
             "H_mm": [
-                float(result.posture[:, 0].min()),
-                float(result.posture[:, 0].max()),
+                float(export_posture[:, 0].min()),
+                float(export_posture[:, 0].max()),
             ],
             "alpha_rad": [
-                float(result.posture[:, 1].min()),
-                float(result.posture[:, 1].max()),
+                float(export_posture[:, 1].min()),
+                float(export_posture[:, 1].max()),
             ],
             "beta_rad": [
-                float(result.posture[:, 2].min()),
-                float(result.posture[:, 2].max()),
+                float(export_posture[:, 2].min()),
+                float(export_posture[:, 2].max()),
             ],
             "gamma_rad": [
-                float(result.gamma.min()),
-                float(result.gamma.max()),
+                float(export_gamma.min()),
+                float(export_gamma.max()),
             ],
         },
         "identifiability": {
@@ -836,6 +1009,19 @@ def main(args: argparse.Namespace) -> None:
     fixed = report["fixed_fields"]
     xy_mode = "bounded x/y correction" if args.optimize_xy else "fixed x/y"
     print(f"[DONE] {xy_mode}; optimized={optimized}; fixed={fixed} on {device}")
+    if fused_pose_diagnostics is not None:
+        print(
+            "[FUSED POSE] derived=['alpha', 'beta', 'gamma']; "
+            "geometry_rmse="
+            f"{fused_pose_diagnostics['geometry_reconstruction_rmse']:.6f}, "
+            "alpha="
+            f"[{fused_pose_diagnostics['alpha_rad']['min']:.6f}, "
+            f"{fused_pose_diagnostics['alpha_rad']['max']:.6f}], beta="
+            f"[{fused_pose_diagnostics['beta_rad']['min']:.6f}, "
+            f"{fused_pose_diagnostics['beta_rad']['max']:.6f}], gamma="
+            f"[{fused_pose_diagnostics['gamma_rad']['min']:.6f}, "
+            f"{fused_pose_diagnostics['gamma_rad']['max']:.6f}]"
+        )
     print(
         f"[LM] success={result.success}, steps={result.steps}, "
         f"cost={result.initial_cost:.6f}->{result.final_cost:.6f}"
@@ -1086,6 +1272,15 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--fused_pose_from_height",
+        action="store_true",
+        help=(
+            "paper fusion mode: optimize/retain PSOC H only, derive alpha "
+            "and beta from Wang dynamic geometry with H fixed, and export "
+            "gamma as the per-stroke forward x/y tangent"
+        ),
+    )
+    parser.add_argument(
         "--allowed_pose_fields",
         nargs="+",
         choices=["H", "alpha", "beta", "gamma"],
@@ -1153,6 +1348,16 @@ if __name__ == "__main__":
     )
     parser.add_argument("--width_inertia", type=float, default=0.02)
     parser.add_argument("--drag_inertia", type=float, default=0.02)
+    parser.add_argument(
+        "--pose_inverse_regularization",
+        type=float,
+        default=1e-4,
+        help=(
+            "ridge weight for dynamic geometry -> B-BSMG posture inversion; "
+            "v42 fused experiments should scan this rather than forcing "
+            "angles away from physical bounds"
+        ),
+    )
     parser.add_argument(
         "--dynamic_profile",
         choices=DYNAMIC_PROFILES,

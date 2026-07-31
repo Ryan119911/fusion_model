@@ -125,6 +125,70 @@ def geometry_to_posture_torch(
     return torch.linalg.solve(lhs, rhs.T).T
 
 
+def geometry_to_angles_given_height_torch(
+    geometry: torch.Tensor,
+    height_mm: torch.Tensor,
+    reference_angles: torch.Tensor | None = None,
+    regularization: float = 1e-4,
+    angle_basis: str = PAPER_ANGLE_BASIS_RADIAN,
+) -> torch.Tensor:
+    """Invert B-BSM geometry for alpha/beta while preserving PSOC height.
+
+    The fused paper pipeline obtains ``H`` from the Wang/PSOC z trajectory.
+    Consequently H must not move again while translating dynamic width/drag
+    geometry into the B-BSMG posture parameters.  With H fixed, the three
+    geometry equations form an overdetermined 3-by-2 ridge least-squares
+    problem for alpha and beta.
+    """
+    if torch is None:
+        raise RuntimeError("PyTorch is required for differentiable rendering")
+    if geometry.ndim != 2 or geometry.shape[1] != 3:
+        raise ValueError("geometry must have shape [N,3]")
+    height_mm = height_mm.reshape(-1)
+    if len(height_mm) != len(geometry):
+        raise ValueError("height_mm must contain one value per geometry row")
+    if regularization < 0:
+        raise ValueError("regularization must be non-negative")
+    matrix = torch.as_tensor(
+        regression_matrix_numpy(angle_basis),
+        dtype=geometry.dtype,
+        device=geometry.device,
+    )
+    bias = torch.as_tensor(
+        PAPER_REGRESSION_BIAS,
+        dtype=geometry.dtype,
+        device=geometry.device,
+    )
+    angle_matrix = matrix[:, 1:]
+    if reference_angles is None:
+        reference_angles = torch.zeros(
+            (len(geometry), 2),
+            dtype=geometry.dtype,
+            device=geometry.device,
+        )
+    if reference_angles.shape != (len(geometry), 2):
+        raise ValueError("reference_angles must have shape [N,2]")
+    residual_geometry = (
+        geometry
+        - bias
+        - height_mm[:, None] * matrix[:, 0][None, :]
+    )
+    eye = torch.eye(2, dtype=geometry.dtype, device=geometry.device)
+    lhs = angle_matrix.T @ angle_matrix + float(regularization) * eye
+    rhs = (
+        residual_geometry @ angle_matrix
+        + float(regularization) * reference_angles
+    )
+    angles = torch.linalg.solve(lhs, rhs.T).T
+    lower = torch.as_tensor(
+        PAPER_POSTURE_MIN[1:], dtype=geometry.dtype, device=geometry.device
+    )
+    upper = torch.as_tensor(
+        PAPER_POSTURE_MAX[1:], dtype=geometry.dtype, device=geometry.device
+    )
+    return torch.maximum(torch.minimum(angles, upper), lower)
+
+
 def clamp_posture_torch(posture: torch.Tensor) -> torch.Tensor:
     if torch is None:
         raise RuntimeError("PyTorch is required for differentiable rendering")
