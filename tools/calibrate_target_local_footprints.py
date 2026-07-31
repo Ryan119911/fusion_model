@@ -180,6 +180,10 @@ def _save_overlay(
 
 
 def main(args: argparse.Namespace) -> None:
+    if not 0 < args.min_ink_ratio <= args.max_ink_ratio:
+        raise ValueError("ink-ratio bounds must be positive and ordered")
+    if not 0.0 <= args.axis_scale_blend <= 1.0:
+        raise ValueError("axis_scale_blend must be in [0,1]")
     device = torch.device(args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable")
@@ -227,7 +231,7 @@ def main(args: argparse.Namespace) -> None:
     # supplies a stable fallback at intersections or clipped tangent runs.
     dynamic_drag = (geometry[:, 0] + geometry[:, 1]).cpu().numpy()
     dynamic_width = geometry[:, 2].cpu().numpy()
-    calibrated_longitudinal_scale, calibrated_transverse_scale, valid = (
+    estimated_longitudinal_scale, estimated_transverse_scale, valid = (
         robust_footprint_scales(
             measured,
             dynamic_drag,
@@ -237,6 +241,16 @@ def main(args: argparse.Namespace) -> None:
             args.footprint_transverse_scale,
             minimum_confidence=args.minimum_confidence,
         )
+    )
+    calibrated_longitudinal_scale = float(
+        args.footprint_longitudinal_scale
+        + args.axis_scale_blend
+        * (estimated_longitudinal_scale - args.footprint_longitudinal_scale)
+    )
+    calibrated_transverse_scale = float(
+        args.footprint_transverse_scale
+        + args.axis_scale_blend
+        * (estimated_transverse_scale - args.footprint_transverse_scale)
     )
     target_drag = measured["length_px"] / max(
         2.0 * args.pixels_per_model_unit * calibrated_longitudinal_scale,
@@ -298,6 +312,12 @@ def main(args: argparse.Namespace) -> None:
         ),
     )
     with torch.no_grad():
+        scale_only_rendered = forward_renderer(
+            xy_t,
+            posture_t,
+            stroke_t,
+            torch.zeros(len(xy), device=device),
+        )[0, 0].cpu().numpy()
         rendered = forward_renderer(
             xy_t,
             torch.as_tensor(calibrated, device=device),
@@ -324,7 +344,7 @@ def main(args: argparse.Namespace) -> None:
         decisions,
         xy_source=xy_source,
         gamma=gamma,
-        prototype="paper_target_local_footprint_v44",
+        prototype="paper_target_local_footprint_v46_staged",
     )
     Image.fromarray(np.rint(np.clip(rendered, 0, 1) * 255).astype(np.uint8)).save(
         output / "render_calibrated.png"
@@ -332,6 +352,9 @@ def main(args: argparse.Namespace) -> None:
     Image.fromarray(
         np.rint(np.clip(baseline_rendered, 0, 1) * 255).astype(np.uint8)
     ).save(output / "render_baseline.png")
+    Image.fromarray(
+        np.rint(np.clip(scale_only_rendered, 0, 1) * 255).astype(np.uint8)
+    ).save(output / "render_scale_only.png")
     Image.fromarray(np.rint(np.abs(target - rendered) * 255).astype(np.uint8)).save(
         output / "diff.png"
     )
@@ -362,6 +385,7 @@ def main(args: argparse.Namespace) -> None:
                 "gamma_rad": float(gamma[i]),
             })
     baseline_metrics = binary_metrics(baseline_rendered, target)
+    scale_only_metrics = binary_metrics(scale_only_rendered, target)
     metrics = binary_metrics(rendered, target)
     reduced = regression_matrix_numpy(renderer.regression_angle_basis)
     reduced = np.stack((reduced[0] + reduced[1], reduced[2]))[:, 1:]
@@ -376,15 +400,33 @@ def main(args: argparse.Namespace) -> None:
     )
     accepted = bool(
         metrics["iou_at_0.5"] >= baseline_metrics["iou_at_0.5"]
+        and metrics["plain_mse"] <= baseline_metrics["plain_mse"]
+        and args.min_ink_ratio
+        <= metrics["ink_ratio_at_0.5"]
+        <= args.max_ink_ratio
         and max(alpha_lower, alpha_upper, beta_lower, beta_upper)
         <= args.max_boundary_fraction
         and int(valid.sum()) >= args.minimum_valid_points
+    )
+    axis_scale_changed = bool(
+        abs(calibrated_longitudinal_scale - args.footprint_longitudinal_scale)
+        > 1e-6
+        or abs(calibrated_transverse_scale - args.footprint_transverse_scale)
+        > 1e-6
+    )
+    axis_scale_accepted = bool(
+        axis_scale_changed
+        and scale_only_metrics["iou_at_0.5"] >= baseline_metrics["iou_at_0.5"]
+        and scale_only_metrics["plain_mse"] <= baseline_metrics["plain_mse"]
+        and args.min_ink_ratio
+        <= scale_only_metrics["ink_ratio_at_0.5"]
+        <= args.max_ink_ratio
     )
     valid_aspect = measured["length_px"][valid] / np.maximum(
         measured["width_px"][valid], 1e-6
     )
     report = {
-        "format": "paper_target_local_footprint_v44",
+        "format": "paper_target_local_footprint_v46_staged",
         "simulation_only": True,
         "target_image": args.target_image,
         "pose_csv": args.pose_csv,
@@ -404,10 +446,22 @@ def main(args: argparse.Namespace) -> None:
         },
         "axis_scale_calibration": {
             "base_longitudinal": args.footprint_longitudinal_scale,
+            "estimated_longitudinal": estimated_longitudinal_scale,
             "calibrated_longitudinal": calibrated_longitudinal_scale,
             "base_transverse": args.footprint_transverse_scale,
+            "estimated_transverse": estimated_transverse_scale,
             "calibrated_transverse": calibrated_transverse_scale,
+            "blend": args.axis_scale_blend,
             "method": "confidence-filtered median then bounded to 0.6x-1.6x base",
+            "accepted": axis_scale_accepted,
+            "recommended_scales": (
+                {
+                    "longitudinal": calibrated_longitudinal_scale,
+                    "transverse": calibrated_transverse_scale,
+                }
+                if axis_scale_accepted
+                else None
+            ),
         },
         "angle_mapping_condition_number": angle_condition_number,
         "pose": {
@@ -419,11 +473,14 @@ def main(args: argparse.Namespace) -> None:
             "beta_upper_bound_fraction": beta_upper,
         },
         "baseline_forward_metrics": baseline_metrics,
+        "scale_only_forward_metrics": scale_only_metrics,
         "forward_metrics": metrics,
         "acceptance": {
             "accepted": accepted,
             "requirements": {
                 "nondecreasing_iou": True,
+                "nonincreasing_mse": True,
+                "ink_ratio_range": [args.min_ink_ratio, args.max_ink_ratio],
                 "max_boundary_fraction": args.max_boundary_fraction,
                 "minimum_valid_points": args.minimum_valid_points,
             },
@@ -459,7 +516,10 @@ if __name__ == "__main__":
     parser.add_argument("--step_px", type=float, default=0.25)
     parser.add_argument("--ink_threshold", type=float, default=0.35)
     parser.add_argument("--target_blend", type=float, default=0.5)
+    parser.add_argument("--axis_scale_blend", type=float, default=0.35)
     parser.add_argument("--minimum_confidence", type=float, default=0.1)
     parser.add_argument("--minimum_valid_points", type=int, default=20)
     parser.add_argument("--max_boundary_fraction", type=float, default=0.25)
+    parser.add_argument("--min_ink_ratio", type=float, default=0.85)
+    parser.add_argument("--max_ink_ratio", type=float, default=1.15)
     main(parser.parse_args())

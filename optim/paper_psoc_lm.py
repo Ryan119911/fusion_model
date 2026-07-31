@@ -7,10 +7,12 @@ from typing import Any, Dict, List, Sequence
 import numpy as np
 import torch
 import torch.nn.functional as F
+from scipy.ndimage import distance_transform_edt
 
 from models.paper_bbsm import PAPER_POSTURE_MAX, PAPER_POSTURE_MIN
 from models.paper_fusion_renderer import PaperFusionRenderer
 from optim.chebyshev import barycentric_weights, cgl_nodes, normalize_time_grid
+from utils.structure_mask import skeletonize_binary
 
 
 def cgl_interpolation_matrix(order: int, num_samples: int) -> np.ndarray:
@@ -391,6 +393,9 @@ class PaperPSOCLM:
         xy_prior_weight: float = 0.05,
         xy_segment_length_weight: float = 0.0,
         xy_segment_direction_weight: float = 0.0,
+        xy_target_skeleton_weight: float = 0.0,
+        xy_target_skeleton_max_distance_px: float = 12.0,
+        xy_target_skeleton_threshold: float = 0.35,
         h_point_velocity_weight: float = 0.0,
         h_point_acceleration_weight: float = 0.0,
         cap_order_to_points: bool = False,
@@ -451,6 +456,7 @@ class PaperPSOCLM:
             or xy_prior_weight < 0
             or xy_segment_length_weight < 0
             or xy_segment_direction_weight < 0
+            or xy_target_skeleton_weight < 0
         ):
             raise ValueError("x/y regularization weights must be non-negative")
         self.optimize_xy = bool(optimize_xy)
@@ -462,6 +468,19 @@ class PaperPSOCLM:
         )
         self.xy_segment_direction_weight = float(
             xy_segment_direction_weight
+        )
+        if xy_target_skeleton_max_distance_px <= 0:
+            raise ValueError(
+                "xy_target_skeleton_max_distance_px must be positive"
+            )
+        if not 0.0 < xy_target_skeleton_threshold < 1.0:
+            raise ValueError("xy_target_skeleton_threshold must be in (0,1)")
+        self.xy_target_skeleton_weight = float(xy_target_skeleton_weight)
+        self.xy_target_skeleton_max_distance_px = float(
+            xy_target_skeleton_max_distance_px
+        )
+        self.xy_target_skeleton_threshold = float(
+            xy_target_skeleton_threshold
         )
         if h_point_velocity_weight < 0 or h_point_acceleration_weight < 0:
             raise ValueError(
@@ -744,6 +763,25 @@ class PaperPSOCLM:
             mode="bilinear",
             align_corners=False,
         )
+        target_skeleton_distance = None
+        if self.optimize_xy and self.xy_target_skeleton_weight > 0:
+            target_binary = np.asarray(target_image) >= (
+                self.xy_target_skeleton_threshold
+            )
+            target_skeleton = skeletonize_binary(target_binary)
+            if not np.any(target_skeleton):
+                raise ValueError(
+                    "Target skeleton is empty at the configured threshold"
+                )
+            distance = distance_transform_edt(~target_skeleton).astype(
+                np.float32
+            )
+            distance = np.minimum(
+                distance, self.xy_target_skeleton_max_distance_px
+            ) / self.xy_target_skeleton_max_distance_px
+            target_skeleton_distance = torch.as_tensor(
+                distance, dtype=torch.float32, device=self.device
+            ).view(1, 1, *distance.shape)
         (
             matrices,
             point_indices,
@@ -1226,6 +1264,29 @@ class PaperPSOCLM:
                         self.xy_segment_length_weight,
                         self.xy_segment_direction_weight,
                     )
+                )
+            if (
+                xy_nodes is not None
+                and target_skeleton_distance is not None
+                and self.xy_target_skeleton_weight > 0
+            ):
+                height, width = target_skeleton_distance.shape[-2:]
+                grid = torch.stack(
+                    (
+                        2.0 * rendered_xy[:, 0] / max(width - 1, 1) - 1.0,
+                        2.0 * rendered_xy[:, 1] / max(height - 1, 1) - 1.0,
+                    ),
+                    dim=-1,
+                ).view(1, 1, -1, 2)
+                sampled_distance = F.grid_sample(
+                    target_skeleton_distance,
+                    grid,
+                    mode="bilinear",
+                    padding_mode="border",
+                    align_corners=True,
+                ).reshape(-1)
+                residuals.append(
+                    self.xy_target_skeleton_weight**0.5 * sampled_distance
                 )
             normalized_h_points = (
                 posture[:, 0] - float(PAPER_POSTURE_MIN[0])
@@ -1764,6 +1825,16 @@ class PaperPSOCLM:
         best_full_mse = current_full_mse
         best_decision = decision.detach().clone()
         best_step = 0
+        selection_metric = (
+            "regularized_cost_with_target_skeleton"
+            if self.xy_target_skeleton_weight > 0
+            else "full_resolution_plain_mse"
+        )
+        best_selection_value = (
+            current_cost
+            if self.xy_target_skeleton_weight > 0
+            else current_full_mse
+        )
         mu = float(damping)
         history = {
             "cost": [current_cost],
@@ -1841,8 +1912,14 @@ class PaperPSOCLM:
                 decision = trial
                 current_cost = trial_cost
                 current_full_mse = evaluate_full_resolution_mse(decision)
-                if current_full_mse < best_full_mse:
-                    best_full_mse = current_full_mse
+                best_full_mse = min(best_full_mse, current_full_mse)
+                selection_value = (
+                    current_cost
+                    if self.xy_target_skeleton_weight > 0
+                    else current_full_mse
+                )
+                if selection_value < best_selection_value:
+                    best_selection_value = selection_value
                     best_decision = decision.detach().clone()
                     best_step = step
                 mu = max(mu * 0.3, 1e-8)
@@ -1911,7 +1988,8 @@ class PaperPSOCLM:
             )[0, 0]
         diagnostics: Dict[str, Any] = {
             "checkpoint_selection": {
-                "metric": "full_resolution_plain_mse",
+                "metric": selection_metric,
+                "selected_metric_value": best_selection_value,
                 "initial_mse": initial_full_mse,
                 "best_mse": best_full_mse,
                 "best_step": best_step,
@@ -1942,6 +2020,13 @@ class PaperPSOCLM:
                 ),
                 "xy_segment_direction_weight": (
                     self.xy_segment_direction_weight
+                ),
+                "xy_target_skeleton_weight": self.xy_target_skeleton_weight,
+                "xy_target_skeleton_max_distance_px": (
+                    self.xy_target_skeleton_max_distance_px
+                ),
+                "xy_target_skeleton_threshold": (
+                    self.xy_target_skeleton_threshold
                 ),
                 "h_point_velocity_weight": self.h_point_velocity_weight,
                 "h_point_acceleration_weight": (
@@ -2112,6 +2197,11 @@ class PaperPSOCLM:
             "prior_weight": self.xy_prior_weight,
             "segment_length_weight": self.xy_segment_length_weight,
             "segment_direction_weight": self.xy_segment_direction_weight,
+            "target_skeleton_weight": self.xy_target_skeleton_weight,
+            "target_skeleton_max_distance_px": (
+                self.xy_target_skeleton_max_distance_px
+            ),
+            "target_skeleton_threshold": self.xy_target_skeleton_threshold,
             "max_abs_change_px": float(np.abs(xy_offsets_np).max()),
             "mean_point_displacement_px": float(
                 np.linalg.norm(xy_offsets_np, axis=1).mean()

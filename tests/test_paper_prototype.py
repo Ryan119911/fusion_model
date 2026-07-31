@@ -40,6 +40,7 @@ from tools.calibrate_target_local_footprints import (
     measure_local_footprints,
     robust_footprint_scales,
 )
+from tools.invert_paper_trajectory import trajectory_target_skeleton_distance
 from utils.types import (
     CharacterTrajectory,
     PointState,
@@ -415,6 +416,22 @@ class PaperBBSMTests(unittest.TestCase):
         self.assertAlmostEqual(longitudinal, 1.0)
         self.assertAlmostEqual(transverse, 1.0)
         np.testing.assert_array_equal(valid, [True, False])
+
+    def test_target_skeleton_distance_reports_alignment(self):
+        target = np.zeros((9, 9), dtype=np.float32)
+        target[:, 5] = 1.0
+        aligned = trajectory_target_skeleton_distance(
+            np.asarray([[5.0, 2.0], [5.0, 7.0]], dtype=np.float32),
+            target,
+            threshold=0.5,
+        )
+        offset = trajectory_target_skeleton_distance(
+            np.asarray([[3.0, 2.0], [3.0, 7.0]], dtype=np.float32),
+            target,
+            threshold=0.5,
+        )
+        self.assertAlmostEqual(aligned["mean_px"], 0.0)
+        self.assertAlmostEqual(offset["mean_px"], 2.0)
 
     def test_bezier_peak_and_anchor_geometry(self):
         boundary = bbsm_boundary(lt=1.2, lh=0.4, lr=0.5, samples_per_side=101)
@@ -1393,6 +1410,52 @@ try:
             self.assertEqual(
                 result.diagnostics["observability_gate"]["optimized_fields"],
                 ["x", "y"],
+            )
+
+        def test_target_skeleton_residual_moves_xy_toward_centerline(self):
+            from optim.paper_psoc_lm import PaperPSOCLM
+
+            class ConstantRenderer(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.bbsmg = nn.Linear(1, 1, bias=False)
+
+                def forward(self, xy, posture, stroke_ids):
+                    return torch.zeros(
+                        (1, 1, 8, 8), dtype=xy.dtype, device=xy.device
+                    )
+
+            target = np.zeros((8, 8), dtype=np.float32)
+            target[:, 5] = 1.0
+            solver = PaperPSOCLM(
+                ConstantRenderer(),
+                order=1,
+                optimization_size=8,
+                field_mode="xy_only",
+                optimize_xy=True,
+                xy_max_offset_px=4.0,
+                xy_smoothness_weight=0.01,
+                xy_prior_weight=0.001,
+                xy_target_skeleton_weight=10.0,
+                xy_target_skeleton_max_distance_px=8.0,
+                xy_target_skeleton_threshold=0.5,
+            )
+            initial_xy = np.asarray(
+                [[2.0, 2.0], [2.0, 6.0]], dtype=np.float32
+            )
+            result = solver.optimize(
+                xy_canvas=initial_xy,
+                stroke_ids=np.zeros(2, dtype=np.int64),
+                target_image=target,
+                max_steps=5,
+                pixel_weight=0.0,
+            )
+            self.assertGreater(float(result.xy_canvas[:, 0].mean()), 3.0)
+            self.assertAlmostEqual(
+                result.diagnostics["xy_optimization"][
+                    "target_skeleton_weight"
+                ],
+                10.0,
             )
 
 except ImportError:

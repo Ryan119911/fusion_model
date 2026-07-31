@@ -10,6 +10,7 @@ import sys
 import numpy as np
 import torch
 from PIL import Image, ImageOps, ImageDraw, ImageFilter
+from scipy.ndimage import distance_transform_edt
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -34,6 +35,7 @@ from models.paper_bbsm import (
 from models.paper_fusion_renderer import PaperDynamicConfig, PaperFusionRenderer
 from optim.paper_psoc_lm import PaperPSOCLM
 from optim.trajectory_optimizer import load_target_image
+from utils.structure_mask import skeletonize_binary
 
 
 def pick_sample(samples, sample_id=None, character=None, index=0):
@@ -436,6 +438,36 @@ def trajectory_target_coverage(
     return float(support[y, x].mean())
 
 
+def trajectory_target_skeleton_distance(
+    xy_canvas: np.ndarray,
+    target: np.ndarray,
+    threshold: float = 0.35,
+) -> dict:
+    """Measure bilinear point distance to the target character skeleton."""
+    skeleton = skeletonize_binary(np.asarray(target) >= threshold)
+    if not np.any(skeleton):
+        raise ValueError("Target skeleton is empty at the configured threshold")
+    distance = distance_transform_edt(~skeleton).astype(np.float32)
+    height, width = distance.shape
+    x = np.clip(xy_canvas[:, 0], 0.0, width - 1.0)
+    y = np.clip(xy_canvas[:, 1], 0.0, height - 1.0)
+    x0, y0 = np.floor(x).astype(int), np.floor(y).astype(int)
+    x1, y1 = np.minimum(x0 + 1, width - 1), np.minimum(y0 + 1, height - 1)
+    wx, wy = x - x0, y - y0
+    sampled = (
+        distance[y0, x0] * (1 - wx) * (1 - wy)
+        + distance[y0, x1] * wx * (1 - wy)
+        + distance[y1, x0] * (1 - wx) * wy
+        + distance[y1, x1] * wx * wy
+    )
+    return {
+        "mean_px": float(sampled.mean()),
+        "median_px": float(np.median(sampled)),
+        "p90_px": float(np.percentile(sampled, 90)),
+        "max_px": float(sampled.max()),
+    }
+
+
 def main(args: argparse.Namespace) -> None:
     if args.optimize_xy and args.xy_max_offset_px > args.padding:
         raise ValueError(
@@ -638,6 +670,11 @@ def main(args: argparse.Namespace) -> None:
             xy_prior_weight=args.xy_prior_weight,
             xy_segment_length_weight=args.xy_segment_length_weight,
             xy_segment_direction_weight=args.xy_segment_direction_weight,
+            xy_target_skeleton_weight=args.xy_target_skeleton_weight,
+            xy_target_skeleton_max_distance_px=(
+                args.xy_target_skeleton_max_distance_px
+            ),
+            xy_target_skeleton_threshold=args.xy_target_skeleton_threshold,
             h_point_velocity_weight=args.h_point_velocity_weight,
             h_point_acceleration_weight=args.h_point_acceleration_weight,
             cap_order_to_points=args.cap_order_to_points,
@@ -1004,6 +1041,20 @@ def main(args: argparse.Namespace) -> None:
                 result.xy_canvas, target, tolerance_px=5
             )
         ),
+        "initial_trajectory_target_skeleton_distance": (
+            trajectory_target_skeleton_distance(
+                xy_canvas,
+                target,
+                threshold=args.xy_target_skeleton_threshold,
+            )
+        ),
+        "optimized_trajectory_target_skeleton_distance": (
+            trajectory_target_skeleton_distance(
+                result.xy_canvas,
+                target,
+                threshold=args.xy_target_skeleton_threshold,
+            )
+        ),
         "warning": (
             "Prototype paper-frame pose only; do not command a real robot before "
             "brush/camera/TCP/frame calibration and safety validation."
@@ -1228,6 +1279,27 @@ if __name__ == "__main__":
             "decoded point-space penalty on within-stroke unit directions; "
             "prevents foldbacks while allowing whole-stroke translation"
         ),
+    )
+    parser.add_argument(
+        "--xy_target_skeleton_weight",
+        type=float,
+        default=0.0,
+        help=(
+            "differentiable attraction of decoded x/y points to the target "
+            "character skeleton; zero preserves legacy behavior"
+        ),
+    )
+    parser.add_argument(
+        "--xy_target_skeleton_max_distance_px",
+        type=float,
+        default=12.0,
+        help="distance-field clipping radius used by skeleton attraction",
+    )
+    parser.add_argument(
+        "--xy_target_skeleton_threshold",
+        type=float,
+        default=0.35,
+        help="target ink threshold used to build the attraction skeleton",
     )
     parser.add_argument(
         "--cap_order_to_points",
