@@ -211,7 +211,21 @@ def _build_candidate(
     spec: dict[str, Any],
     stroke_ids: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    height = np.clip(base[:, 0] + float(spec["h_shift"]), PAPER_POSTURE_MIN[0], PAPER_POSTURE_MAX[0])
+    # Before solving alpha/beta, restrict the requested H to the interval in
+    # which the Lr equation is feasible with the prototype angle bounds.  This
+    # is what lets height alternatives remain genuinely width-equivalent even
+    # when the source pose already sits near an angle boundary.
+    c_h, c_a, c_b = float(matrix[2, 0]), float(matrix[2, 1]), float(matrix[2, 2])
+    q = target_width - float(bias[2])
+    angle_min = c_a * float(PAPER_POSTURE_MIN[1]) + c_b * float(PAPER_POSTURE_MIN[2])
+    angle_max = c_a * float(PAPER_POSTURE_MAX[1]) + c_b * float(PAPER_POSTURE_MAX[2])
+    feasible_h_low = (q - angle_max) / max(c_h, 1e-12)
+    feasible_h_high = (q - angle_min) / max(c_h, 1e-12)
+    feasible_h_low = np.maximum(feasible_h_low, float(PAPER_POSTURE_MIN[0]))
+    feasible_h_high = np.minimum(feasible_h_high, float(PAPER_POSTURE_MAX[0]))
+    requested_height = base[:, 0] + float(spec["h_shift"])
+    height = np.clip(requested_height, feasible_h_low, feasible_h_high)
+    height = np.clip(height, PAPER_POSTURE_MIN[0], PAPER_POSTURE_MAX[0])
     alpha_pref = np.clip(base[:, 1] + float(spec["alpha_shift"]), PAPER_POSTURE_MIN[1], PAPER_POSTURE_MAX[1])
     beta_pref = np.clip(base[:, 2] + float(spec["beta_shift"]), PAPER_POSTURE_MIN[2], PAPER_POSTURE_MAX[2])
     alpha, beta, width = _solve_width_line(target_width, height, alpha_pref, beta_pref, matrix, bias)
@@ -243,6 +257,10 @@ def _build_candidate(
     report = {
         "name": spec["name"],
         "h_shift_requested_mm": float(spec["h_shift"]),
+        "height_actual_shift_mean_mm": float(np.mean(height - base[:, 0])),
+        "height_actual_shift_min_mm": float(np.min(height - base[:, 0])),
+        "height_actual_shift_max_mm": float(np.max(height - base[:, 0])),
+        "height_changed_fraction": float(np.mean(np.abs(height - base[:, 0]) > 1e-6)),
         "alpha_preference_shift_rad": float(spec["alpha_shift"]),
         "beta_preference_shift_rad": float(spec["beta_shift"]),
         "gamma_offset_deg": float(spec["gamma_deg"]),
