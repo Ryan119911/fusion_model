@@ -36,6 +36,11 @@ from models.paper_fusion_renderer import PaperDynamicConfig, PaperFusionRenderer
 from optim.paper_psoc_lm import PaperPSOCLM
 from optim.trajectory_optimizer import load_target_image
 from utils.structure_mask import skeletonize_binary
+from utils.trajectory_processing import (
+    TrajectorySafetyLimits,
+    repair_sample_states,
+    validate_trajectory,
+)
 
 
 def pick_sample(samples, sample_id=None, character=None, index=0):
@@ -545,6 +550,13 @@ def main(args: argparse.Namespace) -> None:
         character=args.character,
         index=args.index,
     )
+    sample = repair_sample_states(sample)
+    trajectory_safety = validate_trajectory(sample, TrajectorySafetyLimits())
+    if not trajectory_safety["safe"]:
+        raise ValueError(
+            "Input trajectory failed safety checks: "
+            + ", ".join(trajectory_safety["errors"])
+        )
     xy_canvas, stroke_ids = flatten_canvas_trajectory(
         sample, args.image_size, args.padding
     )
@@ -863,6 +875,11 @@ def main(args: argparse.Namespace) -> None:
         "simulation_only": True,
         "character": sample.character,
         "sample_id": sample.meta.get("sample_id"),
+        "trajectory_safety": trajectory_safety,
+        "trajectory_processing": {
+            "state_repair": True,
+            "cross_stroke_segments_rendered": 0,
+        },
         "initialization": {
             "pose_source": (
                 "initial_pose_csv"

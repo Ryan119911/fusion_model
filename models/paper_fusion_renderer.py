@@ -251,6 +251,28 @@ class PaperFusionRenderer(nn.Module):
         return renderer
 
     @staticmethod
+    def _contiguous_stroke_groups(
+        stroke_ids: torch.Tensor,
+    ) -> list[tuple[torch.Tensor, torch.Tensor]]:
+        """Split by contiguous runs so reused IDs can never bridge strokes."""
+        if stroke_ids.ndim != 1:
+            raise ValueError("stroke_ids must be one-dimensional")
+        if len(stroke_ids) == 0:
+            return []
+        boundaries = torch.nonzero(
+            stroke_ids[1:] != stroke_ids[:-1], as_tuple=False
+        ).flatten() + 1
+        starts = [0] + boundaries.detach().cpu().tolist()
+        ends = boundaries.detach().cpu().tolist() + [len(stroke_ids)]
+        return [
+            (
+                stroke_ids[start:end],
+                torch.arange(start, end, device=stroke_ids.device),
+            )
+            for start, end in zip(starts, ends)
+        ]
+
+    @staticmethod
     def trajectory_heading(
         xy: torch.Tensor, stroke_ids: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -258,8 +280,7 @@ class PaperFusionRenderer(nn.Module):
             xy.shape[0], dtype=xy.dtype, device=xy.device
         )
         step_lengths = torch.zeros_like(headings)
-        for stroke_id in torch.unique_consecutive(stroke_ids):
-            indices = torch.nonzero(stroke_ids == stroke_id, as_tuple=False).flatten()
+        for _, indices in PaperFusionRenderer._contiguous_stroke_groups(stroke_ids):
             points = xy[indices]
             if len(indices) == 1:
                 continue
@@ -523,10 +544,7 @@ class PaperFusionRenderer(nn.Module):
             raise ValueError("values must have shape [N]")
         parts = []
         max_step = float(self.dynamic.render_max_step_px)
-        for stroke_id in torch.unique_consecutive(stroke_ids):
-            indices = torch.nonzero(
-                stroke_ids == stroke_id, as_tuple=False
-            ).flatten()
+        for group_ids, indices in self._contiguous_stroke_groups(stroke_ids):
             points = xy_canvas[indices]
             stroke_values = values[indices]
             if len(indices) == 0:
@@ -572,10 +590,7 @@ class PaperFusionRenderer(nn.Module):
         posture_parts = []
         id_parts = []
         max_step = float(self.dynamic.render_max_step_px)
-        for stroke_id in torch.unique_consecutive(stroke_ids):
-            indices = torch.nonzero(
-                stroke_ids == stroke_id, as_tuple=False
-            ).flatten()
+        for group_ids, indices in self._contiguous_stroke_groups(stroke_ids):
             points = xy_canvas[indices]
             poses = posture[indices]
             if len(indices) == 0:
@@ -615,7 +630,7 @@ class PaperFusionRenderer(nn.Module):
                 id_parts.append(
                     torch.full(
                         (steps,),
-                        int(stroke_id.item()),
+                        int(group_ids[0].item()),
                         dtype=stroke_ids.dtype,
                         device=stroke_ids.device,
                     )

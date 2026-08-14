@@ -30,6 +30,12 @@ from tools.invert_paper_trajectory import (
     pick_sample,
     source_xy_to_canvas,
 )
+from utils.trajectory_processing import (
+    TrajectorySafetyLimits,
+    repair_sample_states,
+    smooth_sample,
+    validate_trajectory,
+)
 
 
 def load_pose_csv(
@@ -175,6 +181,29 @@ def main(args: argparse.Namespace) -> None:
         character=args.character,
         index=args.index,
     )
+    # Repair states without changing point IDs so an accompanying pose CSV
+    # remains key-compatible. Smoothing is per-stroke and never bridges a
+    # pen-up boundary.
+    sample = repair_sample_states(sample)
+    if args.smooth_passes > 0:
+        sample = smooth_sample(
+            sample,
+            passes=args.smooth_passes,
+            strength=args.smooth_strength,
+        )
+    safety_report = validate_trajectory(
+        sample,
+        TrajectorySafetyLimits(
+            max_step_xy=args.safety_max_step_xy,
+            max_step_z=args.safety_max_step_z,
+            max_angle_step_rad=args.safety_max_angle_step_rad,
+        ),
+    )
+    if not safety_report["safe"] and args.fail_on_unsafe:
+        raise ValueError(
+            "Trajectory safety checks failed: "
+            + ", ".join(safety_report["errors"])
+        )
     xy, stroke_ids = flatten_canvas_trajectory(
         sample, args.image_size, args.padding
     )
@@ -315,6 +344,12 @@ def main(args: argparse.Namespace) -> None:
                 states["offset_model_unit"].max().cpu()
             ),
         },
+        "trajectory_safety": safety_report,
+        "trajectory_processing": {
+            "state_repair": True,
+            "smooth_passes": args.smooth_passes,
+            "smooth_strength": args.smooth_strength,
+        },
     }
     if args.fused_pose_from_height:
         report["fused_pose_validation"] = {
@@ -429,4 +464,17 @@ if __name__ == "__main__":
     )
     parser.add_argument("--render_max_step_px", type=float, default=2.0)
     parser.add_argument("--point_batch_size", type=int, default=128)
+    parser.add_argument(
+        "--smooth_passes",
+        type=int,
+        default=0,
+        help="per-stroke Laplacian smoothing passes; 0 preserves XY exactly",
+    )
+    parser.add_argument("--smooth_strength", type=float, default=0.25)
+    parser.add_argument("--safety_max_step_xy", type=float, default=None)
+    parser.add_argument("--safety_max_step_z", type=float, default=None)
+    parser.add_argument(
+        "--safety_max_angle_step_rad", type=float, default=np.pi
+    )
+    parser.add_argument("--fail_on_unsafe", action="store_true")
     main(parser.parse_args())
