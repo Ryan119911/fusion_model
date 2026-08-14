@@ -5,6 +5,7 @@ from pathlib import Path
 
 from utils.trajectory_processing import (
     TrajectorySafetyLimits,
+    _preview_pixel,
     densify_sample,
     expand_pen_up_transitions,
     render_trajectory_preview,
@@ -38,6 +39,29 @@ class TrajectoryProcessingTests(unittest.TestCase):
             self.assertEqual(stroke.points[0].state, PointState.DOWN)
             self.assertEqual(stroke.points[-1].state, PointState.UP)
             self.assertTrue(all(p.state == PointState.MOVE for p in stroke.points[1:-1]))
+
+    def test_preview_flips_source_y_up_to_image_y_down(self):
+        top_source = p(0, 0, 10, 100)
+        bottom_source = p(0, 1, 10, 0)
+        top_pixel = _preview_pixel(
+            top_source,
+            min_x=0.0,
+            min_y=0.0,
+            max_y=100.0,
+            scale=1.0,
+            padding=0.0,
+            flip_y=True,
+        )
+        bottom_pixel = _preview_pixel(
+            bottom_source,
+            min_x=0.0,
+            min_y=0.0,
+            max_y=100.0,
+            scale=1.0,
+            padding=0.0,
+            flip_y=True,
+        )
+        self.assertLess(top_pixel[1], bottom_pixel[1])
 
     def test_smoothing_does_not_mix_strokes_or_endpoints(self):
         sample = CharacterTrajectory(
