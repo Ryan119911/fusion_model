@@ -389,11 +389,32 @@ def validate_trajectory(
     for field, count in violations.items():
         if count:
             errors.append(f"{field}_out_of_bounds")
-    if limits.max_step_xy is not None and any(step > limits.max_step_xy for step in within_steps):
+    xy_tol = (
+        1e-6 * max(1.0, abs(float(limits.max_step_xy)))
+        if limits.max_step_xy is not None
+        else 0.0
+    )
+    z_tol = (
+        1e-6 * max(1.0, abs(float(limits.max_step_z)))
+        if limits.max_step_z is not None
+        else 0.0
+    )
+    angle_tol = (
+        1e-6 * max(1.0, abs(float(limits.max_angle_step_rad)))
+        if limits.max_angle_step_rad is not None
+        else 0.0
+    )
+    if limits.max_step_xy is not None and any(
+        step > limits.max_step_xy + xy_tol for step in within_steps
+    ):
         errors.append("xy_step_exceeds_limit")
-    if limits.max_step_z is not None and any(step > limits.max_step_z for step in z_steps):
+    if limits.max_step_z is not None and any(
+        step > limits.max_step_z + z_tol for step in z_steps
+    ):
         errors.append("z_step_exceeds_limit")
-    if limits.max_angle_step_rad is not None and any(step > limits.max_angle_step_rad for step in angle_steps):
+    if limits.max_angle_step_rad is not None and any(
+        step > limits.max_angle_step_rad + angle_tol for step in angle_steps
+    ):
         errors.append("angle_step_exceeds_limit")
 
     interstroke_gaps = []
