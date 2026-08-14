@@ -42,7 +42,21 @@ def main(args: argparse.Namespace) -> None:
     )
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    raw_report = validate_trajectory(sample)
+    safety_max_step_xy = args.safety_max_step_xy
+    if safety_max_step_xy is None and args.max_step_xy > 0.0:
+        safety_max_step_xy = args.max_step_xy
+    limits = TrajectorySafetyLimits(
+        x_min=args.x_min,
+        x_max=args.x_max,
+        y_min=args.y_min,
+        y_max=args.y_max,
+        z_min=args.z_min,
+        z_max=args.z_max,
+        max_step_xy=safety_max_step_xy,
+        max_step_z=args.safety_max_step_z,
+        max_angle_step_rad=args.safety_max_angle_step_rad,
+    )
+    raw_report = validate_trajectory(sample, limits)
     processed = repair_sample_states(sample)
     if args.smooth_passes > 0:
         processed = smooth_sample(
@@ -59,17 +73,6 @@ def main(args: argparse.Namespace) -> None:
             processed,
             clearance_z=args.lift_z,
         )
-    limits = TrajectorySafetyLimits(
-        x_min=args.x_min,
-        x_max=args.x_max,
-        y_min=args.y_min,
-        y_max=args.y_max,
-        z_min=args.z_min,
-        z_max=args.z_max,
-        max_step_xy=args.safety_max_step_xy,
-        max_step_z=args.safety_max_step_z,
-        max_angle_step_rad=args.safety_max_angle_step_rad,
-    )
     processed_report = validate_trajectory(processed, limits)
     if not processed_report["safe"] and args.fail_on_unsafe:
         raise RuntimeError(
