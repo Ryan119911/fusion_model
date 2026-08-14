@@ -77,9 +77,23 @@ def main(args: argparse.Namespace) -> None:
             + ", ".join(processed_report["errors"])
         )
     write_trajectory_csv(processed, output_dir / "trajectory_processed.csv")
-    render_trajectory_preview(sample, output_dir / "trajectory_raw_preview.png")
-    render_trajectory_preview(processed, output_dir / "trajectory_processed_preview.png")
-    render_trajectory_overlay(sample, processed, output_dir / "trajectory_overlay.png")
+    preview_flip_y = not args.preview_y_up
+    render_trajectory_preview(
+        sample,
+        output_dir / "trajectory_raw_preview.png",
+        flip_y=preview_flip_y,
+    )
+    render_trajectory_preview(
+        processed,
+        output_dir / "trajectory_processed_preview.png",
+        flip_y=preview_flip_y,
+    )
+    render_trajectory_overlay(
+        sample,
+        processed,
+        output_dir / "trajectory_overlay.png",
+        flip_y=preview_flip_y,
+    )
     report = {
         "format": "robot_independent_trajectory_processing_v1",
         "input_csv": str(args.input_csv),
@@ -94,6 +108,15 @@ def main(args: argparse.Namespace) -> None:
             "max_step_xy": args.max_step_xy,
             "lift_z": args.lift_z,
             "expand_pen_up": args.expand_pen_up,
+        },
+        "preview": {
+            "flip_y": preview_flip_y,
+            "coordinate_frame": (
+                "image_y_down_from_source_y_up"
+                if preview_flip_y
+                else "source_y_up"
+            ),
+            "csv_unchanged": True,
         },
         "rendering_contract": {
             "cross_stroke_segments_rendered": 0,
@@ -118,6 +141,11 @@ if __name__ == "__main__":
     parser.add_argument("--smooth_passes", type=int, default=2)
     parser.add_argument("--smooth_strength", type=float, default=0.25)
     parser.add_argument("--max_step_xy", type=float, default=0.0)
+    parser.add_argument(
+        "--preview_y_up",
+        action="store_true",
+        help="keep source Y-up orientation in previews (default flips to image Y-down)",
+    )
     parser.add_argument("--lift_z", type=float, default=None)
     parser.add_argument(
         "--expand_pen_up",

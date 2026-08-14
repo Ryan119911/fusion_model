@@ -432,7 +432,31 @@ def _canvas_transform(sample: CharacterTrajectory, size: int, padding: int) -> T
     min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
     span = max(max_x - min_x, max_y - min_y, 1e-6)
     scale = (size - 2 * padding) / span
-    return min_x, min_y, scale, float(size), float(padding)
+    return min_x, min_y, scale, max_y, float(padding)
+
+
+def _preview_pixel(
+    point: TrajectoryPoint,
+    *,
+    min_x: float,
+    min_y: float,
+    max_y: float,
+    scale: float,
+    padding: float,
+    flip_y: bool,
+) -> Tuple[int, int]:
+    """Map source coordinates to an image preview.
+
+    The trajectory CSV uses a source-frame Y axis that increases upward,
+    whereas PIL/image coordinates increase downward.  Previews therefore
+    flip Y by default; the exported robot/source CSV is never modified.
+    """
+
+    source_y = max_y - point.y if flip_y else point.y
+    return (
+        int(round(padding + (point.x - min_x) * scale)),
+        int(round(padding + (source_y - min_y) * scale)),
+    )
 
 
 def render_trajectory_preview(
@@ -441,21 +465,34 @@ def render_trajectory_preview(
     *,
     size: int = 512,
     padding: int = 32,
+    flip_y: bool = True,
 ) -> None:
-    """Render a stroke-separated diagnostic preview with endpoints and IDs."""
+    """Render a stroke-separated preview in image orientation.
+
+    ``flip_y=True`` displays source-frame trajectories upright against target
+    images.  It affects only this diagnostic image, not the exported CSV.
+    """
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     image = Image.new("RGB", (size, size), "white")
     draw = ImageDraw.Draw(image)
-    min_x, min_y, scale, _, pad = _canvas_transform(sample, size, padding)
+    min_x, min_y, scale, max_y, pad = _canvas_transform(sample, size, padding)
     palette = [
         (32, 102, 181), (220, 80, 60), (45, 150, 90),
         (150, 75, 170), (220, 145, 30), (20, 150, 160),
     ]
 
     def to_pixel(point: TrajectoryPoint) -> Tuple[int, int]:
-        return int(round(pad + (point.x - min_x) * scale)), int(round(pad + (point.y - min_y) * scale))
+        return _preview_pixel(
+            point,
+            min_x=min_x,
+            min_y=min_y,
+            max_y=max_y,
+            scale=scale,
+            padding=pad,
+            flip_y=flip_y,
+        )
 
     for order, stroke in enumerate(sample.sorted_strokes()):
         points = stroke.sorted_points()
@@ -480,17 +517,26 @@ def render_trajectory_overlay(
     *,
     size: int = 512,
     padding: int = 32,
+    flip_y: bool = True,
 ) -> None:
-    """Draw raw trajectory in gray and processed trajectory in color."""
+    """Draw raw and processed trajectories in a common image orientation."""
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     image = Image.new("RGB", (size, size), "white")
     draw = ImageDraw.Draw(image)
-    min_x, min_y, scale, _, pad = _canvas_transform(reference, size, padding)
+    min_x, min_y, scale, max_y, pad = _canvas_transform(reference, size, padding)
 
     def to_pixel(point: TrajectoryPoint) -> Tuple[int, int]:
-        return int(round(pad + (point.x - min_x) * scale)), int(round(pad + (point.y - min_y) * scale))
+        return _preview_pixel(
+            point,
+            min_x=min_x,
+            min_y=min_y,
+            max_y=max_y,
+            scale=scale,
+            padding=pad,
+            flip_y=flip_y,
+        )
 
     for stroke in reference.sorted_strokes():
         pixels = [to_pixel(point) for point in stroke.sorted_points()]
