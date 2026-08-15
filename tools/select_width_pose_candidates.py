@@ -112,6 +112,7 @@ def _footprint_reference(path: Path | None, candidate_rows: list[dict[str, str]]
     rows = _read_csv(path)
     keys = {(int(_float(row, "stroke_id")), int(_float(row, "point_id"))): row for row in rows}
     target_width, target_drag, confidence = [], [], []
+    use_candidate_target = any(row.get("target_half_width_dynamic", "") not in (None, "") for row in candidate_rows)
     for row in candidate_rows:
         key = (int(_float(row, "stroke_id")), int(_float(row, "point_id")))
         if key not in keys:
@@ -120,8 +121,8 @@ def _footprint_reference(path: Path | None, candidate_rows: list[dict[str, str]]
             confidence.append(0.0)
             continue
         ref = keys[key]
-        target_width.append(_float(ref, "target_half_width", np.nan))
-        target_drag.append(_float(ref, "target_drag", np.nan))
+        target_width.append(_float(row, "target_half_width_dynamic", _float(ref, "target_half_width", np.nan)) if use_candidate_target else _float(ref, "target_half_width", np.nan))
+        target_drag.append(_float(row, "target_drag_dynamic", _float(ref, "target_drag", np.nan)) if use_candidate_target else _float(ref, "target_drag", np.nan))
         confidence.append(_float(ref, "confidence", 0.0))
     width = np.asarray(target_width, dtype=np.float64)
     drag = np.asarray(target_drag, dtype=np.float64)
@@ -173,11 +174,11 @@ def _candidate_report(
     # the static regression geometry; otherwise the selector would report a
     # false mismatch for a candidate explicitly optimized through Wang's
     # stateful brush dynamics.
-    dynamic_width = np.asarray([_float(row, "predicted_width", np.nan) for row in rows], dtype=np.float64)
-    dynamic_drag = np.asarray([_float(row, "predicted_drag", np.nan) for row in rows], dtype=np.float64)
+    dynamic_width = np.asarray([_float(row, "predicted_width", _float(row, "predicted_width_dynamic", np.nan)) for row in rows], dtype=np.float64)
+    dynamic_drag = np.asarray([_float(row, "predicted_drag", _float(row, "predicted_drag_dynamic", np.nan)) for row in rows], dtype=np.float64)
     use_dynamic_footprint = bool(np.isfinite(dynamic_width).any() and np.isfinite(dynamic_drag).any())
     predicted_width = dynamic_width if use_dynamic_footprint else geometry[:, 2]
-    footprint_source = "dynamic_renderer_predicted_width_drag" if use_dynamic_footprint else "static_regression_geometry"
+    footprint_source = "dynamic_renderer_refined_xy_target_and_prediction" if use_dynamic_footprint and any(row.get("target_half_width_dynamic", "") not in (None, "") for row in rows) else ("dynamic_renderer_predicted_width_drag" if use_dynamic_footprint else "static_regression_geometry")
     width_valid = footprint_valid & (footprint_confidence >= args.minimum_confidence) & np.isfinite(target_width) & (target_width > 1e-8)
     width_rel = np.abs(predicted_width - target_width) / np.maximum(np.abs(target_width), 1e-8)
     width_rel_valid = width_rel[width_valid]
