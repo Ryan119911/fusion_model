@@ -168,14 +168,24 @@ def _candidate_report(
     if target_width is None:
         target_width = geometry[:, 2].copy()
         footprint_valid = np.ones(len(rows), dtype=bool)
+    # Dynamic-footprint candidates carry predictions produced by
+    # PaperFusionRenderer.compute_dynamic_states.  Prefer those values over
+    # the static regression geometry; otherwise the selector would report a
+    # false mismatch for a candidate explicitly optimized through Wang's
+    # stateful brush dynamics.
+    dynamic_width = np.asarray([_float(row, "predicted_width", np.nan) for row in rows], dtype=np.float64)
+    dynamic_drag = np.asarray([_float(row, "predicted_drag", np.nan) for row in rows], dtype=np.float64)
+    use_dynamic_footprint = bool(np.isfinite(dynamic_width).any() and np.isfinite(dynamic_drag).any())
+    predicted_width = dynamic_width if use_dynamic_footprint else geometry[:, 2]
+    footprint_source = "dynamic_renderer_predicted_width_drag" if use_dynamic_footprint else "static_regression_geometry"
     width_valid = footprint_valid & np.isfinite(target_width) & (target_width > 1e-8)
-    width_rel = np.abs(geometry[:, 2] - target_width) / np.maximum(np.abs(target_width), 1e-8)
+    width_rel = np.abs(predicted_width - target_width) / np.maximum(np.abs(target_width), 1e-8)
     width_rel_valid = width_rel[width_valid]
     width_rel_rmse = float(np.sqrt(np.mean(width_rel_valid**2))) if len(width_rel_valid) else float("inf")
     width_rel_max = float(width_rel_valid.max()) if len(width_rel_valid) else float("inf")
 
     drag_valid = width_valid & (target_drag is not None) & np.isfinite(target_drag) & (target_drag > 1e-8)
-    predicted_drag = geometry[:, 0] + geometry[:, 1]
+    predicted_drag = dynamic_drag if use_dynamic_footprint else geometry[:, 0] + geometry[:, 1]
     drag_rel = np.abs(predicted_drag - target_drag) / np.maximum(np.abs(target_drag), 1e-8) if target_drag is not None else np.full(len(rows), np.nan)
     drag_rel_valid = drag_rel[drag_valid]
     drag_rel_rmse = float(np.sqrt(np.mean(drag_rel_valid**2))) if len(drag_rel_valid) else None
@@ -246,6 +256,7 @@ def _candidate_report(
         "simulation_only": True,
         "regression_angle_basis": basis,
         "footprint_reference": str(footprint_path) if footprint_path else "candidate_target_width_Lr",
+        "footprint_prediction_source": footprint_source,
         "footprint_points": int(width_rel_valid.size),
         "footprint_valid_fraction": float(np.mean(footprint_valid)),
         "width_relative_rmse": width_rel_rmse,
