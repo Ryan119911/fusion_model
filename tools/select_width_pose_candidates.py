@@ -104,11 +104,11 @@ def _load_candidate(path: Path) -> tuple[list[dict[str, str]], np.ndarray, np.nd
     return rows, posture, gamma, xy, stroke_ids, point_ids, order
 
 
-def _footprint_reference(path: Path | None, candidate_rows: list[dict[str, str]]) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray]:
+def _footprint_reference(path: Path | None, candidate_rows: list[dict[str, str]]) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray, np.ndarray]:
     if path is None:
         target = np.asarray([_float(row, "target_width_Lr", np.nan) for row in candidate_rows], dtype=np.float64)
         valid = np.isfinite(target)
-        return target, None, valid
+        return target, None, valid, np.ones(len(candidate_rows), dtype=np.float64)
     rows = _read_csv(path)
     keys = {(int(_float(row, "stroke_id")), int(_float(row, "point_id"))): row for row in rows}
     target_width, target_drag, confidence = [], [], []
@@ -127,7 +127,7 @@ def _footprint_reference(path: Path | None, candidate_rows: list[dict[str, str]]
     drag = np.asarray(target_drag, dtype=np.float64)
     conf = np.asarray(confidence, dtype=np.float64)
     valid = np.isfinite(width) & (width > 0.0) & (conf > 0.0)
-    return width, drag, valid
+    return width, drag, valid, conf
 
 
 def _trajectory_report_metrics(path: Path | None, args: argparse.Namespace) -> dict[str, Any] | None:
@@ -164,7 +164,7 @@ def _candidate_report(
     )
     basis = _basis(rows)
     geometry = posture_to_geometry_numpy(posture, angle_basis=basis)
-    target_width, target_drag, footprint_valid = _footprint_reference(footprint_path, rows)
+    target_width, target_drag, footprint_valid, footprint_confidence = _footprint_reference(footprint_path, rows)
     if target_width is None:
         target_width = geometry[:, 2].copy()
         footprint_valid = np.ones(len(rows), dtype=bool)
@@ -178,17 +178,19 @@ def _candidate_report(
     use_dynamic_footprint = bool(np.isfinite(dynamic_width).any() and np.isfinite(dynamic_drag).any())
     predicted_width = dynamic_width if use_dynamic_footprint else geometry[:, 2]
     footprint_source = "dynamic_renderer_predicted_width_drag" if use_dynamic_footprint else "static_regression_geometry"
-    width_valid = footprint_valid & np.isfinite(target_width) & (target_width > 1e-8)
+    width_valid = footprint_valid & (footprint_confidence >= args.minimum_confidence) & np.isfinite(target_width) & (target_width > 1e-8)
     width_rel = np.abs(predicted_width - target_width) / np.maximum(np.abs(target_width), 1e-8)
     width_rel_valid = width_rel[width_valid]
-    width_rel_rmse = float(np.sqrt(np.mean(width_rel_valid**2))) if len(width_rel_valid) else float("inf")
+    width_weights = footprint_confidence[width_valid]
+    width_rel_rmse = float(np.sqrt(np.sum(width_weights * width_rel_valid**2) / max(np.sum(width_weights), 1e-8))) if len(width_rel_valid) else float("inf")
     width_rel_max = float(width_rel_valid.max()) if len(width_rel_valid) else float("inf")
 
     drag_valid = width_valid & (target_drag is not None) & np.isfinite(target_drag) & (target_drag > 1e-8)
     predicted_drag = dynamic_drag if use_dynamic_footprint else geometry[:, 0] + geometry[:, 1]
     drag_rel = np.abs(predicted_drag - target_drag) / np.maximum(np.abs(target_drag), 1e-8) if target_drag is not None else np.full(len(rows), np.nan)
     drag_rel_valid = drag_rel[drag_valid]
-    drag_rel_rmse = float(np.sqrt(np.mean(drag_rel_valid**2))) if len(drag_rel_valid) else None
+    drag_weights = footprint_confidence[drag_valid]
+    drag_rel_rmse = float(np.sqrt(np.sum(drag_weights * drag_rel_valid**2) / max(np.sum(drag_weights), 1e-8))) if len(drag_rel_valid) else None
 
     lower = PAPER_POSTURE_MIN[None, :]
     upper = PAPER_POSTURE_MAX[None, :]
@@ -258,7 +260,8 @@ def _candidate_report(
         "footprint_reference": str(footprint_path) if footprint_path else "candidate_target_width_Lr",
         "footprint_prediction_source": footprint_source,
         "footprint_points": int(width_rel_valid.size),
-        "footprint_valid_fraction": float(np.mean(footprint_valid)),
+        "footprint_valid_fraction": float(np.mean(width_valid)),
+        "footprint_confidence_mean": float(np.mean(footprint_confidence[width_valid])) if np.any(width_valid) else 0.0,
         "width_relative_rmse": width_rel_rmse,
         "width_max_relative_error": width_rel_max,
         "drag_relative_rmse": drag_rel_rmse,
@@ -357,4 +360,5 @@ if __name__ == "__main__":
     parser.add_argument("--max_beta_step_rad", type=float, default=float(np.deg2rad(3.0)))
     parser.add_argument("--max_gamma_step_rad", type=float, default=float(np.deg2rad(45.0)))
     parser.add_argument("--max_xy_step", type=float, default=2.0)
+    parser.add_argument("--minimum_confidence", type=float, default=0.1)
     main(parser.parse_args())
