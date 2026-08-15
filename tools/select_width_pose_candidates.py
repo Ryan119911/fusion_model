@@ -204,11 +204,12 @@ def _candidate_report(
         "beta_rad": _group_steps(posture[:, 2], stroke_ids),
         "gamma_rad": _group_steps(gamma, stroke_ids, wrap=True),
     }
+    step_tolerance = max(args.boundary_tolerance, 1e-6)
     step_ok = (
-        pose_steps["H_mm"]["max"] <= args.max_h_step_mm
-        and pose_steps["alpha_rad"]["max"] <= args.max_alpha_step_rad
-        and pose_steps["beta_rad"]["max"] <= args.max_beta_step_rad
-        and pose_steps["gamma_rad"]["max"] <= args.max_gamma_step_rad
+        pose_steps["H_mm"]["max"] <= args.max_h_step_mm + step_tolerance
+        and pose_steps["alpha_rad"]["max"] <= args.max_alpha_step_rad + step_tolerance
+        and pose_steps["beta_rad"]["max"] <= args.max_beta_step_rad + step_tolerance
+        and pose_steps["gamma_rad"]["max"] <= args.max_gamma_step_rad + step_tolerance
     )
     xy_steps = _group_steps(xy, stroke_ids)
     xy_ok = xy_steps["max"] <= args.max_xy_step
