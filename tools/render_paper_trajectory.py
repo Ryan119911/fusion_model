@@ -262,6 +262,7 @@ def main(args: argparse.Namespace) -> None:
             footprint_transverse_scale=args.footprint_transverse_scale,
             render_max_step_px=args.render_max_step_px,
             fused_pose_from_height=args.fused_pose_from_height,
+            gamma_mode=args.gamma_mode,
             inverse_regularization=args.pose_inverse_regularization,
         ),
         point_batch_size=args.point_batch_size,
@@ -322,6 +323,12 @@ def main(args: argparse.Namespace) -> None:
             "min": float(gamma.min()),
             "max": float(gamma.max()),
         },
+        "gamma_csv_semantics": (
+            "absolute_forward_xy_heading"
+            if args.gamma_mode == "relative_to_heading"
+            else args.gamma_mode
+        ),
+        "gamma_model_semantics": args.gamma_mode,
         "regression_angle_basis": renderer.regression_angle_basis,
         "dynamic_profile": args.dynamic_profile,
         "offset_transfer_scale": args.offset_transfer_scale,
@@ -414,6 +421,15 @@ if __name__ == "__main__":
     parser.add_argument("--alpha_deg", type=float, default=0.0)
     parser.add_argument("--beta_deg", type=float, default=0.0)
     parser.add_argument("--gamma_deg", type=float, default=0.0)
+    parser.add_argument(
+        "--gamma_mode",
+        choices=("relative_to_heading", "absolute_heading", "ignore"),
+        default="relative_to_heading",
+        help=(
+            "Interpret pose CSV gamma as a local footprint rotation, an "
+            "absolute forward heading, or ignore it."
+        ),
+    )
     parser.add_argument(
         "--fused_pose_from_height",
         action="store_true",

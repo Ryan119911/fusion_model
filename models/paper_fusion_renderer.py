@@ -49,6 +49,9 @@ class PaperDynamicConfig:
     footprint_transverse_scale: float | None = None
     render_max_step_px: float = 2.0
     fused_pose_from_height: bool = False
+    # Pose CSVs store the absolute forward x/y heading, while the 6-D
+    # checkpoint was trained with a local signed footprint rotation.
+    gamma_mode: str = "relative_to_heading"
 
     @property
     def longitudinal_scale(self) -> float:
@@ -142,6 +145,14 @@ class PaperFusionRenderer(nn.Module):
             raise ValueError("footprint_transverse_scale must be positive")
         if self.dynamic.render_max_step_px <= 0.0:
             raise ValueError("render_max_step_px must be positive")
+        if self.dynamic.gamma_mode not in {
+            "relative_to_heading",
+            "absolute_heading",
+            "ignore",
+        }:
+            raise ValueError(
+                "gamma_mode must be relative_to_heading, absolute_heading, or ignore"
+            )
         if self.dynamic.inverse_regularization < 0.0:
             raise ValueError("inverse_regularization must be non-negative")
         self.point_batch_size = int(point_batch_size)
@@ -479,6 +490,9 @@ class PaperFusionRenderer(nn.Module):
         render_xy, render_posture, render_stroke_ids = (
             self.densify_for_rendering(xy_canvas, posture, stroke_ids)
         )
+        states = self.compute_dynamic_states(
+            render_xy, render_posture, render_stroke_ids
+        )
         if gamma is None or self.dynamic.fused_pose_from_height:
             render_gamma = torch.zeros(
                 len(render_xy), dtype=posture.dtype, device=posture.device
@@ -487,9 +501,16 @@ class PaperFusionRenderer(nn.Module):
             render_gamma = self.densify_scalar_for_rendering(
                 xy_canvas, gamma, stroke_ids
             )
-        states = self.compute_dynamic_states(
-            render_xy, render_posture, render_stroke_ids
-        )
+            if self.dynamic.gamma_mode == "relative_to_heading":
+                # Training gamma is a local footprint rotation. Convert the
+                # absolute forward tangent stored in pose CSVs before decode.
+                forward_heading = states["forward_trajectory_heading"]
+                render_gamma = torch.atan2(
+                    torch.sin(render_gamma - forward_heading),
+                    torch.cos(render_gamma - forward_heading),
+                )
+            elif self.dynamic.gamma_mode == "ignore":
+                render_gamma = torch.zeros_like(render_gamma)
         virtual_posture = states["virtual_posture"]
         contact_xy = states["contact_xy"]
         # In fused mode gamma is the exported trajectory direction, already
@@ -544,7 +565,7 @@ class PaperFusionRenderer(nn.Module):
             raise ValueError("values must have shape [N]")
         parts = []
         max_step = float(self.dynamic.render_max_step_px)
-        for group_ids, indices in self._contiguous_stroke_groups(stroke_ids):
+        for group_ids, indices in PaperFusionRenderer._contiguous_stroke_groups(stroke_ids):
             points = xy_canvas[indices]
             stroke_values = values[indices]
             if len(indices) == 0:
@@ -590,7 +611,7 @@ class PaperFusionRenderer(nn.Module):
         posture_parts = []
         id_parts = []
         max_step = float(self.dynamic.render_max_step_px)
-        for group_ids, indices in self._contiguous_stroke_groups(stroke_ids):
+        for group_ids, indices in PaperFusionRenderer._contiguous_stroke_groups(stroke_ids):
             points = xy_canvas[indices]
             poses = posture[indices]
             if len(indices) == 0:

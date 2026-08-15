@@ -1829,3 +1829,29 @@ Accept only if target coverage and local-footprint confidence improve while
 segment direction, segment length ratio, displacement bounds, and the false
 stroke visual audit remain safe. Then rerun v44 calibration using the accepted
 v45 CSV; do not calibrate alpha/beta against a rejected x/y candidate.
+## Gamma 语义修复与整字端到端精修（仿真）
+
+`paper_bbsmg_gamma_v14` 的训练 gamma 是局部笔刷旋转，训练范围约为 ±30°。
+轨迹 CSV 中的 gamma 则是每个笔画的绝对 `atan2(dy, dx)` 前进方向。当前
+`PaperDynamicConfig.gamma_mode=relative_to_heading` 会在进入 6D B-BSMG 前自动
+计算 `wrap(gamma_csv - forward_xy_heading)`，再由渲染器负责整笔旋转；旧的绝对
+语义可用 `--gamma_mode absolute_heading` 仅作兼容对照。
+
+冻结 B-BSMG、直接对最终整字图像优化有限 x/y 和 H/alpha/beta：
+
+```bash
+/home/robot/miniconda3/envs/ddpm/bin/python -u tools/optimize_character_end_to_end.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --pose_csv outputs/wu_joint_xy_pose_footprint_candidates_v1/candidate_00_xy_pose_base/pose.csv \
+  --bbsmg_ckpt outputs/paper_bbsmg_gamma_v14/bbsmg_best.pt \
+  --target_image data/raw/targets/wu_kaishu_target.png \
+  --output_dir outputs/wu_character_e2e_v1 \
+  --character 武 --sample_id 武_fake_sim --device cuda \
+  --iterations 60 --xy_max_delta_px 4 --h_max_delta_mm 2 \
+  --alpha_max_delta_deg 2 --beta_max_delta_deg 1.5
+```
+
+输出包括 `comparison.png`、`diff.png`、`report.json` 和可重放的
+`pose_refined.csv`。必须再用 `tools/render_paper_trajectory.py --fail_on_unsafe`
+重放；报告中的 `gamma_csv_semantics` 与 `gamma_model_semantics` 用于区分导出
+字段和网络输入语义。该流程仍是仿真候选，不能替代真实毛笔/TCP 标定。
