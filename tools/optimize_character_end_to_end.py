@@ -146,13 +146,15 @@ def _write_pose_csv(
 
 
 def _save_images(output: Path, target: np.ndarray, prediction: np.ndarray) -> None:
-    target_u8 = np.rint(np.clip(target, 0.0, 1.0) * 255.0).astype(np.uint8)
-    pred_u8 = np.rint(np.clip(prediction, 0.0, 1.0) * 255.0).astype(np.uint8)
-    diff_u8 = np.rint(np.clip(np.abs(prediction - target), 0.0, 1.0) * 255.0).astype(np.uint8)
+    # Metrics stay in ink=1/background=0 space.  Export all panels as
+    # black ink on a white background, matching the target PNG convention.
+    target_u8 = np.rint(255.0 - np.clip(target, 0.0, 1.0) * 255.0).astype(np.uint8)
+    pred_u8 = np.rint(255.0 - np.clip(prediction, 0.0, 1.0) * 255.0).astype(np.uint8)
+    diff_u8 = np.rint(255.0 - np.clip(np.abs(prediction - target), 0.0, 1.0) * 255.0).astype(np.uint8)
     Image.fromarray(target_u8, mode="L").save(output / "target.png")
     Image.fromarray(pred_u8, mode="L").save(output / "render_refined.png")
     Image.fromarray(diff_u8, mode="L").save(output / "diff.png")
-    comparison = Image.new("L", (target.shape[1] * 3, target.shape[0]), 0)
+    comparison = Image.new("L", (target.shape[1] * 3, target.shape[0]), 255)
     comparison.paste(Image.fromarray(target_u8, mode="L"), (0, 0))
     comparison.paste(Image.fromarray(pred_u8, mode="L"), (target.shape[1], 0))
     comparison.paste(Image.fromarray(diff_u8, mode="L"), (target.shape[1] * 2, 0))

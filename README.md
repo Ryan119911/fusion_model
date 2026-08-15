@@ -1855,3 +1855,35 @@ v45 CSV; do not calibrate alpha/beta against a rejected x/y candidate.
 `pose_refined.csv`。必须再用 `tools/render_paper_trajectory.py --fail_on_unsafe`
 重放；报告中的 `gamma_csv_semantics` 与 `gamma_model_semantics` 用于区分导出
 字段和网络输入语义。该流程仍是仿真候选，不能替代真实毛笔/TCP 标定。
+
+## v15：楷书限定的通用 B-BSMG（按字符分组验证）
+
+局部 patch 的随机切分会把几乎相同的解析笔触同时放进训练和验证，不能
+代表整字泛化。v15 使用 `data/raw/data.csv` 的 `chirography=楷` 索引，只保留
+数据库中出现的楷书字符；`武` 完全留出，不参与训练。每个楷书字符只采样少量
+姿态作为一个独立 group，验证集按字符 group 切分。B-BSMG 内部仍使用
+`ink=1/background=0` 计算损失，gamma 是相对当前轨迹方向的局部角度。
+
+```bash
+/home/robot/miniconda3/envs/ddpm/bin/python -u tools/build_general_paper_bbsmg_dataset.py \
+  --trajectory_csv data/raw/trajectories.csv \
+  --style_data_csv data/raw/data.csv \
+  --style_image_dir data/raw/images \
+  --style_json_dir data/raw/json_files \
+  --chirography 楷 \
+  --holdout_character 武 \
+  --samples_per_character 5 \
+  --output_npz data/processed/paper_bbsmg_general_v15_kaishu.npz
+
+PYTHONPATH=. /home/robot/miniconda3/envs/ddpm/bin/python -u tools/train_bbsmg.py \
+  --config configs/paper_bbsmg_gamma_v13.yaml \
+  --npz_path data/processed/paper_bbsmg_general_v15_kaishu.npz \
+  --output_dir outputs/paper_bbsmg_general_v15_kaishu \
+  --epochs 50 --val_ratio 0.1 --group_split \
+  --lr_factor 0.5 --lr_patience 4 --min_lr 0.000001
+```
+
+`paper_bbsmg_general_v15_kaishu.summary.json` 记录楷书过滤、留出字符和
+分组信息。该版本是跨楷书字符的解析几何通用基线，不等同于真实毛笔墨迹
+标定；真实风格监督仍需单独的局部足迹数据。PNG 导出统一为黑墨白底，
+但指标仍在内部 ink=1/background=0 空间计算。

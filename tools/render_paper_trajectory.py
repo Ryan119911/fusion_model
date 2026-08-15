@@ -300,7 +300,10 @@ def main(args: argparse.Namespace) -> None:
     output = Path(args.output_image)
     output.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(
-        np.rint(np.clip(rendered, 0.0, 1.0) * 255.0).astype(np.uint8),
+        # Internal tensors use ink=1/background=0.  Export PNGs in the
+        # conventional black-ink-on-white-paper representation used by the
+        # supplied target images; this does not change any metric inputs.
+        np.rint(255.0 - np.clip(rendered, 0.0, 1.0) * 255.0).astype(np.uint8),
         mode="L",
     ).save(output)
     save_dynamic_states(

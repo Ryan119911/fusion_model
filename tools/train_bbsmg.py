@@ -5,6 +5,11 @@ import json
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 import random
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import numpy as np
 import torch
@@ -33,6 +38,15 @@ class BBSMGTrainDataset(Dataset):
             raise FileNotFoundError(f"Training npz not found: {npz_path}")
 
         data = np.load(path, allow_pickle=True)
+
+        self.group_ids = None
+        self.group_names = None
+        if "group_ids" in data:
+            self.group_ids = np.asarray(data["group_ids"], dtype=np.int64)
+            if len(self.group_ids) != len(data["inputs"]):
+                raise ValueError("NPZ group_ids length does not match inputs")
+        if "group_names" in data:
+            self.group_names = [str(value) for value in data["group_names"].tolist()]
 
         self.inputs = data["inputs"].astype(np.float32)
         target_dtype = data["targets"].dtype
@@ -78,6 +92,12 @@ class BBSMGTrainDataset(Dataset):
 
         print("[CHECK] inputs shape:", self.inputs.shape)
         print("[CHECK] targets shape:", self.targets.shape)
+        if self.group_ids is not None:
+            print(
+                "[CHECK] grouped samples:",
+                int(len(np.unique(self.group_ids))),
+                "groups",
+            )
 
     def __len__(self) -> int:
         return self.inputs.shape[0]
@@ -452,14 +472,39 @@ def collate_bbsmg_batch(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch
 
 
 # 中文注释：根据 NPZ 数据构建训练和验证 DataLoader。
-def build_dataloaders(npz_path: str, batch_size: int, num_workers: int, val_ratio: float = 0.1, coordinate_scale: float = 128.0):
+def build_dataloaders(
+    npz_path: str,
+    batch_size: int,
+    num_workers: int,
+    val_ratio: float = 0.1,
+    coordinate_scale: float = 128.0,
+    group_split: bool = False,
+    seed: int = 42,
+):
     dataset = BBSMGTrainDataset(npz_path, coordinate_scale=coordinate_scale)
-    val_len = max(1, int(len(dataset) * val_ratio)) if len(dataset) > 1 else 0
-    train_len = len(dataset) - val_len
-    if val_len > 0:
-        train_set, val_set = random_split(dataset, [train_len, val_len])
+    if group_split and dataset.group_ids is not None and len(np.unique(dataset.group_ids)) > 1:
+        groups = sorted(np.unique(dataset.group_ids).tolist())
+        rng = random.Random(seed)
+        rng.shuffle(groups)
+        val_group_count = max(1, int(round(len(groups) * val_ratio)))
+        val_groups = set(groups[:val_group_count])
+        val_indices = [index for index, group in enumerate(dataset.group_ids) if int(group) in val_groups]
+        train_indices = [index for index, group in enumerate(dataset.group_ids) if int(group) not in val_groups]
+        train_set = torch.utils.data.Subset(dataset, train_indices)
+        val_set = torch.utils.data.Subset(dataset, val_indices)
+        names = dataset.group_names or []
+        val_names = [names[group] for group in sorted(val_groups) if group < len(names)]
+        print(
+            f"[SPLIT] character-group train={len(train_indices)} val={len(val_indices)} "
+            f"val_groups={len(val_groups)} names={val_names[:12]}"
+        )
     else:
-        train_set, val_set = dataset, None
+        val_len = max(1, int(len(dataset) * val_ratio)) if len(dataset) > 1 else 0
+        train_len = len(dataset) - val_len
+        if val_len > 0:
+            train_set, val_set = random_split(dataset, [train_len, val_len])
+        else:
+            train_set, val_set = dataset, None
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=num_workers, collate_fn=collate_bbsmg_batch)
     val_loader = None
     if val_set is not None:
@@ -666,6 +711,8 @@ def main(args):
         num_workers=cfg.train.num_workers,
         val_ratio=args.val_ratio,
         coordinate_scale=cfg.bbsmg.image_size,
+        group_split=args.group_split,
+        seed=cfg.train.seed,
     )
     if input_normalization["input_dim"] != cfg.bbsmg.input_dim:
         raise ValueError(
@@ -771,6 +818,11 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default=None, help="Path to yaml config")
     parser.add_argument("--npz_path", type=str, required=True, help="Training dataset npz with keys: inputs, targets")
     parser.add_argument("--val_ratio", type=float, default=0.1, help="Validation split ratio")
+    parser.add_argument(
+        "--group_split",
+        action="store_true",
+        help="Split NPZ samples by persisted character group_ids instead of random patches",
+    )
     parser.add_argument("--epochs", type=int, default=None, help="Override the configured number of epochs")
     parser.add_argument("--output_dir", type=str, default=None, help="Override the configured checkpoint directory")
     parser.add_argument("--resume", type=str, default=None, help="Resume model, optimizer, scheduler and epoch from a checkpoint")

@@ -202,9 +202,23 @@ class PaperFusionRenderer(nn.Module):
             "x0_px",
             "y0_px",
         ]
+        six_features_relative = [
+            "H_mm",
+            "alpha_rad",
+            "beta_rad",
+            "gamma_relative_rad",
+            "x0_px",
+            "y0_px",
+        ]
         expected_features = (
             six_features if input_dim == 6 else five_features
         )
+        compatible_feature_names = (
+            (six_features, six_features_relative)
+            if input_dim == 6
+            else (five_features,)
+        )
+        feature_names_match = feature_names in compatible_feature_names
         checkpoint_format = checkpoint.get("format")
         regression_angle_basis = normalization.get(
             "regression_angle_basis", PAPER_ANGLE_BASIS_RADIAN
@@ -227,12 +241,18 @@ class PaperFusionRenderer(nn.Module):
             )
         if (
             checkpoint_format != expected_formats[regression_angle_basis]
-            and feature_names != expected_features
+            and not feature_names_match
         ):
             raise ValueError(
                 "Checkpoint format and paper posture features are incompatible"
             )
         allowed_formats = {expected_formats[regression_angle_basis]}
+        # v15 is a character-grouped general B-BSMG checkpoint.  Its six
+        # posture features and angle basis are identical to the paper v13
+        # renderer contract; the dataset provenance must not prevent loading
+        # it for forward whole-character rendering.
+        if input_dim == 6:
+            allowed_formats.add("paper_bbsmg_general_v15")
         if (
             input_dim == 5
             and regression_angle_basis == PAPER_ANGLE_BASIS_RADIAN
@@ -244,7 +264,7 @@ class PaperFusionRenderer(nn.Module):
                 f"format={checkpoint_format!r}, "
                 f"basis={regression_angle_basis!r}"
             )
-        if feature_names is not None and feature_names != expected_features:
+        if feature_names is not None and not feature_names_match:
             raise ValueError("Checkpoint posture features do not match paper semantics")
         renderer = cls(
             model.to(device),
