@@ -310,6 +310,13 @@ def run_live(
     arm_drawing = _add_drawing(sim, sim.drawing_lines, 4, 20, [0.12, 0.12, 0.12])
     joint_markers = [sim.createDummy(0.008, 12 * [0.0]) for _ in range(6)]
     ee_marker = sim.createDummy(0.014, 12 * [0.0])
+    try:
+        # A simple cylinder stands in for a writing tool.  It is visual only.
+        tool_marker = sim.createPureShape(
+            sim.primitiveshape_cylinder, 0, [0.012, 0.012, 0.04], 0, []
+        )
+    except Exception:
+        tool_marker = sim.createDummy(0.014, 12 * [0.0])
     tip_drawing = _add_drawing(sim, sim.drawing_spherepoints, 0.008, 200000, [0.9, 0.1, 0.05])
     base = np.asarray([0.0, 0.0, float(arm_base_z)], dtype=np.float64)
     previous_by_stroke: Dict[int, Tuple[float, float, float]] = {}
@@ -329,6 +336,8 @@ def run_live(
                     sim.setObjectPosition(handle, -1, list(joint_position))
                 sim.setObjectPosition(ee_marker, -1, list(position))
                 sim.setObjectOrientation(ee_marker, -1, list(point.orientation))
+                sim.setObjectPosition(tool_marker, -1, list(position))
+                sim.setObjectOrientation(tool_marker, -1, list(point.orientation))
                 sim.addDrawingObjectItem(arm_drawing, None)
                 for left, right in zip([base] + [np.asarray(p) for p in joint_positions], joint_positions):
                     right_array = np.asarray(right, dtype=np.float64)
