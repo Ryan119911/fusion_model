@@ -1937,3 +1937,57 @@ PYTHONPATH=. /home/robot/miniconda3/envs/ddpm/bin/python -u \
 输出 `metrics.json`、`comparison.png`、`diff.png` 和黑墨白底结果图。几何指标仍由
 冻结 v15 B-BSMG 负责；风格细化器不得掩盖姿态、抬笔、笔画顺序或轨迹安全问题。
 真实毛笔足迹/压力和时间标定接入前，v16 仍属于仿真风格适配结果。
+
+## robot 分支：CoppeliaSim 虚拟机械臂轨迹回放
+
+`robot` 分支提供一个不依赖真实机械臂和毛笔的 CoppeliaSim 可视化原型。
+它读取完整的 `x/y/z/alpha/beta/gamma/state` 轨迹 CSV，在纸面坐标系中创建
+六个关节标记、末端姿态标记和分笔轨迹绘图对象。状态 `2=UP`、`3=TRANSITION`
+只执行抬笔移动，不绘制轨迹，因此不会把相邻笔画连接起来。当前原型使用直接
+末端位姿回放和可视化关节链，不包含真实机器人 IK、碰撞、动力学或毛笔接触模型。
+
+### 1. 启动 CoppeliaSim
+
+在 Ubuntu 远程主机上启动带 ZMQ Remote API 的无界面实例：
+
+```bash
+cd /home/robot/CoppeliaSim_Edu_V4_7_0_rev4_Ubuntu22_04
+./coppeliaSim.sh -h -s > /tmp/coppeliasim_virtual_arm.log 2>&1 &
+```
+
+如果要观察 GUI，把 `-h` 去掉。确认 CoppeliaSim 的 `ZMQ remote API server`
+插件已启用，并保持默认端口 `23000`。
+
+### 2. 先做离线安全检查
+
+这一步不连接模拟器，会生成坐标映射后的预览图、状态统计和安全报告：
+
+```bash
+cd /home/robot/coppeliasim/machine_learning/model
+PYTHONPATH=. /home/robot/miniconda3/envs/ddpm/bin/python -u \
+  tools/coppeliasim_virtual_arm.py \
+  --trajectory_csv outputs/wu_kaishu_target_v38_xy_residual2_a/wu_trajectory.csv \
+  --character 武 --sample_id 武_fake_sim \
+  --output_dir outputs/coppeliasim_wu_v1 --offline
+```
+
+应看到 `cross_stroke_segments=0`，并在
+`outputs/coppeliasim_wu_v1/trajectory_preview.png` 查看轨迹方向。
+
+### 3. 连接模拟器并回放
+
+```bash
+PYTHONPATH=. /home/robot/miniconda3/envs/ddpm/bin/python -u \
+  tools/coppeliasim_virtual_arm.py \
+  --trajectory_csv outputs/wu_kaishu_target_v38_xy_residual2_a/wu_trajectory.csv \
+  --character 武 --sample_id 武_fake_sim \
+  --output_dir outputs/coppeliasim_wu_v1 \
+  --interval 0.015 --max_step_m 0.002 --client_port 23000 \
+  --keep_scene
+```
+
+默认把图像坐标 y 轴翻转为纸面世界坐标；若需要保持原始方向，添加
+`--no_flip_y`。`trajectory_report.json` 记录坐标范围、状态计数、抬笔规则和
+仿真安全声明。该原型的验收目标是轨迹显示、笔画边界和姿态字段回放正确，不能
+据此宣称真实机器人可执行性；接入 UR5 等真实机械臂前还需重新做 TCP、纸面和
+关节限位标定。
