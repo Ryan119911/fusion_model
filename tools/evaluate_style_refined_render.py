@@ -18,7 +18,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from models.style_refiner import build_style_refiner
-from tools.build_kaishu_style_dataset import geometry_features
+from datasets.trajectory_dataset import load_trajectory_csv
+from utils.kaishu_style_features import build_style_features, geometry_features
 from utils.image_preprocessing import normalize_image_polarity
 from utils.structure_mask import skeletonize_binary
 
@@ -193,7 +194,28 @@ def main(args: argparse.Namespace) -> None:
     # canvas and resize directly. Re-letterboxing here would enlarge the glyph
     # and make the post-hoc report incomparable with the inversion objective.
     target = exact_canvas(args.target_image, args.image_size)
-    features = geometry_features(render, threshold=args.structure_threshold)
+    alignment = None
+    if int(model_config.get("input_channels", 4)) == 4:
+        features = geometry_features(render, threshold=args.structure_threshold)
+    else:
+        trajectories = [
+            value
+            for value in load_trajectory_csv(args.trajectory_csv)
+            if value.character == args.character
+        ]
+        if not trajectories:
+            raise RuntimeError(
+                f"No trajectory found for v16 style evaluation character {args.character!r}"
+            )
+        features, alignment = build_style_features(
+            render,
+            trajectories[0],
+            canvas_size=args.image_size,
+            trajectory_padding=args.trajectory_padding,
+            trajectory_width=args.trajectory_width,
+            structure_threshold=args.structure_threshold,
+            footprint_width_scale_px=args.footprint_width_scale_px,
+        )
     with torch.no_grad():
         refined = model(
             torch.from_numpy(features[None]).to(device)
@@ -229,6 +251,9 @@ def main(args: argparse.Namespace) -> None:
         "support_mode": model_config.get("support_mode", "mask_only"),
         "device": str(device),
         "metric_threshold": args.metric_threshold,
+        "character": args.character,
+        "feature_channels": checkpoint.get("feature_channels"),
+        "v16_alignment": alignment,
         "geometry_before_refinement": geometry,
         "appearance_after_refinement": appearance,
         "ink_calibrated_appearance": calibrated_appearance,
@@ -266,7 +291,7 @@ def main(args: argparse.Namespace) -> None:
     paper_image(refined).save(output / "render_refined.png")
     paper_image(calibrated).save(output / "render_refined_calibrated.png")
     difference = np.abs(calibrated - target)
-    Image.fromarray(np.rint(difference * 255).astype(np.uint8), mode="L").save(
+    paper_image(difference).save(
         output / "diff.png"
     )
     panels = [
@@ -275,7 +300,7 @@ def main(args: argparse.Namespace) -> None:
         paper_image(refined),
         paper_image(calibrated),
     ]
-    panels.append(Image.fromarray(np.rint(difference * 255).astype(np.uint8), mode="L"))
+    panels.append(paper_image(difference))
     comparison = Image.new("L", (args.image_size * 5, args.image_size + 18), 255)
     draw = ImageDraw.Draw(comparison)
     for index, (panel, label) in enumerate(
@@ -305,6 +330,7 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument("--trajectory_csv", required=True)
+    parser.add_argument("--character", default="武")
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--image_size", type=int, default=128)
@@ -312,4 +338,7 @@ if __name__ == "__main__":
     parser.add_argument("--metric_threshold", type=float, default=0.35)
     parser.add_argument("--min_ink_gain", type=float, default=0.8)
     parser.add_argument("--max_ink_gain", type=float, default=1.25)
+    parser.add_argument("--trajectory_padding", type=int, default=4)
+    parser.add_argument("--trajectory_width", type=int, default=3)
+    parser.add_argument("--footprint_width_scale_px", type=float, default=16.0)
     main(parser.parse_args())

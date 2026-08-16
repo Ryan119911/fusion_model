@@ -1887,3 +1887,53 @@ PYTHONPATH=. /home/robot/miniconda3/envs/ddpm/bin/python -u tools/train_bbsmg.py
 分组信息。该版本是跨楷书字符的解析几何通用基线，不等同于真实毛笔墨迹
 标定；真实风格监督仍需单独的局部足迹数据。PNG 导出统一为黑墨白底，
 但指标仍在内部 ink=1/background=0 空间计算。
+
+## v16：楷书风格细化（局部足迹 + 速度/压力代理）
+
+v16 冻结已验证的 v15 通用 B-BSMG，仅训练楷书数据库的可微风格细化器。
+每个样本输入 12 个通道：目标真实墨迹的结构掩膜、骨架、距离/宽度和软几何，
+以及匹配轨迹的中心线、邻近度、笔画顺序、方向、z 高度压力代理和逐采样位移
+速度代理。当前 `trajectories.csv` 没有力传感器和时间戳，因此压力、速度是可复现
+的轨迹代理量，不能解释为真实物理标定值。`武` 只作为留出字符评估，不参与通用
+训练，避免整字泄漏。
+
+优先使用已有楷书 NPZ 增广，避免重复解析 LabelMe 数据：
+
+```bash
+PYTHONPATH=. /home/robot/miniconda3/envs/ddpm/bin/python -u \
+  tools/augment_kaishu_style_dataset_v16.py \
+  --base_npz data/processed/kaishu_style_v27.npz \
+  --trajectory_csv data/raw/trajectories.csv \
+  --output_npz data/processed/kaishu_style_v16.npz \
+  --heldout_character 武 --min_trajectory_coverage 0.30
+
+PYTHONPATH=. PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+  /home/robot/miniconda3/envs/ddpm/bin/python -u \
+  tools/train_kaishu_style_refiner.py \
+  --npz data/processed/kaishu_style_v16.npz \
+  --output_dir outputs/kaishu_style_v16 \
+  --heldout_character 武 --epochs 50 --batch_size 16 \
+  --base_channels 24 --workers 2 --lr 0.0003 --val_ratio 0.15 \
+  --device cuda --support_mode mask_or_soft
+```
+
+将冻结的 v15 整字渲染送入细化器，并同时报告几何图与外观图，只有墨量、端点
+和局部足迹改善且几何 IoU 不下降时才接受细化结果：
+
+```bash
+PYTHONPATH=. /home/robot/miniconda3/envs/ddpm/bin/python -u \
+  tools/evaluate_style_refined_render.py \
+  --render_image outputs/wu_character_e2e_v15_kaishu/render_black_white_replay.png \
+  --target_image data/raw/targets/wu_kaishu_target.png \
+  --style_ckpt outputs/kaishu_style_v16/style_refiner_selected.pt \
+  --pose_report outputs/wu_character_e2e_v15_kaishu/render_black_white_replay.json \
+  --trajectory_csv data/raw/trajectories.csv --character 武 \
+  --output_dir outputs/wu_style_v16_eval --device cuda \
+  --trajectory_padding 4 --trajectory_width 3 \
+  --footprint_width_scale_px 16 --structure_threshold 0.35 \
+  --metric_threshold 0.35 --min_ink_gain 0.8 --max_ink_gain 1.25
+```
+
+输出 `metrics.json`、`comparison.png`、`diff.png` 和黑墨白底结果图。几何指标仍由
+冻结 v15 B-BSMG 负责；风格细化器不得掩盖姿态、抬笔、笔画顺序或轨迹安全问题。
+真实毛笔足迹/压力和时间标定接入前，v16 仍属于仿真风格适配结果。

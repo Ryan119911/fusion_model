@@ -186,7 +186,14 @@ def save_panels(model, dataset, device, output_dir: Path, prefix: str, limit: in
         geometry = features[0].numpy()
         target_array = target[0].numpy()
         difference = np.abs(prediction - target_array)
-        arrays = [geometry, prediction, target_array, difference]
+        # Internal arrays use ink=1/background=0.  Save presentation panels as
+        # black ink on white paper; zero error is white in the diff panel.
+        arrays = [
+            1.0 - np.clip(geometry, 0.0, 1.0),
+            1.0 - np.clip(prediction, 0.0, 1.0),
+            1.0 - np.clip(target_array, 0.0, 1.0),
+            1.0 - np.clip(difference, 0.0, 1.0),
+        ]
         labels = ["geometry", "refined", "target", "abs diff"]
         canvas = Image.new("L", (128 * 4, 146), 255)
         draw = ImageDraw.Draw(canvas)
@@ -201,6 +208,13 @@ def main(args: argparse.Namespace) -> None:
     npz = np.load(args.npz, allow_pickle=False)
     features, targets = npz["features"], npz["targets"]
     characters, sources = npz["characters"], npz["sources"]
+    input_channels = int(features.shape[1])
+    metadata = {}
+    if "metadata" in npz.files:
+        try:
+            metadata = json.loads(str(np.asarray(npz["metadata"]).item()))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            metadata = {}
     train_idx, val_idx, heldout_idx = grouped_split(
         characters, sources, args.heldout_character, args.val_ratio, args.seed
     )
@@ -225,6 +239,7 @@ def main(args: argparse.Namespace) -> None:
         num_workers=args.workers,
     )
     model = build_style_refiner(
+        input_channels=input_channels,
         base_channels=args.base_channels,
         support_mode=args.support_mode,
         soft_support_scale=args.soft_support_scale,
@@ -266,7 +281,7 @@ def main(args: argparse.Namespace) -> None:
             "format": STYLE_REFINER_CHECKPOINT_FORMAT,
             "model_state": model.state_dict(),
             "model_config": {
-                "input_channels": 4,
+                "input_channels": input_channels,
                 "base_channels": args.base_channels,
                 "support_mode": args.support_mode,
                 "soft_support_scale": args.soft_support_scale,
@@ -280,6 +295,7 @@ def main(args: argparse.Namespace) -> None:
             "epoch": epoch,
             "metrics": metrics,
             "loss_config": loss_kwargs,
+            "feature_channels": metadata.get("feature_channels"),
         }
         torch.save(checkpoint, output / "style_refiner_last.pt")
         if metrics["loss"] < best:
@@ -299,6 +315,8 @@ def main(args: argparse.Namespace) -> None:
         "initial_validation": initial_validation,
         "initial_heldout_wu": initial_heldout,
         "loss_config": loss_kwargs,
+        "input_channels": input_channels,
+        "feature_channels": metadata.get("feature_channels"),
     }
     best_checkpoint = torch.load(
         output / "style_refiner_best.pt", map_location=device, weights_only=False
