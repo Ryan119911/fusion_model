@@ -1944,7 +1944,8 @@ PYTHONPATH=. /home/robot/miniconda3/envs/ddpm/bin/python -u \
 它读取完整的 `x/y/z/alpha/beta/gamma/state` 轨迹 CSV，在纸面坐标系中创建
 六个关节标记、末端姿态标记和分笔轨迹绘图对象。状态 `2=UP`、`3=TRANSITION`
 只执行抬笔移动，不绘制轨迹，因此不会把相邻笔画连接起来。当前原型使用直接
-末端位姿回放和可视化关节链，不包含真实机器人 IK、碰撞、动力学或毛笔接触模型。
+末端位姿回放、圆柱形末端工具标记和可视化关节链，不包含真实机器人 IK、碰撞、
+动力学或毛笔接触模型。
 
 ### 1. 启动 CoppeliaSim
 
