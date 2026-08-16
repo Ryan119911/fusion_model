@@ -1948,15 +1948,30 @@ PYTHONPATH=. /home/robot/miniconda3/envs/ddpm/bin/python -u \
 
 ### 1. 启动 CoppeliaSim
 
-在 Ubuntu 远程主机上启动带 ZMQ Remote API 的无界面实例：
+在 Ubuntu 远程主机上启动带 ZMQ Remote API 的实例。若已有可用的 X0 显示会话，
+查看已经保存的回放场景可直接执行：
 
 ```bash
 cd /home/robot/CoppeliaSim_Edu_V4_7_0_rev4_Ubuntu22_04
-./coppeliaSim.sh -h -s > /tmp/coppeliasim_virtual_arm.log 2>&1 &
+DISPLAY=:0 ./coppeliaSim.sh -h \
+  -f /home/robot/coppeliasim/machine_learning/model/outputs/coppeliasim_wu_v1/virtual_arm_wu.ttt \
+  > /tmp/coppeliasim_virtual_arm.log 2>&1 &
 ```
 
 如果要观察 GUI，把 `-h` 去掉。确认 CoppeliaSim 的 `ZMQ remote API server`
 插件已启用，并保持默认端口 `23000`。
+
+第一次没有 `.ttt` 场景时，可先启动 CoppeliaSim 后执行第 3 步回放，并用
+`--scene_output` 生成它；
+不要使用不带参数的 `-s`，CoppeliaSim 4.7 要求 `-s` 后提供自动启动毫秒数。
+
+若需要从空场景开始，可先建立一个最小场景并保持服务运行：
+
+```bash
+DISPLAY=:0 ./coppeliaSim.sh -h -c \
+  'sim.createDummy(0.1); sim.saveScene("/home/robot/coppeliasim/machine_learning/model/outputs/coppeliasim_empty.ttt")' \
+  > /tmp/coppeliasim_virtual_arm.log 2>&1 &
+```
 
 ### 2. 先做离线安全检查
 
