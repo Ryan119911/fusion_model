@@ -1,9 +1,11 @@
-"""Replay a paper trajectory in a CoppeliaSim visualization prototype.
+"""Replay a paper trajectory with CoppeliaSim's official UR5 model.
 
-The prototype deliberately separates visualization from robot calibration.  It
-creates a six-marker kinematic arm, a colored end-effector marker, and one
-draw object per stroke.  The marker follows the mapped CSV pose directly; no
-brush contact, force model, or robot IK claim is made in this stage.
+Live mode loads ``UR5.ttm`` from the CoppeliaSim installation, creates a
+simIK position task for its six real joints, and moves the standard model's
+end-effector to each mapped paper point.  One draw object is created per
+stroke, and lift states never connect separate strokes.  This is still a
+simulation/visualization experiment: dynamics and real robot calibration are
+not inferred from it.
 
 The script has an offline mode for validating CSV selection, coordinate
 mapping, lift logic, and cross-stroke safety without a running simulator.
@@ -295,6 +297,91 @@ def _add_drawing(sim, drawing_type: int, size: float, max_items: int, color: Seq
         return sim.addDrawingObject(sim.drawing_spherepoints, size * 0.002, 0, -1, max_items, list(color))
 
 
+def _load_ur5_ik(sim, ik, model_path: str, base_x: float):
+    """Load CoppeliaSim's official UR5 model and configure simIK.
+
+    The model is not recreated by this project: all six joints and visible
+    links come from ``UR5.ttm``.  IK is position-constrained so the standard
+    UR5 wrist orientation is retained while the pen tip follows the paper.
+    """
+    root = sim.loadModel(model_path)
+    sim.setObjectPosition(root, -1, [float(base_x), 0.0, 0.0])
+    joints = sim.getObjectsInTree(root, sim.object_joint_type, 0)
+    shapes = sim.getObjectsInTree(root, sim.object_shape_type, 0)
+    if len(joints) != 6:
+        raise RuntimeError(f"Expected 6 UR5 joints, found {len(joints)}")
+    last_link = None
+    for handle in shapes:
+        try:
+            if "link7_visible" in sim.getObjectAlias(handle, 1):
+                last_link = handle
+                break
+        except Exception:
+            continue
+    if last_link is None:
+        last_link = shapes[-1]
+    tip = sim.createDummy(0.010, 12 * [0.0])
+    sim.setObjectParent(tip, last_link, False)
+    tip_position = sim.getObjectPosition(last_link, -1)
+    tip_quaternion = sim.getObjectQuaternion(last_link, -1)
+    sim.setObjectPosition(tip, -1, tip_position)
+    sim.setObjectQuaternion(tip, -1, tip_quaternion)
+    target = sim.createDummy(0.012, 12 * [0.0])
+    sim.setObjectPosition(target, -1, tip_position)
+    sim.setObjectQuaternion(target, -1, tip_quaternion)
+    environment = ik.createEnvironment()
+    group = ik.createGroup(environment)
+    add_result = ik.addElementFromScene(
+        environment, group, root, tip, target, ik.constraint_position
+    )
+    if isinstance(add_result, tuple) and int(add_result[0]) != 0:
+        raise RuntimeError(f"simIK.addElementFromScene failed: {add_result}")
+    ik.setGroupCalculation(
+        environment, group, ik.method_damped_least_squares, 0.05, 200
+    )
+    return {
+        "root": root,
+        "joints": joints,
+        "tip": tip,
+        "target": target,
+        "environment": environment,
+        "group": group,
+        "tip_position": tip_position,
+    }
+
+
+def _add_paper(sim, width: float, height: float, top_z: float):
+    """Add a thin static paper plane only for visual contact reference."""
+    try:
+        paper = sim.createPureShape(sim.primitiveshape_cuboid, 0, [width, height, 0.004], 0, [])
+    except Exception:
+        # Some 4.7 builds reject run-time pure-shape creation from the remote
+        # API.  The official UR5 model remains fully visible; the paper is
+        # cosmetic, so omit it rather than aborting the replay.
+        return None
+    sim.setObjectPosition(paper, -1, [0.0, 0.0, float(top_z) - 0.002])
+    try:
+        sim.setShapeColor(paper, None, sim.colorcomponent_ambient_diffuse, [0.92, 0.92, 0.86])
+    except Exception:
+        pass
+    return paper
+
+
+def _add_ur5_tool(sim, tip: int):
+    try:
+        tool = sim.createPureShape(sim.primitiveshape_cylinder, 0, [0.012, 0.012, 0.06], 0, [])
+    except Exception:
+        tool = sim.createDummy(0.014, 12 * [0.0])
+    sim.setObjectParent(tool, tip, False)
+    sim.setObjectPosition(tool, -1, sim.getObjectPosition(tip, -1))
+    sim.setObjectQuaternion(tool, -1, sim.getObjectQuaternion(tip, -1))
+    try:
+        sim.setShapeColor(tool, None, sim.colorcomponent_ambient_diffuse, [0.12, 0.12, 0.12])
+    except Exception:
+        pass
+    return tool
+
+
 def run_live(
     rows: Sequence[PoseRow],
     mapper: CoordinateMapper,
@@ -305,7 +392,14 @@ def run_live(
     keep_scene: bool,
     client_port: int,
     scene_output: Optional[str],
-) -> None:
+    arm_model: str,
+    ur5_model_path: str,
+    ur5_base_x: float,
+    ur5_paper_z: float,
+    paper_width: float,
+    paper_height: float,
+    start_simulation: bool,
+) -> dict:
     """Create the scene objects and replay the mapped trajectory."""
     zmq_root = os.environ.get(
         "COPPELIASIM_ZMQ_CLIENT",
@@ -317,6 +411,9 @@ def run_live(
 
     client = RemoteAPIClient(host="localhost", port=client_port)
     sim = client.require("sim")
+    if arm_model != "ur5":
+        raise ValueError("Only the official CoppeliaSim UR5 model is supported in live mode")
+    ik = client.require("simIK")
     strokes = mapped_strokes(rows, mapper)
     colors = ([0.05, 0.35, 0.95], [0.95, 0.18, 0.08], [0.08, 0.65, 0.22], [0.65, 0.2, 0.8])
     trajectory_drawings = []
@@ -324,64 +421,97 @@ def run_live(
         trajectory_drawings.append(
             _add_drawing(sim, sim.drawing_lines, 3, 200000, colors[index % len(colors)])
         )
-    arm_drawing = _add_drawing(sim, sim.drawing_lines, 4, 20, [0.12, 0.12, 0.12])
-    joint_markers = [sim.createDummy(0.008, 12 * [0.0]) for _ in range(6)]
-    ee_marker = sim.createDummy(0.014, 12 * [0.0])
-    try:
-        # A simple cylinder stands in for a writing tool.  It is visual only.
-        tool_marker = sim.createPureShape(
-            sim.primitiveshape_cylinder, 0, [0.012, 0.012, 0.04], 0, []
-        )
-    except Exception:
-        tool_marker = sim.createDummy(0.014, 12 * [0.0])
+    ur5 = _load_ur5_ik(sim, ik, ur5_model_path, ur5_base_x)
+    _add_paper(sim, paper_width, paper_height, ur5_paper_z)
+    _add_ur5_tool(sim, ur5["tip"])
     tip_drawing = _add_drawing(sim, sim.drawing_spherepoints, 0.008, 200000, [0.9, 0.1, 0.05])
-    base = np.asarray([0.0, 0.0, float(arm_base_z)], dtype=np.float64)
     previous_by_stroke: Dict[int, Tuple[float, float, float]] = {}
+    offset = np.asarray([0.0, 0.0, float(ur5_paper_z - mapper.paper_z)], dtype=np.float64)
+    ik_success = 0
+    ik_failures = 0
+    max_residual = 0.0
+    ik_success_by_stroke: Dict[str, int] = {}
+    ik_failure_by_stroke: Dict[str, int] = {}
+    previous_target: Optional[np.ndarray] = None
+
+    def solve_target(target_position: np.ndarray) -> Tuple[np.ndarray, int, float]:
+        nonlocal ik_success, ik_failures, max_residual
+        sim.setObjectPosition(ur5["target"], -1, target_position.tolist())
+        result = ik.handleGroup(ur5["environment"], ur5["group"], {"syncWorlds": True})
+        status = int(result[0]) if isinstance(result, tuple) else int(result)
+        actual_position = np.asarray(sim.getObjectPosition(ur5["tip"], -1), dtype=np.float64)
+        residual = float(np.linalg.norm(actual_position - target_position))
+        max_residual = max(max_residual, residual)
+        if status == 1:
+            ik_success += 1
+        else:
+            ik_failures += 1
+        return actual_position, status, residual
+
     try:
-        sim.startSimulation()
+        if start_simulation:
+            sim.startSimulation()
         for stroke_index, (stroke_id, raw_points) in enumerate(strokes.items()):
             previous_by_stroke.pop(stroke_id, None)
-            for point in interpolate_stroke(raw_points, max_step):
-                position = np.asarray(point.position, dtype=np.float64)
-                # A six-marker visual chain. It is intentionally not advertised as IK.
-                fractions = (0.18, 0.36, 0.54, 0.70, 0.84, 1.0)
-                joint_positions = []
-                for fraction in fractions:
-                    offset = np.asarray([0.0, 0.0, 0.025 * math.sin(math.pi * fraction)], dtype=np.float64)
-                    joint_positions.append(tuple((base + fraction * (position - base) + offset).tolist()))
-                for handle, joint_position in zip(joint_markers, joint_positions):
-                    sim.setObjectPosition(handle, -1, list(joint_position))
-                sim.setObjectPosition(ee_marker, -1, list(position))
-                sim.setObjectOrientation(ee_marker, -1, list(point.orientation))
-                sim.setObjectPosition(tool_marker, -1, list(position))
-                sim.setObjectOrientation(tool_marker, -1, list(point.orientation))
-                sim.addDrawingObjectItem(arm_drawing, None)
-                for left, right in zip([base] + [np.asarray(p) for p in joint_positions], joint_positions):
-                    right_array = np.asarray(right, dtype=np.float64)
-                    sim.addDrawingObjectItem(arm_drawing, list(left) + list(right_array))
+            stroke_success = 0
+            stroke_failures = 0
+            dense_points = interpolate_stroke(raw_points, max_step)
+            first_target = np.asarray(dense_points[0].position, dtype=np.float64) + offset
+            if previous_target is not None:
+                # Do not teleport the UR5 between strokes.  Move to the next
+                # stroke start through the lifted plane, without drawing.
+                transit_distance = float(np.linalg.norm(first_target - previous_target))
+                transit_count = max(1, int(math.ceil(transit_distance / max(max_step, 1e-5))))
+                for transit_index in range(1, transit_count + 1):
+                    ratio = transit_index / transit_count
+                    transit_target = previous_target + ratio * (first_target - previous_target)
+                    transit_target[2] = max(transit_target[2], ur5_paper_z + 0.055)
+                    solve_target(transit_target)
+                    time.sleep(max(interval, 0.0))
+            for point in dense_points:
+                target_position = np.asarray(point.position, dtype=np.float64) + offset
+                actual_position, status, residual = solve_target(target_position)
+                if status == 1:
+                    stroke_success += 1
+                else:
+                    stroke_failures += 1
                 if point.state not in (2, 3):
                     previous = previous_by_stroke.get(stroke_id)
                     if previous is not None:
                         sim.addDrawingObjectItem(
-                            trajectory_drawings[stroke_index], list(previous) + list(position)
+                            trajectory_drawings[stroke_index], list(previous) + list(actual_position)
                         )
-                    sim.addDrawingObjectItem(tip_drawing, list(position))
-                    previous_by_stroke[stroke_id] = tuple(position.tolist())
+                    sim.addDrawingObjectItem(tip_drawing, list(actual_position))
+                    previous_by_stroke[stroke_id] = tuple(actual_position.tolist())
                 else:
                     previous_by_stroke.pop(stroke_id, None)
                 time.sleep(max(interval, 0.0))
+            previous_target = np.asarray(dense_points[-1].position, dtype=np.float64) + offset
+            ik_success_by_stroke[str(stroke_id)] = stroke_success
+            ik_failure_by_stroke[str(stroke_id)] = stroke_failures
         if scene_output:
             scene_path = str(Path(scene_output).expanduser().resolve())
             if not sim.saveScene(scene_path):
                 raise RuntimeError(f"CoppeliaSim failed to save scene: {scene_path}")
             print(f"[DONE] Saved CoppeliaSim scene: {scene_path}")
     finally:
-        if not keep_scene:
+        if start_simulation and not keep_scene:
             try:
                 sim.stopSimulation()
             except Exception:
                 pass
     print("[DONE] CoppeliaSim virtual-arm trajectory replay finished")
+    return {
+        "arm_model": "CoppeliaSim_official_UR5.ttm",
+        "actual_robot_ik": True,
+        "ik_success_steps": ik_success,
+        "ik_failure_steps": ik_failures,
+        "ik_max_residual_m": max_residual,
+        "ik_success_by_stroke": ik_success_by_stroke,
+        "ik_failure_by_stroke": ik_failure_by_stroke,
+        "dynamics_enabled": False,
+        "paper_top_z_m": ur5_paper_z,
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -394,6 +524,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_step_m", type=float, default=0.002)
     parser.add_argument("--interval", type=float, default=0.015)
     parser.add_argument("--arm_base_z_m", type=float, default=0.18)
+    parser.add_argument(
+        "--arm_model",
+        choices=("ur5",),
+        default="ur5",
+        help="Use the official CoppeliaSim UR5.ttm model for live replay.",
+    )
+    parser.add_argument(
+        "--ur5_model_path",
+        default="/home/robot/CoppeliaSim_Edu_V4_7_0_rev4_Ubuntu22_04/models/robots/non-mobile/UR5.ttm",
+    )
+    parser.add_argument("--ur5_base_x_m", type=float, default=0.176)
+    parser.add_argument("--ur5_paper_z_m", type=float, default=0.96)
     parser.add_argument("--paper_z_m", type=float, default=0.015)
     parser.add_argument("--paper_width_m", type=float, default=0.24)
     parser.add_argument("--paper_height_m", type=float, default=0.24)
@@ -413,6 +555,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--client_port", type=int, default=23000)
     parser.add_argument("--keep_scene", action="store_true")
+    parser.add_argument(
+        "--start_simulation",
+        action="store_true",
+        help="Also start CoppeliaSim physics. Omit for stable kinematic IK visualization.",
+    )
     parser.add_argument(
         "--scene_output",
         default=None,
@@ -440,7 +587,7 @@ def main(args: argparse.Namespace) -> None:
     if args.offline:
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return
-    run_live(
+    live_report = run_live(
         rows,
         mapper,
         max_step=args.max_step_m,
@@ -449,8 +596,16 @@ def main(args: argparse.Namespace) -> None:
         keep_scene=args.keep_scene,
         client_port=args.client_port,
         scene_output=args.scene_output,
+        arm_model=args.arm_model,
+        ur5_model_path=args.ur5_model_path,
+        ur5_base_x=args.ur5_base_x_m,
+        ur5_paper_z=args.ur5_paper_z_m,
+        paper_width=args.paper_width_m,
+        paper_height=args.paper_height_m,
+        start_simulation=args.start_simulation,
     )
     report["live_replay"] = True
+    report["live"] = live_report
     (output_dir / "trajectory_report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
