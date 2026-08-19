@@ -252,7 +252,11 @@ def build_report(rows: Sequence[PoseRow], strokes: Dict[int, List[WorldPoint]], 
 
 
 def save_offline_preview(
-    strokes: Dict[int, List[WorldPoint]], output_dir: Path, report: dict, image_size: int = 768
+    strokes: Dict[int, List[WorldPoint]],
+    output_dir: Path,
+    report: dict,
+    mapper: CoordinateMapper,
+    image_size: int = 768,
 ) -> None:
     """Save a simple paper-frame preview without requiring a GUI or simulator."""
     from PIL import Image, ImageDraw
@@ -432,7 +436,7 @@ def main(args: argparse.Namespace) -> None:
     strokes = mapped_strokes(rows, mapper)
     report = build_report(rows, strokes, mapper)
     output_dir = Path(args.output_dir)
-    save_offline_preview(strokes, output_dir, report)
+    save_offline_preview(strokes, output_dir, report, mapper)
     if args.offline:
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return
