@@ -82,7 +82,12 @@ class CoordinateMapper:
     contact_clearance: float = 0.004
     z_height: float = 0.045
     lift_height: float = 0.075
-    flip_y: bool = True
+    # The CSV uses image/paper coordinates (y grows downwards).  CoppeliaSim's
+    # standard top view is the reference view for writing, so the default
+    # mapping keeps the paper orientation in that view.  ``flip_y=True`` is
+    # retained only for legacy trajectories that were authored for a bottom
+    # (up-looking) camera.
+    flip_y: bool = False
 
     def map_row(self, row: PoseRow) -> WorldPoint:
         x_span = max(self.x_max - self.x_min, 1e-9)
@@ -232,6 +237,7 @@ def build_report(rows: Sequence[PoseRow], strokes: Dict[int, List[WorldPoint]], 
             "paper_z_m": mapper.paper_z,
             "margin_m": mapper.margin,
             "flip_y": mapper.flip_y,
+            "view_reference": "bottom_view_legacy" if mapper.flip_y else "top_view",
             "source_x_bounds": [mapper.x_min, mapper.x_max],
             "source_y_bounds": [mapper.y_min, mapper.y_max],
             "source_z_bounds": [mapper.z_min, mapper.z_max],
@@ -261,7 +267,14 @@ def save_offline_preview(
         for point in points:
             x, y, _ = point.position
             px = int(round((x / 0.24 + 0.5) * image_size))
-            py = int(round((0.5 - y / 0.24) * image_size))
+            # Keep the offline preview in the same convention as the live
+            # CoppeliaSim view.  The standard top-view convention used by the
+            # project has +Y downward on screen; the legacy flipped mapping is
+            # retained for trajectories authored for an up-looking camera.
+            if mapper.flip_y:
+                py = int(round((0.5 - y / 0.24) * image_size))
+            else:
+                py = int(round((0.5 + y / 0.24) * image_size))
             if previous is not None and point.state not in (2, 3) and previous[2] not in (2, 3):
                 draw.line([previous[0], previous[1], px, py], fill=color, width=3)
             previous = (px, py, point.state)
@@ -383,7 +396,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--margin_m", type=float, default=0.018)
     parser.add_argument("--z_height_m", type=float, default=0.045)
     parser.add_argument("--lift_height_m", type=float, default=0.075)
-    parser.add_argument("--no_flip_y", action="store_true")
+    view_group = parser.add_mutually_exclusive_group()
+    view_group.add_argument(
+        "--flip_y",
+        action="store_true",
+        help="Legacy bottom/up-looking view mapping. Do not use for the standard top view.",
+    )
+    view_group.add_argument(
+        "--no_flip_y",
+        action="store_true",
+        help="Explicit standard top-view mapping (kept as a backwards-compatible alias).",
+    )
     parser.add_argument("--client_port", type=int, default=23000)
     parser.add_argument("--keep_scene", action="store_true")
     parser.add_argument(
@@ -404,7 +427,7 @@ def main(args: argparse.Namespace) -> None:
         margin=args.margin_m,
         z_height=args.z_height_m,
         lift_height=args.lift_height_m,
-        flip_y=not args.no_flip_y,
+        flip_y=bool(args.flip_y),
     )
     strokes = mapped_strokes(rows, mapper)
     report = build_report(rows, strokes, mapper)
