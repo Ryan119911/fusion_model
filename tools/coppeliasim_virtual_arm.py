@@ -1,9 +1,11 @@
 """Replay a paper trajectory with CoppeliaSim's official UR5 model.
 
 Live mode loads ``UR5.ttm`` from the CoppeliaSim installation, creates a
-simIK position task for its six real joints, and moves the standard model's
-end-effector to each mapped paper point.  One draw object is created per
-stroke, and lift states never connect separate strokes.  This is still a
+simIK pose task for its six real joints, and moves the standard model's
+end-effector to each mapped paper point.  The visual tool's local Z axis is
+rotated into the horizontal paper plane (90 degrees about world X), while the
+tip position follows the trajectory.  One draw object is created per stroke,
+and lift states never connect separate strokes.  This is still a
 simulation/visualization experiment: dynamics and real robot calibration are
 not inferred from it.  The default writing plane is 0.06 m above the UR5
 base/ground (a few centimetres, rather than the old 0.96 m test plane); the
@@ -322,19 +324,20 @@ def _load_ur5_ik(sim, ik, model_path: str, base_x: float):
             continue
     if last_link is None:
         last_link = shapes[-1]
-    # CoppeliaSim quaternions are [x, y, z, w].  A 180-degree rotation about
-    # world X maps the tool's local +Z axis to world -Z, i.e. perpendicular to
-    # a horizontal writing plane.  Keeping this orientation in the IK target
-    # prevents the wrist from replaying the model's default tilted flange.
-    paper_normal_quaternion = [1.0, 0.0, 0.0, 0.0]
+    # CoppeliaSim quaternions are [x, y, z, w].  The visual cylinder uses its
+    # local +Z axis as its long/tool axis.  A 90-degree rotation about world X
+    # maps that axis to world -Y, which is parallel to the horizontal paper;
+    # the previous 180-degree value [1, 0, 0, 0] mapped it to world -Z and
+    # therefore made the tool stand perpendicular to the paper.
+    paper_parallel_quaternion = [math.sqrt(0.5), 0.0, 0.0, math.sqrt(0.5)]
     tip = sim.createDummy(0.010, 12 * [0.0])
     sim.setObjectParent(tip, last_link, False)
     tip_position = sim.getObjectPosition(last_link, -1)
     sim.setObjectPosition(tip, -1, tip_position)
-    sim.setObjectQuaternion(tip, -1, paper_normal_quaternion)
+    sim.setObjectQuaternion(tip, -1, paper_parallel_quaternion)
     target = sim.createDummy(0.012, 12 * [0.0])
     sim.setObjectPosition(target, -1, tip_position)
-    sim.setObjectQuaternion(target, -1, paper_normal_quaternion)
+    sim.setObjectQuaternion(target, -1, paper_parallel_quaternion)
     environment = ik.createEnvironment()
     group = ik.createGroup(environment)
     add_result = ik.addElementFromScene(
@@ -352,8 +355,8 @@ def _load_ur5_ik(sim, ik, model_path: str, base_x: float):
         "terminal_shape": last_link,
         "tip": tip,
         "target": target,
-        "tool_quaternion_xyzw": paper_normal_quaternion,
-        "tool_orientation_constraint": "paper_normal_down",
+        "tool_quaternion_xyzw": paper_parallel_quaternion,
+        "tool_orientation_constraint": "paper_parallel_world_xy",
         "environment": environment,
         "group": group,
         "tip_position": tip_position,
