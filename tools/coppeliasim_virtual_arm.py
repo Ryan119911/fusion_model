@@ -344,12 +344,36 @@ def _load_ur5_ik(sim, ik, model_path: str, base_x: float):
     return {
         "root": root,
         "joints": joints,
+        "body_shapes": [handle for handle in shapes if handle != last_link],
+        "terminal_shape": last_link,
         "tip": tip,
         "target": target,
         "environment": environment,
         "group": group,
         "tip_position": tip_position,
     }
+
+
+def _signed_xy_clearance_to_rect(
+    point: Sequence[float], center_x: float, center_y: float, width: float, height: float
+) -> float:
+    """Return signed XY distance from a point to a rectangle.
+
+    Positive values are outside the rectangle; negative values mean that the
+    point lies inside it.  The live replay uses this with a conservative link
+    radius to reject body links whose projection could cover the writing
+    plane.  The terminal wrist link is intentionally excluded because it is
+    the writing end-effector itself.
+    """
+    dx = abs(float(point[0]) - float(center_x))
+    dy = abs(float(point[1]) - float(center_y))
+    half_w = 0.5 * float(width)
+    half_h = 0.5 * float(height)
+    outside_dx = max(dx - half_w, 0.0)
+    outside_dy = max(dy - half_h, 0.0)
+    if outside_dx > 0.0 or outside_dy > 0.0:
+        return float(math.hypot(outside_dx, outside_dy))
+    return -float(min(half_w - dx, half_h - dy))
 
 
 def _add_paper(
@@ -439,6 +463,7 @@ def run_live(
     ur5_paper_z: float,
     paper_offset_x: float,
     paper_offset_y: float,
+    body_clearance_radius: float,
     paper_width: float,
     paper_height: float,
     start_simulation: bool,
@@ -496,15 +521,33 @@ def run_live(
     previous_target: Optional[np.ndarray] = None
     approach_success = 0
     approach_failures = 0
+    body_overlap_steps = 0
+    min_body_clearance = float("inf")
 
     def solve_target(target_position: np.ndarray) -> Tuple[np.ndarray, int, float]:
-        nonlocal ik_success, ik_failures, max_residual
+        nonlocal ik_success, ik_failures, max_residual, body_overlap_steps, min_body_clearance
         sim.setObjectPosition(ur5["target"], -1, target_position.tolist())
         result = ik.handleGroup(ur5["environment"], ur5["group"], {"syncWorlds": True})
         status = int(result[0]) if isinstance(result, tuple) else int(result)
         actual_position = np.asarray(sim.getObjectPosition(ur5["tip"], -1), dtype=np.float64)
         residual = float(np.linalg.norm(actual_position - target_position))
         max_residual = max(max_residual, residual)
+        body_overlaps = 0
+        for shape in ur5["body_shapes"]:
+            shape_position = sim.getObjectPosition(shape, -1)
+            signed_clearance = _signed_xy_clearance_to_rect(
+                shape_position,
+                paper_offset_x,
+                paper_offset_y,
+                paper_width,
+                paper_height,
+            )
+            effective_clearance = signed_clearance - float(body_clearance_radius)
+            min_body_clearance = min(min_body_clearance, effective_clearance)
+            if effective_clearance < 0.0:
+                body_overlaps += 1
+        if body_overlaps:
+            body_overlap_steps += 1
         if status == 1:
             ik_success += 1
         else:
@@ -600,6 +643,9 @@ def run_live(
         "paper_height_above_ground_m": ur5_paper_z,
         "paper_offset_x_m": paper_offset_x,
         "paper_offset_y_m": paper_offset_y,
+        "nonterminal_link_overlap_steps": body_overlap_steps,
+        "minimum_nonterminal_link_clearance_m": min_body_clearance,
+        "nonterminal_link_clearance_passed": body_overlap_steps == 0,
     }
 
 
@@ -641,6 +687,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.0,
         help="World y offset of the paper/trajectory from the UR5 base frame (m).",
+    )
+    parser.add_argument(
+        "--body_clearance_radius_m",
+        type=float,
+        default=0.06,
+        help="Conservative XY radius for nonterminal UR5 links in the paper overlap check (m).",
     )
     parser.add_argument("--paper_z_m", type=float, default=0.015)
     parser.add_argument("--paper_width_m", type=float, default=0.24)
@@ -708,6 +760,7 @@ def main(args: argparse.Namespace) -> None:
         ur5_paper_z=args.ur5_paper_z_m,
         paper_offset_x=args.paper_offset_x_m,
         paper_offset_y=args.paper_offset_y_m,
+        body_clearance_radius=args.body_clearance_radius_m,
         paper_width=args.paper_width_m,
         paper_height=args.paper_height_m,
         start_simulation=args.start_simulation,
