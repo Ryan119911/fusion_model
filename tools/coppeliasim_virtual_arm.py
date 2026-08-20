@@ -491,9 +491,13 @@ def run_live(
     strokes = mapped_strokes(rows, mapper)
     colors = ([0.05, 0.35, 0.95], [0.95, 0.18, 0.08], [0.08, 0.65, 0.22], [0.65, 0.2, 0.8])
     trajectory_drawings = []
+    planned_drawings = []
     for index, _ in enumerate(strokes):
         trajectory_drawings.append(
             _add_drawing(sim, sim.drawing_lines, 3, 200000, colors[index % len(colors)])
+        )
+        planned_drawings.append(
+            _add_drawing(sim, sim.drawing_lines, 1, 200000, [0.75, 0.75, 0.75])
         )
     ur5 = _load_ur5_ik(sim, ik, ur5_model_path, ur5_base_x)
     _add_paper(
@@ -529,6 +533,23 @@ def run_live(
     approach_failures = 0
     body_overlap_steps = 0
     min_body_clearance = float("inf")
+    planned_fallback_strokes = 0
+
+    # Draw the requested path before IK starts.  It is deliberately separate
+    # from the measured tip path: a failed IK step must not make a short stroke
+    # (for example the top horizontal of ``止``) disappear from the scene.
+    for stroke_index, (_, raw_points) in enumerate(strokes.items()):
+        dense_points = interpolate_stroke(raw_points, max_step)
+        draw_points = [point for point in dense_points if point.state not in (2, 3)]
+        if len(draw_points) < 2:
+            draw_points = dense_points
+            planned_fallback_strokes += 1
+        for left, right in zip(draw_points, draw_points[1:]):
+            left_position = np.asarray(left.position, dtype=np.float64) + offset
+            right_position = np.asarray(right.position, dtype=np.float64) + offset
+            sim.addDrawingObjectItem(
+                planned_drawings[stroke_index], list(left_position) + list(right_position)
+            )
 
     def solve_target(target_position: np.ndarray) -> Tuple[np.ndarray, int, float]:
         nonlocal ik_success, ik_failures, max_residual, body_overlap_steps, min_body_clearance
@@ -654,6 +675,7 @@ def run_live(
         "nonterminal_link_overlap_steps": body_overlap_steps,
         "minimum_nonterminal_link_clearance_m": min_body_clearance,
         "nonterminal_link_clearance_passed": body_overlap_steps == 0,
+        "planned_fallback_strokes": planned_fallback_strokes,
     }
 
 
