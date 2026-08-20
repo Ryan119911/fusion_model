@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import os
@@ -169,6 +170,90 @@ def load_rows(
     return rows
 
 
+def trajectory_provenance(
+    csv_path: str | Path,
+    *,
+    character: str,
+    sample_id: str,
+) -> dict:
+    """Record the exact trajectory file and selected sample used for replay."""
+    path = Path(csv_path).expanduser().resolve()
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = list(reader.fieldnames or [])
+        selected = [
+            row
+            for row in reader
+            if row.get("character", "") == character
+            and row.get("sample_id", "") == sample_id
+        ]
+    if not selected:
+        raise ValueError(
+            f"No provenance rows found for {character!r}/{sample_id!r} in {path}"
+        )
+
+    def distinct(column: str) -> List[str]:
+        if column not in fieldnames:
+            return []
+        return sorted({str(row.get(column, "")).strip() for row in selected})
+
+    pose_ranges = {}
+    nonzero_counts = {}
+    for column in ("z", "alpha", "beta", "gamma"):
+        values = [float(row[column]) for row in selected]
+        pose_ranges[column] = [min(values), max(values)]
+        nonzero_counts[column] = sum(abs(value) > 1e-8 for value in values)
+
+    stat = path.stat()
+    return {
+        "requested_path": str(csv_path),
+        "resolved_path": str(path),
+        "sha256": digest.hexdigest(),
+        "size_bytes": stat.st_size,
+        "mtime_unix_s": stat.st_mtime,
+        "selected_character": character,
+        "selected_sample_id": sample_id,
+        "selected_rows": len(selected),
+        "fieldnames": fieldnames,
+        "prototype": distinct("prototype"),
+        "pose_frame": distinct("pose_frame"),
+        "z_unit": distinct("z_unit"),
+        "angle_unit": distinct("angle_unit"),
+        "gamma_semantics": distinct("gamma_semantics"),
+        "pose_ranges": pose_ranges,
+        "nonzero_pose_counts": nonzero_counts,
+    }
+
+
+def validate_trajectory_identity(
+    provenance: dict,
+    *,
+    required_prototype: Optional[str] = None,
+    required_sha256: Optional[str] = None,
+) -> None:
+    """Abort before replay if the requested trajectory identity does not match."""
+    if required_prototype:
+        prototypes = provenance.get("prototype", [])
+        if required_prototype not in prototypes:
+            raise ValueError(
+                "Trajectory prototype mismatch: "
+                f"required {required_prototype!r}, found {prototypes!r} in "
+                f"{provenance['resolved_path']}"
+            )
+    if required_sha256:
+        expected = required_sha256.strip().lower()
+        actual = str(provenance["sha256"]).lower()
+        if actual != expected:
+            raise ValueError(
+                f"Trajectory SHA256 mismatch: required {expected}, found {actual}"
+            )
+
+
 def make_mapper(rows: Sequence[PoseRow], **kwargs: object) -> CoordinateMapper:
     """Create a mapper from the selected sample's paper-space bounds."""
     return CoordinateMapper(
@@ -219,7 +304,13 @@ def interpolate_stroke(points: Sequence[WorldPoint], max_step: float) -> List[Wo
     return output
 
 
-def build_report(rows: Sequence[PoseRow], strokes: Dict[int, List[WorldPoint]], mapper: CoordinateMapper) -> dict:
+def build_report(
+    rows: Sequence[PoseRow],
+    strokes: Dict[int, List[WorldPoint]],
+    mapper: CoordinateMapper,
+    *,
+    provenance: Optional[dict] = None,
+) -> dict:
     state_counts: Dict[str, int] = {}
     for row in rows:
         state_counts[str(row.state)] = state_counts.get(str(row.state), 0) + 1
@@ -227,7 +318,7 @@ def build_report(rows: Sequence[PoseRow], strokes: Dict[int, List[WorldPoint]], 
         sum(1 for left, right in zip(points, points[1:]) if left.state not in (2, 3) and right.state not in (2, 3))
         for points in strokes.values()
     )
-    return {
+    report = {
         "format": "coppeliasim_virtual_arm_replay_v1",
         "simulation_only": True,
         "character": rows[0].character,
@@ -255,6 +346,9 @@ def build_report(rows: Sequence[PoseRow], strokes: Dict[int, List[WorldPoint]], 
             "brush_physics": False,
         },
     }
+    if provenance is not None:
+        report["trajectory_source"] = provenance
+    return report
 
 
 def save_offline_preview(
@@ -313,6 +407,26 @@ def _multiply_quaternions(left: Sequence[float], right: Sequence[float]) -> List
     ]
 
 
+def _euler_xyz_to_quaternion(orientation: Sequence[float]) -> List[float]:
+    """Convert paper-model alpha/beta/gamma radians to an XYZW quaternion."""
+    alpha, beta, gamma = (float(value) for value in orientation)
+    qx = [math.sin(alpha * 0.5), 0.0, 0.0, math.cos(alpha * 0.5)]
+    qy = [0.0, math.sin(beta * 0.5), 0.0, math.cos(beta * 0.5)]
+    qz = [0.0, 0.0, math.sin(gamma * 0.5), math.cos(gamma * 0.5)]
+    return _multiply_quaternions(_multiply_quaternions(qx, qy), qz)
+
+
+def _interpolate_euler_shortest(
+    left: Sequence[float], right: Sequence[float], ratio: float
+) -> Tuple[float, float, float]:
+    """Interpolate Euler fields through the shortest wrapped angular delta."""
+    result = []
+    for start, end in zip(left, right):
+        delta = (float(end) - float(start) + math.pi) % (2.0 * math.pi) - math.pi
+        result.append(float(start) + float(ratio) * delta)
+    return tuple(result)
+
+
 def _quaternion_angle_error(left: Sequence[float], right: Sequence[float]) -> float:
     """Return the shortest angular distance between two XYZW quaternions."""
     left_vec = np.asarray(list(left), dtype=np.float64)
@@ -341,7 +455,13 @@ def _tool_axis_angle_error(left: Sequence[float], right: Sequence[float]) -> flo
     return float(math.acos(dot))
 
 
-def _load_ur5_ik(sim, ik, model_path: str, base_x: float):
+def _load_ur5_ik(
+    sim,
+    ik,
+    model_path: str,
+    base_x: float,
+    orientation_mode: str,
+):
     """Load CoppeliaSim's official UR5 model and configure simIK.
 
     The model is not recreated by this project: all six joints and visible
@@ -396,7 +516,12 @@ def _load_ur5_ik(sim, ik, model_path: str, base_x: float):
     # rotation around the paper normal (gamma) is deliberately left free; it
     # otherwise makes many low-plane points fail even though the tool normal is
     # correctly parallel to the paper.
-    orientation_constraints = ik.constraint_position | ik.constraint_alpha_beta
+    if orientation_mode == "csv_pose":
+        orientation_constraints = ik.constraint_pose
+        orientation_constraint_name = "csv_pose_full_xyz"
+    else:
+        orientation_constraints = ik.constraint_position | ik.constraint_alpha_beta
+        orientation_constraint_name = "paper_parallel_alpha_beta"
     add_result = ik.addElementFromScene(
         environment, group, root, tip, target, orientation_constraints
     )
@@ -413,7 +538,8 @@ def _load_ur5_ik(sim, ik, model_path: str, base_x: float):
         "tip": tip,
         "target": target,
         "tool_quaternion_xyzw": paper_parallel_quaternion,
-        "tool_orientation_constraint": "paper_parallel_alpha_beta",
+        "tool_orientation_constraint": orientation_constraint_name,
+        "orientation_mode": orientation_mode,
         "initial_tip_quaternion_xyzw": initial_tip_quaternion,
         "environment": environment,
         "group": group,
@@ -533,6 +659,8 @@ def run_live(
     body_clearance_radius: float,
     paper_width: float,
     paper_height: float,
+    orientation_mode: str,
+    strict_ik: bool,
     start_simulation: bool,
 ) -> dict:
     """Create the scene objects and replay the mapped trajectory."""
@@ -560,7 +688,13 @@ def run_live(
         planned_drawings.append(
             _add_drawing(sim, sim.drawing_lines, 1, 200000, [0.75, 0.75, 0.75])
         )
-    ur5 = _load_ur5_ik(sim, ik, ur5_model_path, ur5_base_x)
+    ur5 = _load_ur5_ik(
+        sim,
+        ik,
+        ur5_model_path,
+        ur5_base_x,
+        orientation_mode,
+    )
     _add_paper(
         sim,
         paper_width,
@@ -590,6 +724,7 @@ def run_live(
     ik_success_by_stroke: Dict[str, int] = {}
     ik_failure_by_stroke: Dict[str, int] = {}
     previous_target: Optional[np.ndarray] = None
+    previous_orientation: Optional[Tuple[float, float, float]] = None
     approach_success = 0
     approach_failures = 0
     body_overlap_steps = 0
@@ -614,15 +749,25 @@ def run_live(
                 planned_drawings[stroke_index], list(left_position) + list(right_position)
             )
 
-    def solve_target(target_position: np.ndarray) -> Tuple[np.ndarray, int, float]:
+    def solve_target(
+        target_position: np.ndarray,
+        target_orientation: Sequence[float],
+    ) -> Tuple[np.ndarray, int, float]:
         nonlocal ik_success, ik_failures, max_residual, max_orientation_residual
         nonlocal max_tool_axis_residual
         nonlocal body_overlap_steps, min_body_clearance
         sim.setObjectPosition(ur5["target"], -1, target_position.tolist())
+        desired_quaternion = ur5["tool_quaternion_xyzw"]
+        if orientation_mode == "csv_pose":
+            desired_quaternion = _multiply_quaternions(
+                ur5["tool_quaternion_xyzw"],
+                _euler_xyz_to_quaternion(target_orientation),
+            )
+        sim.setObjectQuaternion(ur5["target"], -1, desired_quaternion)
         result = ik.handleGroup(
             ur5["environment"],
             ur5["group"],
-            {"syncWorlds": True, "allowError": True},
+            {"syncWorlds": True, "allowError": not strict_ik},
         )
         status = int(result[0]) if isinstance(result, tuple) else int(result)
         actual_position = np.asarray(sim.getObjectPosition(ur5["tip"], -1), dtype=np.float64)
@@ -631,11 +776,11 @@ def run_live(
         actual_quaternion = sim.getObjectQuaternion(ur5["tip"], -1)
         max_orientation_residual = max(
             max_orientation_residual,
-            _quaternion_angle_error(actual_quaternion, ur5["tool_quaternion_xyzw"]),
+            _quaternion_angle_error(actual_quaternion, desired_quaternion),
         )
         max_tool_axis_residual = max(
             max_tool_axis_residual,
-            _tool_axis_angle_error(actual_quaternion, ur5["tool_quaternion_xyzw"]),
+            _tool_axis_angle_error(actual_quaternion, desired_quaternion),
         )
         body_overlaps = 0
         for shape in ur5["body_shapes"]:
@@ -683,7 +828,9 @@ def run_live(
                 for approach_index in range(1, approach_count + 1):
                     ratio = approach_index / approach_count
                     approach_position = current_tip + ratio * (approach_target - current_tip)
-                    _, approach_status, _ = solve_target(approach_position)
+                    _, approach_status, _ = solve_target(
+                        approach_position, dense_points[0].orientation
+                    )
                     if approach_status == 1:
                         approach_success += 1
                     else:
@@ -698,11 +845,18 @@ def run_live(
                     ratio = transit_index / transit_count
                     transit_target = previous_target + ratio * (first_target - previous_target)
                     transit_target[2] = max(transit_target[2], ur5_paper_z + 0.055)
-                    solve_target(transit_target)
+                    transit_orientation = _interpolate_euler_shortest(
+                        previous_orientation or dense_points[0].orientation,
+                        dense_points[0].orientation,
+                        ratio,
+                    )
+                    solve_target(transit_target, transit_orientation)
                     time.sleep(max(interval, 0.0))
             for point in dense_points:
                 target_position = np.asarray(point.position, dtype=np.float64) + offset
-                actual_position, status, residual = solve_target(target_position)
+                actual_position, status, residual = solve_target(
+                    target_position, point.orientation
+                )
                 if status == 1:
                     stroke_success += 1
                 else:
@@ -719,6 +873,7 @@ def run_live(
                     previous_by_stroke.pop(stroke_id, None)
                 time.sleep(max(interval, 0.0))
             previous_target = np.asarray(dense_points[-1].position, dtype=np.float64) + offset
+            previous_orientation = dense_points[-1].orientation
             ik_success_by_stroke[str(stroke_id)] = stroke_success
             ik_failure_by_stroke[str(stroke_id)] = stroke_failures
         if scene_output:
@@ -751,6 +906,8 @@ def run_live(
         "paper_offset_x_m": paper_offset_x,
         "paper_offset_y_m": paper_offset_y,
         "tool_orientation_constraint": ur5["tool_orientation_constraint"],
+        "orientation_mode": orientation_mode,
+        "ik_allow_error": not strict_ik,
         "tool_quaternion_xyzw": ur5["tool_quaternion_xyzw"],
         "nonterminal_link_overlap_steps": body_overlap_steps,
         "minimum_nonterminal_link_clearance_m": min_body_clearance,
@@ -762,10 +919,34 @@ def run_live(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trajectory_csv", required=True)
+    parser.add_argument(
+        "--require_trajectory_prototype",
+        default=None,
+        help="Abort unless the selected CSV declares this exact prototype.",
+    )
+    parser.add_argument(
+        "--require_trajectory_sha256",
+        default=None,
+        help="Abort unless the source CSV has this SHA256 digest.",
+    )
     parser.add_argument("--character", default="武")
     parser.add_argument("--sample_id", default=None)
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument(
+        "--orientation_mode",
+        choices=("paper_parallel", "csv_pose"),
+        default="paper_parallel",
+        help=(
+            "paper_parallel keeps the legacy tilt-only target; csv_pose applies "
+            "each CSV alpha/beta/gamma as local XYZ radians relative to that base."
+        ),
+    )
+    parser.add_argument(
+        "--strict_ik",
+        action="store_true",
+        help="Do not let simIK apply a partial solution when pose tolerances fail.",
+    )
     parser.add_argument("--max_step_m", type=float, default=0.002)
     parser.add_argument("--interval", type=float, default=0.015)
     parser.add_argument("--arm_base_z_m", type=float, default=0.18)
@@ -838,6 +1019,16 @@ def parse_args() -> argparse.Namespace:
 
 def main(args: argparse.Namespace) -> None:
     rows = load_rows(args.trajectory_csv, character=args.character, sample_id=args.sample_id)
+    provenance = trajectory_provenance(
+        args.trajectory_csv,
+        character=rows[0].character,
+        sample_id=rows[0].sample_id,
+    )
+    validate_trajectory_identity(
+        provenance,
+        required_prototype=args.require_trajectory_prototype,
+        required_sha256=args.require_trajectory_sha256,
+    )
     mapper = make_mapper(
         rows,
         paper_width=args.paper_width_m,
@@ -849,7 +1040,7 @@ def main(args: argparse.Namespace) -> None:
         flip_y=bool(args.flip_y),
     )
     strokes = mapped_strokes(rows, mapper)
-    report = build_report(rows, strokes, mapper)
+    report = build_report(rows, strokes, mapper, provenance=provenance)
     output_dir = Path(args.output_dir)
     save_offline_preview(strokes, output_dir, report, mapper)
     if args.offline:
@@ -873,6 +1064,8 @@ def main(args: argparse.Namespace) -> None:
         body_clearance_radius=args.body_clearance_radius_m,
         paper_width=args.paper_width_m,
         paper_height=args.paper_height_m,
+        orientation_mode=args.orientation_mode,
+        strict_ik=bool(args.strict_ik),
         start_simulation=args.start_simulation,
     )
     report["live_replay"] = True

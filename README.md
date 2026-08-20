@@ -1982,7 +1982,9 @@ DISPLAY=:0 ./coppeliaSim.sh -h -c \
 cd /home/robot/coppeliasim/machine_learning/model
 PYTHONPATH=. /home/robot/miniconda3/envs/ddpm/bin/python -u \
   tools/coppeliasim_virtual_arm.py \
-  --trajectory_csv outputs/wu_kaishu_target_v38_xy_residual2_a/wu_trajectory.csv \
+  --trajectory_csv outputs/wu_character_e2e_v15_kaishu/pose_refined.csv \
+  --require_trajectory_prototype paper_target_local_footprint_v44 \
+  --require_trajectory_sha256 52e15c5f1b4cdf454a78a5345cd6516896740aebc72b2b56b436016ba0df3251 \
   --character 武 --sample_id 武_fake_sim \
   --output_dir outputs/coppeliasim_wu_v1 --offline
 ```
@@ -1995,15 +1997,22 @@ PYTHONPATH=. /home/robot/miniconda3/envs/ddpm/bin/python -u \
 ```bash
 PYTHONPATH=. /home/robot/miniconda3/envs/ddpm/bin/python -u \
   tools/coppeliasim_virtual_arm.py \
-  --trajectory_csv outputs/wu_kaishu_target_v38_xy_residual2_a/wu_trajectory.csv \
+  --trajectory_csv outputs/wu_character_e2e_v15_kaishu/pose_refined.csv \
+  --require_trajectory_prototype paper_target_local_footprint_v44 \
+  --require_trajectory_sha256 52e15c5f1b4cdf454a78a5345cd6516896740aebc72b2b56b436016ba0df3251 \
   --character 武 --sample_id 武_fake_sim \
-  --output_dir outputs/coppeliasim_wu_v1 \
+  --output_dir outputs/coppeliasim_wu_latest_csv_pose_v1 \
+  --orientation_mode csv_pose --strict_ik \
   --interval 0.015 --max_step_m 0.002 --client_port 23000 \
   --keep_scene
 ```
 
 默认把图像坐标 y 轴翻转为纸面世界坐标；若需要保持原始方向，添加
-`--no_flip_y`。`trajectory_report.json` 记录坐标范围、状态计数、抬笔规则和
-仿真安全声明。该原型的验收目标是轨迹显示、笔画边界和姿态字段回放正确，不能
+`--no_flip_y`。`trajectory_report.json` 会记录输入 CSV 的绝对路径、SHA256、
+prototype、姿态单位/范围、状态计数、抬笔规则和仿真安全声明；来源或哈希不匹配
+时会在加载 UR5 前终止。`--orientation_mode csv_pose` 将 CSV 的
+`alpha/beta/gamma` 作为相对于纸面平行基准姿态的局部 XYZ 弧度偏移，
+`--strict_ik` 禁止将未达容差的部分 IK 解计为成功。该原型的验收目标是轨迹显示、
+笔画边界和姿态字段回放正确，不能
 据此宣称真实机器人可执行性；接入 UR5 等真实机械臂前还需重新做 TCP、纸面和
 关节限位标定。

@@ -3,9 +3,14 @@ from pathlib import Path
 from tools.coppeliasim_virtual_arm import (
     CoordinateMapper,
     PoseRow,
+    _euler_xyz_to_quaternion,
+    _interpolate_euler_shortest,
+    _rotate_vector_by_quaternion,
     build_report,
     interpolate_stroke,
     mapped_strokes,
+    trajectory_provenance,
+    validate_trajectory_identity,
 )
 
 
@@ -55,3 +60,62 @@ def test_report_declares_no_cross_stroke_segments():
     assert report["cross_stroke_segments"] == 0
     assert report["safety"]["actual_robot_ik"] is False
     assert report["coordinate_mapping"]["view_reference"] == "top_view"
+
+
+def test_report_includes_trajectory_provenance():
+    mapper = CoordinateMapper(0.0, 1.0, 0.0, 1.0, 12.0, 15.0)
+    strokes = mapped_strokes(_rows(), mapper)
+    provenance = {"resolved_path": "/tmp/pose.csv", "sha256": "a" * 64}
+    report = build_report(_rows(), strokes, mapper, provenance=provenance)
+    assert report["trajectory_source"] == provenance
+
+
+def test_trajectory_provenance_and_identity_guard(tmp_path: Path):
+    csv_path = tmp_path / "pose.csv"
+    csv_path.write_text(
+        "character,sample_id,stroke_id,point_id,x,y,z,alpha,beta,gamma,state,prototype,pose_frame,z_unit,angle_unit,gamma_semantics\n"
+        "武,s,0,0,0,0,12,0.1,0.2,0.3,0,paper_target_local_footprint_v44,paper_model,mm,rad,absolute_forward_xy_heading\n"
+        "武,s,0,1,1,1,15,0.0,0.2,-0.3,1,paper_target_local_footprint_v44,paper_model,mm,rad,absolute_forward_xy_heading\n",
+        encoding="utf-8",
+    )
+    provenance = trajectory_provenance(csv_path, character="武", sample_id="s")
+    assert provenance["resolved_path"] == str(csv_path.resolve())
+    assert len(provenance["sha256"]) == 64
+    assert provenance["prototype"] == ["paper_target_local_footprint_v44"]
+    assert provenance["pose_ranges"]["z"] == [12.0, 15.0]
+    assert provenance["nonzero_pose_counts"]["alpha"] == 1
+    validate_trajectory_identity(
+        provenance,
+        required_prototype="paper_target_local_footprint_v44",
+        required_sha256=provenance["sha256"].upper(),
+    )
+
+
+def test_trajectory_identity_guard_rejects_wrong_prototype(tmp_path: Path):
+    provenance = {
+        "resolved_path": str(tmp_path / "pose.csv"),
+        "prototype": ["paper_psoc_lm_v11_staged_pose"],
+        "sha256": "a" * 64,
+    }
+    try:
+        validate_trajectory_identity(
+            provenance,
+            required_prototype="paper_target_local_footprint_v44",
+        )
+    except ValueError as exc:
+        assert "prototype mismatch" in str(exc)
+    else:
+        raise AssertionError("wrong trajectory prototype should be rejected")
+
+
+def test_csv_euler_quaternion_rotates_about_z():
+    quaternion = _euler_xyz_to_quaternion((0.0, 0.0, 3.141592653589793 / 2.0))
+    rotated = _rotate_vector_by_quaternion(quaternion, (1.0, 0.0, 0.0))
+    assert abs(rotated[0]) < 1e-7
+    assert abs(rotated[1] - 1.0) < 1e-7
+    assert abs(rotated[2]) < 1e-7
+
+
+def test_euler_interpolation_uses_short_wrapped_delta():
+    value = _interpolate_euler_shortest((0.0, 0.0, 3.0), (0.0, 0.0, -3.0), 0.5)
+    assert abs(abs(value[2]) - 3.141592653589793) < 1e-7
