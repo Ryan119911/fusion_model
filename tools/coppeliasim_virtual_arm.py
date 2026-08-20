@@ -5,7 +5,9 @@ simIK position task for its six real joints, and moves the standard model's
 end-effector to each mapped paper point.  One draw object is created per
 stroke, and lift states never connect separate strokes.  This is still a
 simulation/visualization experiment: dynamics and real robot calibration are
-not inferred from it.
+not inferred from it.  The default writing plane is 0.06 m above the UR5
+base/ground (a few centimetres, rather than the old 0.96 m test plane); the
+``--ur5_paper_z_m`` option can override it after a reachability check.
 
 The script has an offline mode for validating CSV selection, coordinate
 mapping, lift logic, and cross-stroke safety without a running simulator.
@@ -367,6 +369,31 @@ def _add_paper(sim, width: float, height: float, top_z: float):
     return paper
 
 
+def _add_paper_reference(sim, width: float, height: float, top_z: float):
+    """Draw a thin outline at the actual writing height.
+
+    Some CoppeliaSim 4.7 remote API builds reject ``createPureShape`` calls
+    issued after connecting.  The outline is therefore kept as a drawing
+    object as well as the optional cosmetic cuboid, so the low writing plane
+    remains visible even when the cuboid cannot be created.
+    """
+    drawing = _add_drawing(sim, sim.drawing_lines, 2, 32, [0.78, 0.78, 0.70])
+    half_w = float(width) * 0.5
+    half_h = float(height) * 0.5
+    corners = [
+        (-half_w, -half_h, float(top_z)),
+        (half_w, -half_h, float(top_z)),
+        (half_w, half_h, float(top_z)),
+        (-half_w, half_h, float(top_z)),
+    ]
+    for start, end in zip(corners, corners[1:] + corners[:1]):
+        try:
+            sim.addDrawingObjectItem(drawing, list(start) + list(end))
+        except Exception:
+            break
+    return drawing
+
+
 def _add_ur5_tool(sim, tip: int):
     try:
         tool = sim.createPureShape(sim.primitiveshape_cylinder, 0, [0.012, 0.012, 0.06], 0, [])
@@ -423,6 +450,7 @@ def run_live(
         )
     ur5 = _load_ur5_ik(sim, ik, ur5_model_path, ur5_base_x)
     _add_paper(sim, paper_width, paper_height, ur5_paper_z)
+    _add_paper_reference(sim, paper_width, paper_height, ur5_paper_z)
     _add_ur5_tool(sim, ur5["tip"])
     tip_drawing = _add_drawing(sim, sim.drawing_spherepoints, 0.008, 200000, [0.9, 0.1, 0.05])
     previous_by_stroke: Dict[int, Tuple[float, float, float]] = {}
@@ -433,6 +461,8 @@ def run_live(
     ik_success_by_stroke: Dict[str, int] = {}
     ik_failure_by_stroke: Dict[str, int] = {}
     previous_target: Optional[np.ndarray] = None
+    approach_success = 0
+    approach_failures = 0
 
     def solve_target(target_position: np.ndarray) -> Tuple[np.ndarray, int, float]:
         nonlocal ik_success, ik_failures, max_residual
@@ -457,6 +487,27 @@ def run_live(
             stroke_failures = 0
             dense_points = interpolate_stroke(raw_points, max_step)
             first_target = np.asarray(dense_points[0].position, dtype=np.float64) + offset
+            if previous_target is None:
+                # Start from the UR5 model's home pose without teleporting the
+                # end effector to a few-centimetre-high paper plane.  The
+                # approach is lifted above the paper, then the normal stroke
+                # loop makes the final vertical descent while drawing starts.
+                current_tip = np.asarray(
+                    sim.getObjectPosition(ur5["tip"], -1), dtype=np.float64
+                )
+                approach_target = first_target.copy()
+                approach_target[2] = max(approach_target[2], ur5_paper_z + 0.055)
+                approach_distance = float(np.linalg.norm(approach_target - current_tip))
+                approach_count = max(1, int(math.ceil(approach_distance / max(max_step, 1e-5))))
+                for approach_index in range(1, approach_count + 1):
+                    ratio = approach_index / approach_count
+                    approach_position = current_tip + ratio * (approach_target - current_tip)
+                    _, approach_status, _ = solve_target(approach_position)
+                    if approach_status == 1:
+                        approach_success += 1
+                    else:
+                        approach_failures += 1
+                    time.sleep(max(interval, 0.0))
             if previous_target is not None:
                 # Do not teleport the UR5 between strokes.  Move to the next
                 # stroke start through the lifted plane, without drawing.
@@ -509,8 +560,11 @@ def run_live(
         "ik_max_residual_m": max_residual,
         "ik_success_by_stroke": ik_success_by_stroke,
         "ik_failure_by_stroke": ik_failure_by_stroke,
+        "ik_approach_success_steps": approach_success,
+        "ik_approach_failure_steps": approach_failures,
         "dynamics_enabled": False,
         "paper_top_z_m": ur5_paper_z,
+        "paper_height_above_ground_m": ur5_paper_z,
     }
 
 
@@ -535,7 +589,12 @@ def parse_args() -> argparse.Namespace:
         default="/home/robot/CoppeliaSim_Edu_V4_7_0_rev4_Ubuntu22_04/models/robots/non-mobile/UR5.ttm",
     )
     parser.add_argument("--ur5_base_x_m", type=float, default=0.176)
-    parser.add_argument("--ur5_paper_z_m", type=float, default=0.96)
+    parser.add_argument(
+        "--ur5_paper_z_m",
+        type=float,
+        default=0.06,
+        help="Top surface of the writing plane above the UR5 base/ground (m); default is 6 cm.",
+    )
     parser.add_argument("--paper_z_m", type=float, default=0.015)
     parser.add_argument("--paper_width_m", type=float, default=0.24)
     parser.add_argument("--paper_height_m", type=float, default=0.24)
