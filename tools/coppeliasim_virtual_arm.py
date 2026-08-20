@@ -352,7 +352,14 @@ def _load_ur5_ik(sim, ik, model_path: str, base_x: float):
     }
 
 
-def _add_paper(sim, width: float, height: float, top_z: float):
+def _add_paper(
+    sim,
+    width: float,
+    height: float,
+    top_z: float,
+    center_x: float = 0.0,
+    center_y: float = 0.0,
+):
     """Add a thin static paper plane only for visual contact reference."""
     try:
         paper = sim.createPureShape(sim.primitiveshape_cuboid, 0, [width, height, 0.004], 0, [])
@@ -361,7 +368,7 @@ def _add_paper(sim, width: float, height: float, top_z: float):
         # API.  The official UR5 model remains fully visible; the paper is
         # cosmetic, so omit it rather than aborting the replay.
         return None
-    sim.setObjectPosition(paper, -1, [0.0, 0.0, float(top_z) - 0.002])
+    sim.setObjectPosition(paper, -1, [float(center_x), float(center_y), float(top_z) - 0.002])
     try:
         sim.setShapeColor(paper, None, sim.colorcomponent_ambient_diffuse, [0.92, 0.92, 0.86])
     except Exception:
@@ -369,7 +376,14 @@ def _add_paper(sim, width: float, height: float, top_z: float):
     return paper
 
 
-def _add_paper_reference(sim, width: float, height: float, top_z: float):
+def _add_paper_reference(
+    sim,
+    width: float,
+    height: float,
+    top_z: float,
+    center_x: float = 0.0,
+    center_y: float = 0.0,
+):
     """Draw a thin outline at the actual writing height.
 
     Some CoppeliaSim 4.7 remote API builds reject ``createPureShape`` calls
@@ -381,10 +395,10 @@ def _add_paper_reference(sim, width: float, height: float, top_z: float):
     half_w = float(width) * 0.5
     half_h = float(height) * 0.5
     corners = [
-        (-half_w, -half_h, float(top_z)),
-        (half_w, -half_h, float(top_z)),
-        (half_w, half_h, float(top_z)),
-        (-half_w, half_h, float(top_z)),
+        (float(center_x) - half_w, float(center_y) - half_h, float(top_z)),
+        (float(center_x) + half_w, float(center_y) - half_h, float(top_z)),
+        (float(center_x) + half_w, float(center_y) + half_h, float(top_z)),
+        (float(center_x) - half_w, float(center_y) + half_h, float(top_z)),
     ]
     for start, end in zip(corners, corners[1:] + corners[:1]):
         try:
@@ -423,6 +437,8 @@ def run_live(
     ur5_model_path: str,
     ur5_base_x: float,
     ur5_paper_z: float,
+    paper_offset_x: float,
+    paper_offset_y: float,
     paper_width: float,
     paper_height: float,
     start_simulation: bool,
@@ -449,12 +465,29 @@ def run_live(
             _add_drawing(sim, sim.drawing_lines, 3, 200000, colors[index % len(colors)])
         )
     ur5 = _load_ur5_ik(sim, ik, ur5_model_path, ur5_base_x)
-    _add_paper(sim, paper_width, paper_height, ur5_paper_z)
-    _add_paper_reference(sim, paper_width, paper_height, ur5_paper_z)
+    _add_paper(
+        sim,
+        paper_width,
+        paper_height,
+        ur5_paper_z,
+        center_x=paper_offset_x,
+        center_y=paper_offset_y,
+    )
+    _add_paper_reference(
+        sim,
+        paper_width,
+        paper_height,
+        ur5_paper_z,
+        center_x=paper_offset_x,
+        center_y=paper_offset_y,
+    )
     _add_ur5_tool(sim, ur5["tip"])
     tip_drawing = _add_drawing(sim, sim.drawing_spherepoints, 0.008, 200000, [0.9, 0.1, 0.05])
     previous_by_stroke: Dict[int, Tuple[float, float, float]] = {}
-    offset = np.asarray([0.0, 0.0, float(ur5_paper_z - mapper.paper_z)], dtype=np.float64)
+    offset = np.asarray(
+        [paper_offset_x, paper_offset_y, float(ur5_paper_z - mapper.paper_z)],
+        dtype=np.float64,
+    )
     ik_success = 0
     ik_failures = 0
     max_residual = 0.0
@@ -565,6 +598,8 @@ def run_live(
         "dynamics_enabled": False,
         "paper_top_z_m": ur5_paper_z,
         "paper_height_above_ground_m": ur5_paper_z,
+        "paper_offset_x_m": paper_offset_x,
+        "paper_offset_y_m": paper_offset_y,
     }
 
 
@@ -594,6 +629,18 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.06,
         help="Top surface of the writing plane above the UR5 base/ground (m); default is 6 cm.",
+    )
+    parser.add_argument(
+        "--paper_offset_x_m",
+        type=float,
+        default=-0.28,
+        help="World x offset of the paper/trajectory from the UR5 base frame (m).",
+    )
+    parser.add_argument(
+        "--paper_offset_y_m",
+        type=float,
+        default=0.0,
+        help="World y offset of the paper/trajectory from the UR5 base frame (m).",
     )
     parser.add_argument("--paper_z_m", type=float, default=0.015)
     parser.add_argument("--paper_width_m", type=float, default=0.24)
@@ -659,6 +706,8 @@ def main(args: argparse.Namespace) -> None:
         ur5_model_path=args.ur5_model_path,
         ur5_base_x=args.ur5_base_x_m,
         ur5_paper_z=args.ur5_paper_z_m,
+        paper_offset_x=args.paper_offset_x_m,
+        paper_offset_y=args.paper_offset_y_m,
         paper_width=args.paper_width_m,
         paper_height=args.paper_height_m,
         start_simulation=args.start_simulation,
