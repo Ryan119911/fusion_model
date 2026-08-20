@@ -907,8 +907,14 @@ def run_live(
         "paper_offset_y_m": paper_offset_y,
         "tool_orientation_constraint": ur5["tool_orientation_constraint"],
         "orientation_mode": orientation_mode,
+        "orientation_mapping": (
+            "local_xyz_relative_to_paper_parallel_base"
+            if orientation_mode == "csv_pose"
+            else "fixed_paper_parallel"
+        ),
         "ik_allow_error": not strict_ik,
         "tool_quaternion_xyzw": ur5["tool_quaternion_xyzw"],
+        "initial_tip_quaternion_xyzw": ur5["initial_tip_quaternion_xyzw"],
         "nonterminal_link_overlap_steps": body_overlap_steps,
         "minimum_nonterminal_link_clearance_m": min_body_clearance,
         "nonterminal_link_clearance_passed": body_overlap_steps == 0,
