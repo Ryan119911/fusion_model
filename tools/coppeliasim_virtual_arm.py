@@ -3,8 +3,8 @@
 Live mode loads ``UR5.ttm`` from the CoppeliaSim installation, creates a
 simIK pose task for its six real joints, and moves the standard model's
 end-effector to each mapped paper point.  The visual tool's local Z axis is
-rotated into the horizontal paper plane (90 degrees about world X), while the
-tip position follows the trajectory.  One draw object is created per stroke,
+rotated into the horizontal paper plane (90 degrees about the initial tool's
+local X axis), while the tip position follows the trajectory.  One draw object is created per stroke,
 and lift states never connect separate strokes.  This is still a
 simulation/visualization experiment: dynamics and real robot calibration are
 not inferred from it.  The default writing plane is 0.06 m above the UR5
@@ -301,6 +301,28 @@ def _add_drawing(sim, drawing_type: int, size: float, max_items: int, color: Seq
         return sim.addDrawingObject(sim.drawing_spherepoints, size * 0.002, 0, -1, max_items, list(color))
 
 
+def _multiply_quaternions(left: Sequence[float], right: Sequence[float]) -> List[float]:
+    """Multiply CoppeliaSim quaternions in ``[x, y, z, w]`` order."""
+    lx, ly, lz, lw = (float(value) for value in left)
+    rx, ry, rz, rw = (float(value) for value in right)
+    return [
+        lw * rx + lx * rw + ly * rz - lz * ry,
+        lw * ry - lx * rz + ly * rw + lz * rx,
+        lw * rz + lx * ry - ly * rx + lz * rw,
+        lw * rw - lx * rx - ly * ry - lz * rz,
+    ]
+
+
+def _quaternion_angle_error(left: Sequence[float], right: Sequence[float]) -> float:
+    """Return the shortest angular distance between two XYZW quaternions."""
+    left_vec = np.asarray(list(left), dtype=np.float64)
+    right_vec = np.asarray(list(right), dtype=np.float64)
+    left_vec /= max(float(np.linalg.norm(left_vec)), 1e-12)
+    right_vec /= max(float(np.linalg.norm(right_vec)), 1e-12)
+    dot = float(np.clip(abs(np.dot(left_vec, right_vec)), -1.0, 1.0))
+    return float(2.0 * math.acos(dot))
+
+
 def _load_ur5_ik(sim, ik, model_path: str, base_x: float):
     """Load CoppeliaSim's official UR5 model and configure simIK.
 
@@ -325,11 +347,19 @@ def _load_ur5_ik(sim, ik, model_path: str, base_x: float):
     if last_link is None:
         last_link = shapes[-1]
     # CoppeliaSim quaternions are [x, y, z, w].  The visual cylinder uses its
-    # local +Z axis as its long/tool axis.  A 90-degree rotation about world X
-    # maps that axis to world -Y, which is parallel to the horizontal paper;
-    # the previous 180-degree value [1, 0, 0, 0] mapped it to world -Z and
-    # therefore made the tool stand perpendicular to the paper.
-    paper_parallel_quaternion = [math.sqrt(0.5), 0.0, 0.0, math.sqrt(0.5)]
+    # local +Z axis as its long/tool axis.  Rotate the current UR5 terminal
+    # pose by 90 degrees in its *local* X direction.  Relative rotation is
+    # important here: a fixed world quaternion can be outside the reachable
+    # wrist configuration at the low writing plane, causing simIK to restore
+    # the old perpendicular pose after a failed solve.
+    initial_tip_quaternion = [
+        float(value) for value in sim.getObjectQuaternion(last_link, -1)
+    ]
+    half = math.radians(90.0) * 0.5
+    local_quarter_turn = [math.sin(half), 0.0, 0.0, math.cos(half)]
+    paper_parallel_quaternion = _multiply_quaternions(
+        initial_tip_quaternion, local_quarter_turn
+    )
     tip = sim.createDummy(0.010, 12 * [0.0])
     sim.setObjectParent(tip, last_link, False)
     tip_position = sim.getObjectPosition(last_link, -1)
@@ -357,6 +387,7 @@ def _load_ur5_ik(sim, ik, model_path: str, base_x: float):
         "target": target,
         "tool_quaternion_xyzw": paper_parallel_quaternion,
         "tool_orientation_constraint": "paper_parallel_world_xy",
+        "initial_tip_quaternion_xyzw": initial_tip_quaternion,
         "environment": environment,
         "group": group,
         "tip_position": tip_position,
@@ -537,6 +568,7 @@ def run_live(
     body_overlap_steps = 0
     min_body_clearance = float("inf")
     planned_fallback_strokes = 0
+    max_orientation_residual = 0.0
 
     # Draw the requested path before IK starts.  It is deliberately separate
     # from the measured tip path: a failed IK step must not make a short stroke
@@ -555,13 +587,19 @@ def run_live(
             )
 
     def solve_target(target_position: np.ndarray) -> Tuple[np.ndarray, int, float]:
-        nonlocal ik_success, ik_failures, max_residual, body_overlap_steps, min_body_clearance
+        nonlocal ik_success, ik_failures, max_residual, max_orientation_residual
+        nonlocal body_overlap_steps, min_body_clearance
         sim.setObjectPosition(ur5["target"], -1, target_position.tolist())
         result = ik.handleGroup(ur5["environment"], ur5["group"], {"syncWorlds": True})
         status = int(result[0]) if isinstance(result, tuple) else int(result)
         actual_position = np.asarray(sim.getObjectPosition(ur5["tip"], -1), dtype=np.float64)
         residual = float(np.linalg.norm(actual_position - target_position))
         max_residual = max(max_residual, residual)
+        actual_quaternion = sim.getObjectQuaternion(ur5["tip"], -1)
+        max_orientation_residual = max(
+            max_orientation_residual,
+            _quaternion_angle_error(actual_quaternion, ur5["tool_quaternion_xyzw"]),
+        )
         body_overlaps = 0
         for shape in ur5["body_shapes"]:
             shape_position = sim.getObjectPosition(shape, -1)
@@ -664,6 +702,7 @@ def run_live(
         "ik_success_steps": ik_success,
         "ik_failure_steps": ik_failures,
         "ik_max_residual_m": max_residual,
+        "ik_max_orientation_residual_rad": max_orientation_residual,
         "ik_success_by_stroke": ik_success_by_stroke,
         "ik_failure_by_stroke": ik_failure_by_stroke,
         "ik_approach_success_steps": approach_success,
