@@ -322,24 +322,28 @@ def _load_ur5_ik(sim, ik, model_path: str, base_x: float):
             continue
     if last_link is None:
         last_link = shapes[-1]
+    # CoppeliaSim quaternions are [x, y, z, w].  A 180-degree rotation about
+    # world X maps the tool's local +Z axis to world -Z, i.e. perpendicular to
+    # a horizontal writing plane.  Keeping this orientation in the IK target
+    # prevents the wrist from replaying the model's default tilted flange.
+    paper_normal_quaternion = [1.0, 0.0, 0.0, 0.0]
     tip = sim.createDummy(0.010, 12 * [0.0])
     sim.setObjectParent(tip, last_link, False)
     tip_position = sim.getObjectPosition(last_link, -1)
-    tip_quaternion = sim.getObjectQuaternion(last_link, -1)
     sim.setObjectPosition(tip, -1, tip_position)
-    sim.setObjectQuaternion(tip, -1, tip_quaternion)
+    sim.setObjectQuaternion(tip, -1, paper_normal_quaternion)
     target = sim.createDummy(0.012, 12 * [0.0])
     sim.setObjectPosition(target, -1, tip_position)
-    sim.setObjectQuaternion(target, -1, tip_quaternion)
+    sim.setObjectQuaternion(target, -1, paper_normal_quaternion)
     environment = ik.createEnvironment()
     group = ik.createGroup(environment)
     add_result = ik.addElementFromScene(
-        environment, group, root, tip, target, ik.constraint_position
+        environment, group, root, tip, target, ik.constraint_pose
     )
     if isinstance(add_result, tuple) and int(add_result[0]) != 0:
         raise RuntimeError(f"simIK.addElementFromScene failed: {add_result}")
     ik.setGroupCalculation(
-        environment, group, ik.method_damped_least_squares, 0.05, 200
+        environment, group, ik.method_damped_least_squares, 0.03, 500
     )
     return {
         "root": root,
@@ -348,6 +352,8 @@ def _load_ur5_ik(sim, ik, model_path: str, base_x: float):
         "terminal_shape": last_link,
         "tip": tip,
         "target": target,
+        "tool_quaternion_xyzw": paper_normal_quaternion,
+        "tool_orientation_constraint": "paper_normal_down",
         "environment": environment,
         "group": group,
         "tip_position": tip_position,
@@ -643,6 +649,8 @@ def run_live(
         "paper_height_above_ground_m": ur5_paper_z,
         "paper_offset_x_m": paper_offset_x,
         "paper_offset_y_m": paper_offset_y,
+        "tool_orientation_constraint": ur5["tool_orientation_constraint"],
+        "tool_quaternion_xyzw": ur5["tool_quaternion_xyzw"],
         "nonterminal_link_overlap_steps": body_overlap_steps,
         "minimum_nonterminal_link_clearance_m": min_body_clearance,
         "nonterminal_link_clearance_passed": body_overlap_steps == 0,
