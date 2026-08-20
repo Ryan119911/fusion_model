@@ -364,7 +364,11 @@ def _load_ur5_ik(sim, ik, model_path: str, base_x: float):
     sim.setObjectParent(tip, last_link, False)
     tip_position = sim.getObjectPosition(last_link, -1)
     sim.setObjectPosition(tip, -1, tip_position)
-    sim.setObjectQuaternion(tip, -1, paper_parallel_quaternion)
+    # Keep the IK tip aligned with the actual terminal link.  The previous
+    # implementation put the 90-degree rotation on the child tip itself, which
+    # hid the wrist rotation from simIK and could leave the visible UR5 flange
+    # perpendicular even though the dummy reported a horizontal pose.
+    sim.setObjectQuaternion(tip, -1, initial_tip_quaternion)
     target = sim.createDummy(0.012, 12 * [0.0])
     sim.setObjectPosition(target, -1, tip_position)
     sim.setObjectQuaternion(target, -1, paper_parallel_quaternion)
