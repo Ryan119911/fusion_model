@@ -323,6 +323,24 @@ def _quaternion_angle_error(left: Sequence[float], right: Sequence[float]) -> fl
     return float(2.0 * math.acos(dot))
 
 
+def _rotate_vector_by_quaternion(quaternion: Sequence[float], vector: Sequence[float]) -> np.ndarray:
+    """Rotate a 3D vector by an XYZW quaternion."""
+    x, y, z, w = (float(value) for value in quaternion)
+    q_vec = np.asarray([x, y, z], dtype=np.float64)
+    v = np.asarray(vector, dtype=np.float64)
+    return v + 2.0 * (w * np.cross(q_vec, v) + np.cross(q_vec, np.cross(q_vec, v)))
+
+
+def _tool_axis_angle_error(left: Sequence[float], right: Sequence[float]) -> float:
+    """Return angular error of the tool local +Z axes, ignoring free gamma."""
+    left_axis = _rotate_vector_by_quaternion(left, [0.0, 0.0, 1.0])
+    right_axis = _rotate_vector_by_quaternion(right, [0.0, 0.0, 1.0])
+    left_axis /= max(float(np.linalg.norm(left_axis)), 1e-12)
+    right_axis /= max(float(np.linalg.norm(right_axis)), 1e-12)
+    dot = float(np.clip(np.dot(left_axis, right_axis), -1.0, 1.0))
+    return float(math.acos(dot))
+
+
 def _load_ur5_ik(sim, ik, model_path: str, base_x: float):
     """Load CoppeliaSim's official UR5 model and configure simIK.
 
@@ -374,8 +392,13 @@ def _load_ur5_ik(sim, ik, model_path: str, base_x: float):
     sim.setObjectQuaternion(target, -1, paper_parallel_quaternion)
     environment = ik.createEnvironment()
     group = ik.createGroup(environment)
+    # A paper-parallel tool only needs position plus its two tilt angles.  The
+    # rotation around the paper normal (gamma) is deliberately left free; it
+    # otherwise makes many low-plane points fail even though the tool normal is
+    # correctly parallel to the paper.
+    orientation_constraints = ik.constraint_position | ik.constraint_alpha_beta
     add_result = ik.addElementFromScene(
-        environment, group, root, tip, target, ik.constraint_pose
+        environment, group, root, tip, target, orientation_constraints
     )
     if isinstance(add_result, tuple) and int(add_result[0]) != 0:
         raise RuntimeError(f"simIK.addElementFromScene failed: {add_result}")
@@ -390,7 +413,7 @@ def _load_ur5_ik(sim, ik, model_path: str, base_x: float):
         "tip": tip,
         "target": target,
         "tool_quaternion_xyzw": paper_parallel_quaternion,
-        "tool_orientation_constraint": "paper_parallel_world_xy",
+        "tool_orientation_constraint": "paper_parallel_alpha_beta",
         "initial_tip_quaternion_xyzw": initial_tip_quaternion,
         "environment": environment,
         "group": group,
@@ -573,6 +596,7 @@ def run_live(
     min_body_clearance = float("inf")
     planned_fallback_strokes = 0
     max_orientation_residual = 0.0
+    max_tool_axis_residual = 0.0
 
     # Draw the requested path before IK starts.  It is deliberately separate
     # from the measured tip path: a failed IK step must not make a short stroke
@@ -592,9 +616,14 @@ def run_live(
 
     def solve_target(target_position: np.ndarray) -> Tuple[np.ndarray, int, float]:
         nonlocal ik_success, ik_failures, max_residual, max_orientation_residual
+        nonlocal max_tool_axis_residual
         nonlocal body_overlap_steps, min_body_clearance
         sim.setObjectPosition(ur5["target"], -1, target_position.tolist())
-        result = ik.handleGroup(ur5["environment"], ur5["group"], {"syncWorlds": True})
+        result = ik.handleGroup(
+            ur5["environment"],
+            ur5["group"],
+            {"syncWorlds": True, "allowError": True},
+        )
         status = int(result[0]) if isinstance(result, tuple) else int(result)
         actual_position = np.asarray(sim.getObjectPosition(ur5["tip"], -1), dtype=np.float64)
         residual = float(np.linalg.norm(actual_position - target_position))
@@ -603,6 +632,10 @@ def run_live(
         max_orientation_residual = max(
             max_orientation_residual,
             _quaternion_angle_error(actual_quaternion, ur5["tool_quaternion_xyzw"]),
+        )
+        max_tool_axis_residual = max(
+            max_tool_axis_residual,
+            _tool_axis_angle_error(actual_quaternion, ur5["tool_quaternion_xyzw"]),
         )
         body_overlaps = 0
         for shape in ur5["body_shapes"]:
@@ -707,6 +740,7 @@ def run_live(
         "ik_failure_steps": ik_failures,
         "ik_max_residual_m": max_residual,
         "ik_max_orientation_residual_rad": max_orientation_residual,
+        "ik_max_tool_axis_residual_rad": max_tool_axis_residual,
         "ik_success_by_stroke": ik_success_by_stroke,
         "ik_failure_by_stroke": ik_failure_by_stroke,
         "ik_approach_success_steps": approach_success,
