@@ -6,6 +6,7 @@ from tools.coppeliasim_virtual_arm import (
     _euler_xyz_to_quaternion,
     _interpolate_euler_shortest,
     _rotate_vector_by_quaternion,
+    _world_bbox_min_z,
     build_report,
     interpolate_stroke,
     mapped_strokes,
@@ -119,3 +120,15 @@ def test_csv_euler_quaternion_rotates_about_z():
 def test_euler_interpolation_uses_short_wrapped_delta():
     value = _interpolate_euler_shortest((0.0, 0.0, 3.0), (0.0, 0.0, -3.0), 0.5)
     assert abs(abs(value[2]) - 3.141592653589793) < 1e-7
+
+
+def test_world_bbox_min_z_uses_oriented_geometry_not_object_center():
+    # Local Z is rotated into world X; local X controls the world-space Z
+    # extent.  The object center is at world Z=0.10, but geometry reaches 0.06.
+    matrix = [
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        -1.0, 0.0, 0.0, 0.10,
+    ]
+    bounds = [-0.04, -0.02, -0.20, 0.04, 0.02, 0.20]
+    assert abs(_world_bbox_min_z(matrix, bounds) - 0.06) < 1e-9

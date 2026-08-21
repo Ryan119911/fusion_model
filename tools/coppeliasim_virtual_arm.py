@@ -7,8 +7,8 @@ rotated into the horizontal paper plane (90 degrees about the initial tool's
 local X axis), while the tip position follows the trajectory.  One draw object is created per stroke,
 and lift states never connect separate strokes.  This is still a
 simulation/visualization experiment: dynamics and real robot calibration are
-not inferred from it.  The default writing plane is 0.18 m above the UR5
-base/ground (approximately half the upper-arm height); the
+not inferred from it.  The UR5 keeps its normal floor-mounted pose while the
+default writing plane is 0.65 m above the world floor; the
 ``--ur5_paper_z_m`` option can override it after a reachability check.
 
 The script has an offline mode for validating CSV selection, coordinate
@@ -455,6 +455,55 @@ def _tool_axis_angle_error(left: Sequence[float], right: Sequence[float]) -> flo
     return float(math.acos(dot))
 
 
+def _world_bbox_min_z(matrix: Sequence[float], bounds: Sequence[float]) -> float:
+    """Return the world-space minimum Z of an oriented local bounding box."""
+    if len(matrix) != 12 or len(bounds) != 6:
+        raise ValueError("Expected a 3x4 transform and six bounding-box limits")
+    min_x, min_y, min_z, max_x, max_y, max_z = (float(v) for v in bounds)
+    world_z = []
+    for x in (min_x, max_x):
+        for y in (min_y, max_y):
+            for z in (min_z, max_z):
+                world_z.append(
+                    float(matrix[8]) * x
+                    + float(matrix[9]) * y
+                    + float(matrix[10]) * z
+                    + float(matrix[11])
+                )
+    return min(world_z)
+
+
+def _shape_local_bbox_bounds(sim, shape: int) -> Tuple[float, ...]:
+    """Read a shape's static local bounding-box limits once."""
+    names = (
+        "objfloatparam_objbbox_min_x",
+        "objfloatparam_objbbox_min_y",
+        "objfloatparam_objbbox_min_z",
+        "objfloatparam_objbbox_max_x",
+        "objfloatparam_objbbox_max_y",
+        "objfloatparam_objbbox_max_z",
+    )
+    return tuple(
+        float(sim.getObjectFloatParam(shape, getattr(sim, name))) for name in names
+    )
+
+
+def _shape_world_bbox_min_z(
+    sim,
+    shape: int,
+    bounds: Optional[Sequence[float]] = None,
+) -> float:
+    """Measure a shape's actual lowest geometry point in world coordinates."""
+    try:
+        local_bounds = tuple(bounds) if bounds is not None else _shape_local_bbox_bounds(sim, shape)
+        matrix = [float(v) for v in sim.getObjectMatrix(shape, -1)]
+        return _world_bbox_min_z(matrix, local_bounds)
+    except Exception:
+        # A few older remote-API builds do not expose object bounding-box
+        # parameters.  Keep a conservative fallback so replay still works.
+        return float(sim.getObjectPosition(shape, -1)[2])
+
+
 def _remove_existing_ur5_models(sim) -> int:
     """Remove UR5 model roots left by an earlier ``--keep_scene`` replay.
 
@@ -513,6 +562,19 @@ def _load_ur5_ik(
     shapes = sim.getObjectsInTree(root, sim.object_shape_type, 0)
     if len(joints) != 6:
         raise RuntimeError(f"Expected 6 UR5 joints, found {len(joints)}")
+    # The stock model's zero pose is elbow-down and can place the long middle
+    # links below the ground plane.  Seed simIK from a compact elbow-up pose so
+    # both the initial scene and every rollback state are physically safe.
+    initial_joint_seed = [
+        0.0,
+        -0.6,
+        1.4,
+        -1.5,
+        -math.pi / 2.0,
+        0.0,
+    ]
+    for joint, value in zip(joints, initial_joint_seed):
+        sim.setJointPosition(joint, value)
     last_link = None
     for handle in shapes:
         try:
@@ -566,6 +628,10 @@ def _load_ur5_ik(
     )
     if isinstance(add_result, tuple) and int(add_result[0]) != 0:
         raise RuntimeError(f"simIK.addElementFromScene failed: {add_result}")
+    if not isinstance(add_result, tuple) or len(add_result) < 2:
+        raise RuntimeError(f"simIK.addElementFromScene returned no object mapping: {add_result}")
+    sim_to_ik_mapping = add_result[1]
+    ik_tip = sim_to_ik_mapping[tip]
     ik.setGroupCalculation(
         environment, group, ik.method_damped_least_squares, 0.03, 500
     )
@@ -575,12 +641,23 @@ def _load_ur5_ik(
             alias = sim.getObjectAlias(handle, 1).lower()
         except Exception:
             alias = ""
-        if handle != last_link and "link" in alias:
+        if handle != last_link and "link" in alias and "link1_visible" not in alias:
             body_shapes.append(handle)
+    body_shape_bounds = {
+        handle: _shape_local_bbox_bounds(sim, handle) for handle in body_shapes
+    }
+    initial_body_geometry_min_z = min(
+        (
+            _shape_world_bbox_min_z(sim, shape, body_shape_bounds[shape])
+            for shape in body_shapes
+        ),
+        default=float("inf"),
+    )
     return {
         "root": root,
         "joints": joints,
         "body_shapes": body_shapes,
+        "body_shape_bounds": body_shape_bounds,
         "terminal_shape": last_link,
         "tip": tip,
         "target": target,
@@ -588,8 +665,11 @@ def _load_ur5_ik(
         "tool_orientation_constraint": orientation_constraint_name,
         "orientation_mode": orientation_mode,
         "initial_tip_quaternion_xyzw": initial_tip_quaternion,
+        "initial_joint_seed_rad": initial_joint_seed,
+        "initial_body_geometry_min_z_m": initial_body_geometry_min_z,
         "environment": environment,
         "group": group,
+        "ik_tip": ik_tip,
         "tip_position": tip_position,
     }
 
@@ -693,8 +773,12 @@ def run_live(
     *,
     max_step: float,
     interval: float,
+    transition_step: float,
+    transition_interval: float,
+    pen_lift_clearance: float,
     arm_base_z: float,
     ground_clearance_m: float,
+    tip_paper_clearance_m: float,
     keep_scene: bool,
     client_port: int,
     scene_output: Optional[str],
@@ -744,6 +828,19 @@ def run_live(
         arm_base_z,
         orientation_mode,
     )
+    if ur5["initial_body_geometry_min_z_m"] < float(ground_clearance_m):
+        raise RuntimeError(
+            "UR5 initial elbow-up seed violates ground clearance: "
+            f"{ur5['initial_body_geometry_min_z_m']:.6f} m < "
+            f"{float(ground_clearance_m):.6f} m"
+        )
+    initial_tip_paper_clearance = float(ur5["tip_position"][2] - ur5_paper_z)
+    if initial_tip_paper_clearance < float(tip_paper_clearance_m):
+        raise RuntimeError(
+            "UR5 initial tip is below the required paper clearance: "
+            f"{initial_tip_paper_clearance:.6f} m < "
+            f"{float(tip_paper_clearance_m):.6f} m"
+        )
     _add_paper(
         sim,
         paper_width,
@@ -762,6 +859,11 @@ def run_live(
     )
     _add_ur5_tool(sim, ur5["tip"])
     tip_drawing = _add_drawing(sim, sim.drawing_spherepoints, 0.008, 200000, [0.9, 0.1, 0.05])
+    phase_drawings = {
+        "lift": _add_drawing(sim, sim.drawing_lines, 4, 200000, [1.0, 0.72, 0.05]),
+        "travel": _add_drawing(sim, sim.drawing_lines, 3, 200000, [0.1, 0.55, 1.0]),
+        "descend": _add_drawing(sim, sim.drawing_lines, 4, 200000, [0.1, 0.8, 0.25]),
+    }
     previous_by_stroke: Dict[int, Tuple[float, float, float]] = {}
     offset = np.asarray(
         [paper_offset_x, paper_offset_y, float(ur5_paper_z - mapper.paper_z)],
@@ -785,6 +887,14 @@ def run_live(
     ground_rejected_steps = 0
     min_body_link_center_z = float("inf")
     min_attempted_body_link_center_z = float("inf")
+    min_body_geometry_z = float("inf")
+    min_attempted_body_geometry_z = float("inf")
+    motion_phase_steps = {"lift": 0, "travel": 0, "descend": 0}
+    motion_phase_failures = {"lift": 0, "travel": 0, "descend": 0}
+    paper_target_clamp_steps = 0
+    paper_rejected_steps = 0
+    min_attempted_tip_paper_clearance = float("inf")
+    min_tip_paper_clearance = float("inf")
 
     # Draw the requested path before IK starts.  It is deliberately separate
     # from the measured tip path: a failed IK step must not make a short stroke
@@ -811,6 +921,14 @@ def run_live(
         nonlocal body_overlap_steps, min_body_clearance
         nonlocal below_ground_steps, ground_rejected_steps
         nonlocal min_body_link_center_z, min_attempted_body_link_center_z
+        nonlocal min_body_geometry_z, min_attempted_body_geometry_z
+        nonlocal paper_target_clamp_steps, paper_rejected_steps
+        nonlocal min_attempted_tip_paper_clearance, min_tip_paper_clearance
+        target_position = np.asarray(target_position, dtype=np.float64).copy()
+        minimum_tip_z = float(ur5_paper_z) + float(tip_paper_clearance_m)
+        if float(target_position[2]) < minimum_tip_z:
+            target_position[2] = minimum_tip_z
+            paper_target_clamp_steps += 1
         joint_snapshot = [float(sim.getJointPosition(joint)) for joint in ur5["joints"]]
         sim.setObjectPosition(ur5["target"], -1, target_position.tolist())
         desired_quaternion = ur5["tool_quaternion_xyzw"]
@@ -820,23 +938,51 @@ def run_live(
                 _euler_xyz_to_quaternion(target_orientation),
             )
         sim.setObjectQuaternion(ur5["target"], -1, desired_quaternion)
+        # Solve in the private IK world first.  The visible UR5 is only updated
+        # after the candidate tip has passed the paper-height guard, preventing
+        # rejected below-paper configurations from flashing in the GUI.
+        ik.syncFromSim(ur5["environment"], [ur5["group"]])
         result = ik.handleGroup(
             ur5["environment"],
             ur5["group"],
-            {"syncWorlds": True, "allowError": not strict_ik},
+            {"syncWorlds": False, "allowError": not strict_ik},
         )
         status = int(result[0]) if isinstance(result, tuple) else int(result)
+        attempted_tip_pose = ik.getObjectPose(
+            ur5["environment"], ur5["ik_tip"], ik.handle_world
+        )
+        attempted_tip_position = np.asarray(attempted_tip_pose[:3], dtype=np.float64)
+        attempted_tip_clearance = float(attempted_tip_position[2] - ur5_paper_z)
+        min_attempted_tip_paper_clearance = min(
+            min_attempted_tip_paper_clearance, attempted_tip_clearance
+        )
+        paper_rejected = attempted_tip_clearance < float(tip_paper_clearance_m)
+        if paper_rejected:
+            status = 0
+            paper_rejected_steps += 1
+        if status == 1:
+            ik.syncToSim(ur5["environment"], [ur5["group"]])
         attempted_link_z = [
             float(sim.getObjectPosition(shape, -1)[2])
             for shape in ur5["body_shapes"]
         ]
+        attempted_geometry_z = [
+            _shape_world_bbox_min_z(
+                sim, shape, ur5["body_shape_bounds"][shape]
+            )
+            for shape in ur5["body_shapes"]
+        ]
         attempted_min_link_z = min(attempted_link_z, default=float("inf"))
+        attempted_min_geometry_z = min(attempted_geometry_z, default=float("inf"))
         min_attempted_body_link_center_z = min(
             min_attempted_body_link_center_z, attempted_min_link_z
         )
-        if attempted_min_link_z < 0.0:
+        min_attempted_body_geometry_z = min(
+            min_attempted_body_geometry_z, attempted_min_geometry_z
+        )
+        if attempted_min_geometry_z < 0.0:
             below_ground_steps += 1
-        if attempted_min_link_z < float(ground_clearance_m):
+        if attempted_min_geometry_z < float(ground_clearance_m):
             for joint, position in zip(ur5["joints"], joint_snapshot):
                 sim.setJointPosition(joint, position)
             status = 0
@@ -848,7 +994,20 @@ def run_live(
         min_body_link_center_z = min(
             min_body_link_center_z, min(final_link_z, default=float("inf"))
         )
+        final_geometry_z = [
+            _shape_world_bbox_min_z(
+                sim, shape, ur5["body_shape_bounds"][shape]
+            )
+            for shape in ur5["body_shapes"]
+        ]
+        min_body_geometry_z = min(
+            min_body_geometry_z, min(final_geometry_z, default=float("inf"))
+        )
         actual_position = np.asarray(sim.getObjectPosition(ur5["tip"], -1), dtype=np.float64)
+        min_tip_paper_clearance = min(
+            min_tip_paper_clearance,
+            float(actual_position[2] - ur5_paper_z),
+        )
         residual = float(np.linalg.norm(actual_position - target_position))
         max_residual = max(max_residual, residual)
         actual_quaternion = sim.getObjectQuaternion(ur5["tip"], -1)
@@ -882,6 +1041,41 @@ def run_live(
             ik_failures += 1
         return actual_position, status, residual
 
+    def animate_motion_phase(
+        start_position: np.ndarray,
+        end_position: np.ndarray,
+        start_orientation: Sequence[float],
+        end_orientation: Sequence[float],
+        phase: str,
+    ) -> np.ndarray:
+        """Animate one explicit lift/travel/descend phase without teleporting."""
+        distance = float(np.linalg.norm(end_position - start_position))
+        count = max(
+            1,
+            int(math.ceil(distance / max(float(transition_step), 1e-5))),
+        )
+        previous_actual = np.asarray(
+            sim.getObjectPosition(ur5["tip"], -1), dtype=np.float64
+        )
+        for index in range(1, count + 1):
+            ratio = index / count
+            position = start_position + ratio * (end_position - start_position)
+            orientation = _interpolate_euler_shortest(
+                start_orientation, end_orientation, ratio
+            )
+            actual, status, _ = solve_target(position, orientation)
+            motion_phase_steps[phase] += 1
+            if status != 1:
+                motion_phase_failures[phase] += 1
+            if float(np.linalg.norm(actual - previous_actual)) > 1e-7:
+                sim.addDrawingObjectItem(
+                    phase_drawings[phase],
+                    previous_actual.tolist() + actual.tolist(),
+                )
+            previous_actual = actual
+            time.sleep(max(float(transition_interval), 0.0))
+        return previous_actual
+
     try:
         if start_simulation:
             sim.startSimulation()
@@ -891,45 +1085,77 @@ def run_live(
             stroke_failures = 0
             dense_points = interpolate_stroke(raw_points, max_step)
             first_target = np.asarray(dense_points[0].position, dtype=np.float64) + offset
+            first_orientation = dense_points[0].orientation
+            lift_plane_z = max(
+                float(ur5_paper_z) + float(pen_lift_clearance),
+                float(first_target[2]) + float(pen_lift_clearance),
+            )
             if previous_target is None:
-                # Start from the UR5 model's home pose without teleporting the
-                # end effector to a few-centimetre-high paper plane.  The
-                # approach is lifted above the paper, then the normal stroke
-                # loop makes the final vertical descent while drawing starts.
+                # Start from the model's home pose, visibly travel to a point
+                # above the first stroke, then descend vertically to contact.
                 current_tip = np.asarray(
                     sim.getObjectPosition(ur5["tip"], -1), dtype=np.float64
                 )
-                approach_target = first_target.copy()
-                approach_target[2] = max(approach_target[2], ur5_paper_z + 0.055)
-                approach_distance = float(np.linalg.norm(approach_target - current_tip))
-                approach_count = max(1, int(math.ceil(approach_distance / max(max_step, 1e-5))))
-                for approach_index in range(1, approach_count + 1):
-                    ratio = approach_index / approach_count
-                    approach_position = current_tip + ratio * (approach_target - current_tip)
-                    _, approach_status, _ = solve_target(
-                        approach_position, dense_points[0].orientation
-                    )
-                    if approach_status == 1:
-                        approach_success += 1
-                    else:
-                        approach_failures += 1
-                    time.sleep(max(interval, 0.0))
+                hover_target = first_target.copy()
+                hover_target[2] = lift_plane_z
+                before_steps = motion_phase_steps["travel"]
+                before_failures = motion_phase_failures["travel"]
+                hover_actual = animate_motion_phase(
+                    current_tip,
+                    hover_target,
+                    first_orientation,
+                    first_orientation,
+                    "travel",
+                )
+                added_steps = motion_phase_steps["travel"] - before_steps
+                added_failures = motion_phase_failures["travel"] - before_failures
+                approach_failures += added_failures
+                approach_success += added_steps - added_failures
+                before_failures = motion_phase_failures["descend"]
+                before_steps = motion_phase_steps["descend"]
+                animate_motion_phase(
+                    hover_actual,
+                    first_target,
+                    first_orientation,
+                    first_orientation,
+                    "descend",
+                )
+                added_steps = motion_phase_steps["descend"] - before_steps
+                added_failures = motion_phase_failures["descend"] - before_failures
+                approach_failures += added_failures
+                approach_success += added_steps - added_failures
             if previous_target is not None:
-                # Do not teleport the UR5 between strokes.  Move to the next
-                # stroke start through the lifted plane, without drawing.
-                transit_distance = float(np.linalg.norm(first_target - previous_target))
-                transit_count = max(1, int(math.ceil(transit_distance / max(max_step, 1e-5))))
-                for transit_index in range(1, transit_count + 1):
-                    ratio = transit_index / transit_count
-                    transit_target = previous_target + ratio * (first_target - previous_target)
-                    transit_target[2] = max(transit_target[2], ur5_paper_z + 0.055)
-                    transit_orientation = _interpolate_euler_shortest(
-                        previous_orientation or dense_points[0].orientation,
-                        dense_points[0].orientation,
-                        ratio,
-                    )
-                    solve_target(transit_target, transit_orientation)
-                    time.sleep(max(interval, 0.0))
+                # Three explicit phases make pen-up motion legible: vertical
+                # lift, high horizontal travel, then vertical descent.
+                previous_pose = previous_orientation or first_orientation
+                lift_start = np.asarray(
+                    sim.getObjectPosition(ur5["tip"], -1), dtype=np.float64
+                )
+                lift_end = lift_start.copy()
+                lift_end[2] = max(lift_plane_z, float(lift_start[2]))
+                lift_actual = animate_motion_phase(
+                    lift_start,
+                    lift_end,
+                    previous_pose,
+                    previous_pose,
+                    "lift",
+                )
+                travel_end = first_target.copy()
+                travel_end[2] = lift_end[2]
+                travel_actual = animate_motion_phase(
+                    lift_actual,
+                    travel_end,
+                    previous_pose,
+                    first_orientation,
+                    "travel",
+                )
+                animate_motion_phase(
+                    travel_actual,
+                    first_target,
+                    first_orientation,
+                    first_orientation,
+                    "descend",
+                )
             for point in dense_points:
                 target_position = np.asarray(point.position, dtype=np.float64) + offset
                 actual_position, status, residual = solve_target(
@@ -949,7 +1175,13 @@ def run_live(
                     previous_by_stroke[stroke_id] = tuple(actual_position.tolist())
                 else:
                     previous_by_stroke.pop(stroke_id, None)
-                time.sleep(max(interval, 0.0))
+                if point.state in (2, 3):
+                    motion_phase_steps["lift"] += 1
+                    if status != 1:
+                        motion_phase_failures["lift"] += 1
+                    time.sleep(max(float(transition_interval), 0.0))
+                else:
+                    time.sleep(max(interval, 0.0))
             previous_target = np.asarray(dense_points[-1].position, dtype=np.float64) + offset
             previous_orientation = dense_points[-1].orientation
             ik_success_by_stroke[str(stroke_id)] = stroke_success
@@ -984,6 +1216,11 @@ def run_live(
         "paper_height_above_ground_m": ur5_paper_z,
         "replay_max_step_m": max_step,
         "replay_interval_s": interval,
+        "transition_step_m": transition_step,
+        "transition_interval_s": transition_interval,
+        "pen_lift_clearance_m": pen_lift_clearance,
+        "motion_phase_steps": motion_phase_steps,
+        "motion_phase_failures": motion_phase_failures,
         "paper_offset_x_m": paper_offset_x,
         "paper_offset_y_m": paper_offset_y,
         "tool_orientation_constraint": ur5["tool_orientation_constraint"],
@@ -996,6 +1233,9 @@ def run_live(
         "ik_allow_error": not strict_ik,
         "tool_quaternion_xyzw": ur5["tool_quaternion_xyzw"],
         "initial_tip_quaternion_xyzw": ur5["initial_tip_quaternion_xyzw"],
+        "initial_joint_seed_rad": ur5["initial_joint_seed_rad"],
+        "initial_body_geometry_min_z_m": ur5["initial_body_geometry_min_z_m"],
+        "initial_tip_paper_clearance_m": initial_tip_paper_clearance,
         "nonterminal_link_overlap_steps": body_overlap_steps,
         "minimum_nonterminal_link_clearance_m": min_body_clearance,
         "nonterminal_link_clearance_passed": body_overlap_steps == 0,
@@ -1004,9 +1244,19 @@ def run_live(
         "ground_rejected_steps": ground_rejected_steps,
         "minimum_body_link_center_z_m": min_body_link_center_z,
         "minimum_attempted_body_link_center_z_m": min_attempted_body_link_center_z,
+        "minimum_body_geometry_z_m": min_body_geometry_z,
+        "minimum_attempted_body_geometry_z_m": min_attempted_body_geometry_z,
         "ground_clearance_m": ground_clearance_m,
         "ground_clearance_passed": (
-            min_body_link_center_z >= float(ground_clearance_m)
+            min_body_geometry_z >= float(ground_clearance_m)
+        ),
+        "tip_paper_clearance_m": tip_paper_clearance_m,
+        "paper_target_clamp_steps": paper_target_clamp_steps,
+        "paper_rejected_steps": paper_rejected_steps,
+        "minimum_attempted_tip_paper_clearance_m": min_attempted_tip_paper_clearance,
+        "minimum_tip_paper_clearance_m": min_tip_paper_clearance,
+        "tip_stays_above_paper": (
+            min_tip_paper_clearance >= float(tip_paper_clearance_m)
         ),
     }
 
@@ -1055,16 +1305,40 @@ def parse_args() -> argparse.Namespace:
         help="Delay between replay samples in seconds; larger is slower to watch.",
     )
     parser.add_argument(
+        "--transition_step_m",
+        type=float,
+        default=0.004,
+        help="Maximum step for lift/travel/descend phases (m).",
+    )
+    parser.add_argument(
+        "--transition_interval",
+        type=float,
+        default=0.08,
+        help="Delay between lift/travel/descend samples (s).",
+    )
+    parser.add_argument(
+        "--pen_lift_clearance_m",
+        type=float,
+        default=0.07,
+        help="Explicit pen-up clearance above each stroke start/end (m).",
+    )
+    parser.add_argument(
         "--arm_base_z_m",
         type=float,
         default=0.04,
-        help="Lift the UR5 model base above the ground plane (m); default is 4 cm.",
+        help="UR5 model base height above the world floor (m); default keeps the normal installation.",
     )
     parser.add_argument(
         "--ground_clearance_m",
         type=float,
         default=0.02,
         help="Reject IK poses whose nonterminal link center is below this height (m).",
+    )
+    parser.add_argument(
+        "--tip_paper_clearance_m",
+        type=float,
+        default=0.001,
+        help="Minimum allowed end-effector height above the paper surface (m).",
     )
     parser.add_argument(
         "--arm_model",
@@ -1080,8 +1354,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ur5_paper_z_m",
         type=float,
-        default=0.18,
-        help="Top surface of the writing plane above the UR5 base/ground (m); default is 18 cm.",
+        default=0.65,
+        help="Top surface of the writing plane above the world floor (m); default is 65 cm.",
     )
     parser.add_argument(
         "--paper_offset_x_m",
@@ -1167,8 +1441,12 @@ def main(args: argparse.Namespace) -> None:
         mapper,
         max_step=args.max_step_m,
         interval=args.interval,
+        transition_step=args.transition_step_m,
+        transition_interval=args.transition_interval,
+        pen_lift_clearance=args.pen_lift_clearance_m,
         arm_base_z=args.arm_base_z_m,
         ground_clearance_m=args.ground_clearance_m,
+        tip_paper_clearance_m=args.tip_paper_clearance_m,
         keep_scene=args.keep_scene,
         client_port=args.client_port,
         scene_output=args.scene_output,
