@@ -7,8 +7,8 @@ rotated into the horizontal paper plane (90 degrees about the initial tool's
 local X axis), while the tip position follows the trajectory.  One draw object is created per stroke,
 and lift states never connect separate strokes.  This is still a
 simulation/visualization experiment: dynamics and real robot calibration are
-not inferred from it.  The default writing plane is 0.06 m above the UR5
-base/ground (a few centimetres, rather than the old 0.96 m test plane); the
+not inferred from it.  The default writing plane is 0.18 m above the UR5
+base/ground (approximately half the upper-arm height); the
 ``--ur5_paper_z_m`` option can override it after a reachability check.
 
 The script has an offline mode for validating CSV selection, coordinate
@@ -903,6 +903,8 @@ def run_live(
         "dynamics_enabled": False,
         "paper_top_z_m": ur5_paper_z,
         "paper_height_above_ground_m": ur5_paper_z,
+        "replay_max_step_m": max_step,
+        "replay_interval_s": interval,
         "paper_offset_x_m": paper_offset_x,
         "paper_offset_y_m": paper_offset_y,
         "tool_orientation_constraint": ur5["tool_orientation_constraint"],
@@ -953,8 +955,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not let simIK apply a partial solution when pose tolerances fail.",
     )
-    parser.add_argument("--max_step_m", type=float, default=0.002)
-    parser.add_argument("--interval", type=float, default=0.015)
+    parser.add_argument(
+        "--max_step_m",
+        type=float,
+        default=0.008,
+        help="Maximum replay segment length in metres; smaller is smoother but slower.",
+    )
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=0.04,
+        help="Delay between replay samples in seconds; larger is slower to watch.",
+    )
     parser.add_argument("--arm_base_z_m", type=float, default=0.18)
     parser.add_argument(
         "--arm_model",
@@ -970,8 +982,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ur5_paper_z_m",
         type=float,
-        default=0.06,
-        help="Top surface of the writing plane above the UR5 base/ground (m); default is 6 cm.",
+        default=0.18,
+        help="Top surface of the writing plane above the UR5 base/ground (m); default is 18 cm.",
     )
     parser.add_argument(
         "--paper_offset_x_m",
