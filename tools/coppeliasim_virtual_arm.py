@@ -2,10 +2,11 @@
 
 Live mode loads ``UR5.ttm`` from the CoppeliaSim installation, creates a
 simIK pose task for its six real joints, and moves the standard model's
-end-effector to each mapped paper point.  The visual tool's local Z axis is
-rotated into the horizontal paper plane (90 degrees about the initial tool's
-local X axis), while the tip position follows the trajectory.  One draw object is created per stroke,
-and lift states never connect separate strokes.  This is still a
+end-effector to each mapped paper point.  A rigid 48 mm by 6 mm-radius virtual
+Langhao brush bundle is fixed to the flange, with its local +Z axis constrained
+toward the paper.  Only contact writing leaves a visible trace; lift, travel,
+and descend motions are animated without drawing auxiliary paths.  One draw
+object is created per stroke, and lift states never connect separate strokes.  This is still a
 simulation/visualization experiment: dynamics and real robot calibration are
 not inferred from it.  The UR5 keeps its normal floor-mounted pose while the
 default writing plane is 0.65 m above the world floor; the
@@ -87,13 +88,13 @@ class CoordinateMapper:
     paper_height: float = 0.24
     paper_z: float = 0.015
     margin: float = 0.018
-    # B-BSMG H is a posture variable, not a robot world-Z coordinate.  The
-    # cross-paper bridge maps H=11..20 mm to Wang z=0..15 mm.  Expressing that
-    # displacement relative to the neutral/lifted H=20 mm pose gives a signed
-    # pressure coordinate in [-15, 0] mm: negative means brush compression.
-    posture_h_min_mm: float = 11.0
-    posture_h_neutral_mm: float = 20.0
-    max_brush_compression: float = 0.015
+    # Guo & Yan (2024) define H=0 at first paper contact and increase H as the
+    # robot descends.  Their Langhao brush bundle is L=48 mm, R=6 mm, and the
+    # collected writing range is H=11..20 mm.  Robot paper coordinates use the
+    # opposite sign, hence signed pressure z = -H/1000 metres.
+    posture_h_contact_mm: float = 0.0
+    posture_h_max_mm: float = 20.0
+    max_brush_compression: float = 0.020
     lift_height: float = 0.075
     # The CSV uses image/paper coordinates (y grows downwards).  CoppeliaSim's
     # standard top view is the reference view for writing, so the default
@@ -113,11 +114,12 @@ class CoordinateMapper:
             y_norm = 1.0 - y_norm
         world_x = -0.5 * self.paper_width + self.margin + x_norm * usable_x
         world_y = -0.5 * self.paper_height + self.margin + y_norm * usable_y
-        h_span = max(self.posture_h_neutral_mm - self.posture_h_min_mm, 1e-9)
-        pressure_progress = np.clip(
-            (self.posture_h_neutral_mm - row.z) / h_span, 0.0, 1.0
+        descending_h_m = np.clip(
+            (row.z - self.posture_h_contact_mm) / 1000.0,
+            0.0,
+            self.max_brush_compression,
         )
-        signed_pressure_z = -float(pressure_progress) * self.max_brush_compression
+        signed_pressure_z = -float(descending_h_m)
         if row.state in (2, 3):  # UP/TRANSITION: visibly clear the paper.
             world_z = self.paper_z + self.lift_height
         else:
@@ -335,6 +337,11 @@ def build_report(
         sum(1 for left, right in zip(points, points[1:]) if left.state not in (2, 3) and right.state not in (2, 3))
         for points in strokes.values()
     )
+    mapped_pressure_values = [
+        mapper.map_row(row).signed_pressure_z
+        for row in rows
+        if row.state not in (2, 3)
+    ]
     report = {
         "format": "coppeliasim_virtual_arm_replay_v1",
         "simulation_only": True,
@@ -355,21 +362,27 @@ def build_report(
             "source_x_bounds": [mapper.x_min, mapper.x_max],
             "source_y_bounds": [mapper.y_min, mapper.y_max],
             "source_z_bounds": [mapper.z_min, mapper.z_max],
-            "z_semantics": "signed_brush_compression_relative_to_H20",
-            "posture_h_range_mm": [
-                mapper.posture_h_min_mm,
-                mapper.posture_h_neutral_mm,
-            ],
+            "z_semantics": "signed_descent_from_H0_paper_contact",
+            "posture_h_contact_mm": mapper.posture_h_contact_mm,
+            "posture_h_max_mm": mapper.posture_h_max_mm,
             "signed_pressure_z_range_m": [
                 -mapper.max_brush_compression,
                 0.0,
+            ],
+            "active_mapped_pressure_z_range_m": [
+                min(mapped_pressure_values, default=0.0),
+                max(mapped_pressure_values, default=0.0),
             ],
         },
         "safety": {
             "no_cross_stroke_drawing": True,
             "lift_states": [2, 3],
             "actual_robot_ik": False,
-            "brush_physics": "virtual_linear_compression_only",
+            "brush_physics": False,
+            "rigid_virtual_pen": True,
+            "rigid_pen_bundle_length_m": 0.048,
+            "rigid_pen_bundle_radius_m": 0.006,
+            "air_motion_trails_visible": False,
         },
     }
     if provenance is not None:
@@ -649,20 +662,13 @@ def _load_ur5_ik(
             continue
     if last_link is None:
         last_link = shapes[-1]
-    # CoppeliaSim quaternions are [x, y, z, w].  The visual cylinder uses its
-    # local +Z axis as its long/tool axis.  Rotate the current UR5 terminal
-    # pose by 90 degrees in its *local* X direction.  Relative rotation is
-    # important here: a fixed world quaternion can be outside the reachable
-    # wrist configuration at the low writing plane, causing simIK to restore
-    # the old perpendicular pose after a failed solve.
+    # CoppeliaSim quaternions are [x, y, z, w].  The virtual pen and IK tip use
+    # local +Z as the pen axis.  A pi rotation about world X maps local +Z to
+    # world -Z, so the pen tip always points toward the horizontal paper.
     initial_tip_quaternion = [
         float(value) for value in sim.getObjectQuaternion(last_link, -1)
     ]
-    half = math.radians(90.0) * 0.5
-    local_quarter_turn = [math.sin(half), 0.0, 0.0, math.cos(half)]
-    paper_parallel_quaternion = _multiply_quaternions(
-        initial_tip_quaternion, local_quarter_turn
-    )
+    pen_down_quaternion = [1.0, 0.0, 0.0, 0.0]
     tip = sim.createDummy(0.010, 12 * [0.0])
     sim.setObjectParent(tip, last_link, False)
     tip_position = sim.getObjectPosition(last_link, -1)
@@ -674,19 +680,17 @@ def _load_ur5_ik(
     sim.setObjectQuaternion(tip, -1, initial_tip_quaternion)
     target = sim.createDummy(0.012, 12 * [0.0])
     sim.setObjectPosition(target, -1, tip_position)
-    sim.setObjectQuaternion(target, -1, paper_parallel_quaternion)
+    sim.setObjectQuaternion(target, -1, pen_down_quaternion)
     environment = ik.createEnvironment()
     group = ik.createGroup(environment)
-    # A paper-parallel tool only needs position plus its two tilt angles.  The
-    # rotation around the paper normal (gamma) is deliberately left free; it
-    # otherwise makes many low-plane points fail even though the tool normal is
-    # correctly parallel to the paper.
+    # Alpha/beta constrain the downward pen axis; csv_pose additionally uses
+    # gamma around that axis.  Neither mode permits an upward-pointing pen.
     if orientation_mode == "csv_pose":
         orientation_constraints = ik.constraint_pose
         orientation_constraint_name = "csv_pose_full_xyz"
     else:
         orientation_constraints = ik.constraint_position | ik.constraint_alpha_beta
-        orientation_constraint_name = "paper_parallel_alpha_beta"
+        orientation_constraint_name = "pen_down_alpha_beta"
     add_result = ik.addElementFromScene(
         environment, group, root, tip, target, orientation_constraints
     )
@@ -725,7 +729,7 @@ def _load_ur5_ik(
         "terminal_shape": last_link,
         "tip": tip,
         "target": target,
-        "tool_quaternion_xyzw": paper_parallel_quaternion,
+        "tool_quaternion_xyzw": pen_down_quaternion,
         "tool_orientation_constraint": orientation_constraint_name,
         "orientation_mode": orientation_mode,
         "initial_tip_quaternion_xyzw": initial_tip_quaternion,
@@ -816,18 +820,42 @@ def _add_paper_reference(
     return drawing
 
 
-def _add_ur5_tool(sim, tip: int):
+def _set_tool_visible(sim, tool: int, visible: bool) -> None:
     try:
-        tool = sim.createPureShape(sim.primitiveshape_cylinder, 0, [0.012, 0.012, 0.06], 0, [])
+        sim.setObjectInt32Param(
+            tool,
+            sim.objintparam_visibility_layer,
+            1 if visible else 0,
+        )
+    except Exception:
+        pass
+
+
+def _add_ur5_tool(sim, tip: int, brush_length: float, brush_radius: float = 0.006):
+    """Attach one rigid paper-length brush bundle to the UR5 flange dummy."""
+    try:
+        diameter = 2.0 * float(brush_radius)
+        tool = sim.createPureShape(
+            sim.primitiveshape_cylinder,
+            0,
+            [diameter, diameter, float(brush_length)],
+            0,
+            [],
+        )
     except Exception:
         tool = sim.createDummy(0.014, 12 * [0.0])
     sim.setObjectParent(tool, tip, False)
-    sim.setObjectPosition(tool, -1, sim.getObjectPosition(tip, -1))
-    sim.setObjectQuaternion(tool, -1, sim.getObjectQuaternion(tip, -1))
+    # The cylinder starts at the flange and extends along local +Z.  IK maps
+    # that axis to world -Z, so its fixed distal endpoint is always downward.
+    sim.setObjectPosition(tool, tip, [0.0, 0.0, 0.5 * float(brush_length)])
+    sim.setObjectQuaternion(tool, tip, [0.0, 0.0, 0.0, 1.0])
     try:
         sim.setShapeColor(tool, None, sim.colorcomponent_ambient_diffuse, [0.12, 0.12, 0.12])
     except Exception:
         pass
+    # Do not briefly show the stock model's arbitrary initial wrist pose.  The
+    # rigid pen becomes visible only after the first accepted downward IK pose.
+    _set_tool_visible(sim, tool, False)
     return tool
 
 
@@ -877,13 +905,9 @@ def run_live(
     strokes = mapped_strokes(rows, mapper)
     colors = ([0.05, 0.35, 0.95], [0.95, 0.18, 0.08], [0.08, 0.65, 0.22], [0.65, 0.2, 0.8])
     trajectory_drawings = []
-    planned_drawings = []
     for index, _ in enumerate(strokes):
         trajectory_drawings.append(
             _add_drawing(sim, sim.drawing_lines, 3, 200000, colors[index % len(colors)])
-        )
-        planned_drawings.append(
-            _add_drawing(sim, sim.drawing_lines, 1, 200000, [0.75, 0.75, 0.75])
         )
     ur5 = _load_ur5_ik(
         sim,
@@ -925,16 +949,9 @@ def run_live(
     # The CSV pressure coordinate may be negative.  The rigid UR5 flange is
     # therefore separated from the virtual paper contact point by a positive
     # brush/TCP length instead of being commanded to the pressure coordinate.
-    _add_ur5_tool(sim, ur5["tip"])
-    virtual_brush_drawing = _add_drawing(
-        sim, sim.drawing_lines, 7, 2, [0.08, 0.08, 0.08]
-    )
+    rigid_pen = _add_ur5_tool(sim, ur5["tip"], virtual_brush_length)
+    rigid_pen_visible = False
     tip_drawing = _add_drawing(sim, sim.drawing_spherepoints, 0.008, 200000, [0.9, 0.1, 0.05])
-    phase_drawings = {
-        "lift": _add_drawing(sim, sim.drawing_lines, 4, 200000, [1.0, 0.72, 0.05]),
-        "travel": _add_drawing(sim, sim.drawing_lines, 3, 200000, [0.1, 0.55, 1.0]),
-        "descend": _add_drawing(sim, sim.drawing_lines, 4, 200000, [0.1, 0.8, 0.25]),
-    }
     previous_by_stroke: Dict[int, Tuple[float, float, float]] = {}
     offset = np.asarray(
         [paper_offset_x, paper_offset_y, float(ur5_paper_z - mapper.paper_z)],
@@ -966,6 +983,8 @@ def run_live(
     paper_rejected_steps = 0
     min_attempted_tip_paper_clearance = float("inf")
     min_tip_paper_clearance = float("inf")
+    upward_pen_rejected_steps = 0
+    minimum_pen_downward_component = float("inf")
 
     def flange_target(point: WorldPoint) -> np.ndarray:
         target = np.asarray(point.position, dtype=np.float64) + offset
@@ -974,32 +993,6 @@ def run_live(
 
     def paper_trace(position: Sequence[float]) -> List[float]:
         return [float(position[0]), float(position[1]), float(ur5_paper_z) + 0.001]
-
-    def update_virtual_brush(flange_position: Sequence[float]) -> None:
-        try:
-            sim.addDrawingObjectItem(virtual_brush_drawing, None)
-            contact = paper_trace(flange_position)
-            sim.addDrawingObjectItem(
-                virtual_brush_drawing, list(flange_position) + contact
-            )
-        except Exception:
-            pass
-
-    # Draw the requested path before IK starts.  It is deliberately separate
-    # from the measured tip path: a failed IK step must not make a short stroke
-    # (for example the top horizontal of ``止``) disappear from the scene.
-    for stroke_index, (_, raw_points) in enumerate(strokes.items()):
-        dense_points = interpolate_stroke(raw_points, max_step)
-        draw_points = [point for point in dense_points if point.state not in (2, 3)]
-        if len(draw_points) < 2:
-            draw_points = dense_points
-            planned_fallback_strokes += 1
-        for left, right in zip(draw_points, draw_points[1:]):
-            left_position = paper_trace(np.asarray(left.position, dtype=np.float64) + offset)
-            right_position = paper_trace(np.asarray(right.position, dtype=np.float64) + offset)
-            sim.addDrawingObjectItem(
-                planned_drawings[stroke_index], list(left_position) + list(right_position)
-            )
 
     def solve_target(
         target_position: np.ndarray,
@@ -1013,6 +1006,8 @@ def run_live(
         nonlocal min_body_geometry_z, min_attempted_body_geometry_z
         nonlocal paper_target_clamp_steps, paper_rejected_steps
         nonlocal min_attempted_tip_paper_clearance, min_tip_paper_clearance
+        nonlocal upward_pen_rejected_steps, minimum_pen_downward_component
+        nonlocal rigid_pen_visible
         target_position = np.asarray(target_position, dtype=np.float64).copy()
         minimum_flange_clearance = max(
             float(tip_paper_clearance_m),
@@ -1045,6 +1040,17 @@ def run_live(
             ur5["environment"], ur5["ik_tip"], ik.handle_world
         )
         attempted_tip_position = np.asarray(attempted_tip_pose[:3], dtype=np.float64)
+        attempted_axis = _rotate_vector_by_quaternion(
+            attempted_tip_pose[3:7], [0.0, 0.0, 1.0]
+        )
+        attempted_axis /= max(float(np.linalg.norm(attempted_axis)), 1e-12)
+        # The fitted alpha/beta range is at most about 11.2 degrees jointly.
+        # Twenty degrees leaves numerical IK tolerance but forbids a sideways
+        # or upward pen under every circumstance.
+        pen_points_down = float(-attempted_axis[2]) >= math.cos(math.radians(20.0))
+        if not pen_points_down:
+            status = 0
+            upward_pen_rejected_steps += 1
         attempted_tip_clearance = float(attempted_tip_position[2] - ur5_paper_z)
         min_attempted_tip_paper_clearance = min(
             min_attempted_tip_paper_clearance, attempted_tip_clearance
@@ -1055,6 +1061,9 @@ def run_live(
             paper_rejected_steps += 1
         if status == 1:
             ik.syncToSim(ur5["environment"], [ur5["group"]])
+            if not rigid_pen_visible:
+                _set_tool_visible(sim, rigid_pen, True)
+                rigid_pen_visible = True
         attempted_link_z = [
             float(sim.getObjectPosition(shape, -1)[2])
             for shape in ur5["body_shapes"]
@@ -1097,7 +1106,6 @@ def run_live(
             min_body_geometry_z, min(final_geometry_z, default=float("inf"))
         )
         actual_position = np.asarray(sim.getObjectPosition(ur5["tip"], -1), dtype=np.float64)
-        update_virtual_brush(actual_position)
         min_tip_paper_clearance = min(
             min_tip_paper_clearance,
             float(actual_position[2] - ur5_paper_z),
@@ -1105,6 +1113,14 @@ def run_live(
         residual = float(np.linalg.norm(actual_position - target_position))
         max_residual = max(max_residual, residual)
         actual_quaternion = sim.getObjectQuaternion(ur5["tip"], -1)
+        actual_axis = _rotate_vector_by_quaternion(
+            actual_quaternion, [0.0, 0.0, 1.0]
+        )
+        actual_axis /= max(float(np.linalg.norm(actual_axis)), 1e-12)
+        if rigid_pen_visible:
+            minimum_pen_downward_component = min(
+                minimum_pen_downward_component, float(-actual_axis[2])
+            )
         max_orientation_residual = max(
             max_orientation_residual,
             _quaternion_angle_error(actual_quaternion, desired_quaternion),
@@ -1161,11 +1177,8 @@ def run_live(
             motion_phase_steps[phase] += 1
             if status != 1:
                 motion_phase_failures[phase] += 1
-            if float(np.linalg.norm(actual - previous_actual)) > 1e-7:
-                sim.addDrawingObjectItem(
-                    phase_drawings[phase],
-                    previous_actual.tolist() + actual.tolist(),
-                )
+            # Lift/travel/descend motion is executed and timed, but no ink or
+            # auxiliary path is drawn while the rigid pen is off the paper.
             previous_actual = actual
             time.sleep(max(float(transition_interval), 0.0))
         return previous_actual
@@ -1330,10 +1343,12 @@ def run_live(
         "tool_orientation_constraint": ur5["tool_orientation_constraint"],
         "orientation_mode": orientation_mode,
         "orientation_mapping": (
-            "local_xyz_relative_to_paper_parallel_base"
+            "local_xyz_relative_to_pen_down_base"
             if orientation_mode == "csv_pose"
-            else "fixed_paper_parallel"
+            else "fixed_pen_down_with_free_gamma"
         ),
+        "rigid_pen_attachment": "fixed_to_ur5_flange_dummy",
+        "air_motion_trails_visible": False,
         "ik_allow_error": not strict_ik,
         "tool_quaternion_xyzw": ur5["tool_quaternion_xyzw"],
         "initial_tip_quaternion_xyzw": ur5["initial_tip_quaternion_xyzw"],
@@ -1361,6 +1376,10 @@ def run_live(
         ),
         "paper_target_clamp_steps": paper_target_clamp_steps,
         "paper_rejected_steps": paper_rejected_steps,
+        "upward_pen_rejected_steps": upward_pen_rejected_steps,
+        "minimum_pen_axis_downward_component": minimum_pen_downward_component,
+        "pen_tip_points_down": minimum_pen_downward_component > 0.0,
+        "rigid_pen_visible_after_first_valid_ik": rigid_pen_visible,
         "minimum_attempted_tip_paper_clearance_m": min_attempted_tip_paper_clearance,
         "minimum_tip_paper_clearance_m": min_tip_paper_clearance,
         "tip_stays_above_paper": (
@@ -1389,10 +1408,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--orientation_mode",
         choices=("paper_parallel", "csv_pose"),
-        default="paper_parallel",
+        default="csv_pose",
         help=(
-            "paper_parallel keeps the legacy tilt-only target; csv_pose applies "
-            "each CSV alpha/beta/gamma as local XYZ radians relative to that base."
+            "paper_parallel keeps a fixed downward pen axis with free gamma; "
+            "csv_pose applies CSV alpha/beta/gamma relative to the downward base."
         ),
     )
     parser.add_argument(
@@ -1421,7 +1440,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--transition_interval",
         type=float,
-        default=0.08,
+        default=0.048,
         help="Delay between lift/travel/descend samples (s).",
     )
     parser.add_argument(
@@ -1435,18 +1454,17 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.08,
         help=(
-            "Simulation-only TCP-to-paper brush length (m). Negative model z "
-            "compresses this virtual brush instead of moving the UR5 flange "
-            "below the paper. Replace after real TCP/brush calibration."
+            "Fixed Langhao brush-bundle length (m). Guo & Yan (2024) use "
+            "L=48 mm and R=6 mm. The rigid pen is fixed to the UR5 flange."
         ),
     )
     parser.add_argument(
         "--max_brush_compression_m",
         type=float,
-        default=0.015,
+        default=0.020,
         help=(
-            "Maximum signed compression magnitude at B-BSMG H=11 mm; H=20 mm "
-            "is zero pressure. The default follows the simulation bridge only."
+            "Maximum B-BSMG descending depth (m). H=0 is first paper contact; "
+            "the paper experiment uses H=11..20 mm."
         ),
     )
     parser.add_argument(
