@@ -671,16 +671,31 @@ def _load_ur5_ik(
             continue
     if last_link is None:
         last_link = shapes[-1]
+    # The official model exposes a dedicated attachment frame named
+    # ``connection`` at the black tool-mount point.  link7_visible is only a
+    # cosmetic shape whose origin lies inside the wrist housing.
+    tool_mount = None
+    for handle in sim.getObjectsInTree(root, sim.handle_all, 0):
+        try:
+            alias = sim.getObjectAlias(handle, 1).lower().rstrip("/")
+        except Exception:
+            continue
+        if alias.endswith("/connection") or alias == "connection":
+            tool_mount = handle
+            break
+    if tool_mount is None:
+        raise RuntimeError("Official UR5 model has no tool connection frame")
     # CoppeliaSim quaternions are [x, y, z, w].  The virtual pen and IK tip use
     # local +Z as the pen axis.  A pi rotation about world X maps local +Z to
     # world -Z, so the pen tip always points toward the horizontal paper.
     initial_tip_quaternion = [
-        float(value) for value in sim.getObjectQuaternion(last_link, -1)
+        float(value) for value in sim.getObjectQuaternion(tool_mount, -1)
     ]
     pen_down_quaternion = [1.0, 0.0, 0.0, 0.0]
     tip = sim.createDummy(0.010, 12 * [0.0])
-    sim.setObjectParent(tip, last_link, False)
-    tip_position = sim.getObjectPosition(last_link, -1)
+    sim.setObjectAlias(tip, "penMountIKTip")
+    sim.setObjectParent(tip, tool_mount, False)
+    tip_position = sim.getObjectPosition(tool_mount, -1)
     sim.setObjectPosition(tip, -1, tip_position)
     # Keep the IK tip aligned with the actual terminal link.  The previous
     # implementation put the 90-degree rotation on the child tip itself, which
@@ -736,6 +751,8 @@ def _load_ur5_ik(
         "body_shapes": body_shapes,
         "body_shape_bounds": body_shape_bounds,
         "terminal_shape": last_link,
+        "tool_mount": tool_mount,
+        "tool_mount_alias": sim.getObjectAlias(tool_mount, 1),
         "tip": tip,
         "target": target,
         "tool_quaternion_xyzw": pen_down_quaternion,
@@ -843,46 +860,74 @@ def _set_tool_visible(sim, tools: Sequence[int], visible: bool) -> None:
             pass
 
 
-def _add_ur5_tool(sim, tip: int, brush_length: float, brush_radius: float = 0.006):
+def _add_ur5_tool(
+    sim,
+    tip: int,
+    brush_length: float,
+    handle_length: float,
+    brush_radius: float = 0.006,
+):
     """Attach a visible rigid holder, brush body and distal tip marker."""
     diameter = 2.0 * float(brush_radius)
     holder = sim.createPrimitiveShape(
         sim.primitiveshape_cuboid, [0.050, 0.036, 0.008], 0
     )
-    body_length = max(float(brush_length) - 0.008, 0.001)
-    body = sim.createPrimitiveShape(
-        sim.primitiveshape_cylinder, [diameter, diameter, body_length], 0
+    handle_diameter = 0.010
+    handle_shape = sim.createPrimitiveShape(
+        sim.primitiveshape_cylinder,
+        [handle_diameter, handle_diameter, float(handle_length)],
+        0,
     )
-    nib = sim.createPrimitiveShape(
-        sim.primitiveshape_cone, [diameter, diameter, 0.008], 0
+    brush = sim.createPrimitiveShape(
+        sim.primitiveshape_cone,
+        [diameter, diameter, float(brush_length)],
+        0,
     )
     pen_tip = sim.createDummy(0.006, 12 * [0.0])
-    objects = [holder, body, nib, pen_tip]
-    aliases = ["virtualPenHolder", "virtualPenBody", "virtualPenNib", "virtualPenTip"]
-    for handle, alias in zip(objects, aliases):
-        sim.setObjectAlias(handle, alias)
-        sim.setObjectParent(handle, tip, False)
-        sim.setObjectQuaternion(handle, tip, [0.0, 0.0, 0.0, 1.0])
+    objects = [holder, handle_shape, brush, pen_tip]
+    aliases = [
+        "virtualPenHolder",
+        "virtualPenHandle",
+        "virtualPenBrushBundle",
+        "virtualPenTip",
+    ]
+    for obj, alias in zip(objects, aliases):
+        sim.setObjectAlias(obj, alias)
+        sim.setObjectParent(obj, tip, False)
+        sim.setObjectQuaternion(obj, tip, [0.0, 0.0, 0.0, 1.0])
     # The holder's broad XY face is parallel to paper.  All pen components
     # extend along the flange dummy's local +Z, constrained to world -Z.
     sim.setObjectPosition(holder, tip, [0.0, 0.0, 0.004])
-    sim.setObjectPosition(body, tip, [0.0, 0.0, 0.008 + 0.5 * body_length])
-    sim.setObjectPosition(nib, tip, [0.0, 0.0, float(brush_length) - 0.004])
-    sim.setObjectPosition(pen_tip, tip, [0.0, 0.0, float(brush_length)])
-    for handle, color in (
+    sim.setObjectPosition(
+        handle_shape, tip, [0.0, 0.0, 0.5 * float(handle_length)]
+    )
+    sim.setObjectPosition(
+        brush,
+        tip,
+        [0.0, 0.0, float(handle_length) + 0.5 * float(brush_length)],
+    )
+    total_length = float(handle_length) + float(brush_length)
+    sim.setObjectPosition(pen_tip, tip, [0.0, 0.0, total_length])
+    for shape, color in (
         (holder, [0.18, 0.18, 0.20]),
-        (body, [0.38, 0.16, 0.06]),
-        (nib, [0.04, 0.04, 0.04]),
+        (handle_shape, [0.42, 0.18, 0.06]),
+        (brush, [0.04, 0.04, 0.04]),
     ):
-        sim.setShapeColor(handle, None, sim.colorcomponent_ambient_diffuse, color)
+        sim.setShapeColor(shape, None, sim.colorcomponent_ambient_diffuse, color)
         try:
-            sim.setObjectInt32Param(handle, sim.shapeintparam_static, 1)
+            sim.setObjectInt32Param(shape, sim.shapeintparam_static, 1)
         except Exception:
             pass
     # Do not briefly show the stock model's arbitrary initial wrist pose.  The
     # rigid pen becomes visible only after the first accepted downward IK pose.
     _set_tool_visible(sim, objects, False)
-    return {"objects": objects, "pen_tip": pen_tip}
+    return {
+        "objects": objects,
+        "pen_tip": pen_tip,
+        "handle_length_m": float(handle_length),
+        "brush_bundle_length_m": float(brush_length),
+        "tcp_length_m": total_length,
+    }
 
 
 def run_live(
@@ -895,6 +940,7 @@ def run_live(
     transition_interval: float,
     pen_lift_clearance: float,
     virtual_brush_length: float,
+    virtual_pen_handle_length: float,
     arm_base_z: float,
     ground_clearance_m: float,
     tip_paper_clearance_m: float,
@@ -995,7 +1041,13 @@ def run_live(
     # The CSV pressure coordinate may be negative.  The rigid UR5 flange is
     # therefore separated from the virtual paper contact point by a positive
     # brush/TCP length instead of being commanded to the pressure coordinate.
-    rigid_pen = _add_ur5_tool(sim, ur5["tip"], virtual_brush_length)
+    rigid_pen = _add_ur5_tool(
+        sim,
+        ur5["tip"],
+        virtual_brush_length,
+        virtual_pen_handle_length,
+    )
+    virtual_pen_tcp_length = rigid_pen["tcp_length_m"]
     rigid_pen_visible = False
     tip_drawing = _add_drawing(sim, sim.drawing_spherepoints, 0.008, 200000, [0.9, 0.1, 0.05])
     previous_by_stroke: Dict[int, Tuple[float, float, float]] = {}
@@ -1036,7 +1088,7 @@ def run_live(
 
     def flange_target(point: WorldPoint) -> np.ndarray:
         target = np.asarray(point.position, dtype=np.float64) + offset
-        target[2] += float(virtual_brush_length)
+        target[2] += float(virtual_pen_tcp_length)
         return target
 
     def paper_trace(position: Sequence[float]) -> List[float]:
@@ -1060,7 +1112,7 @@ def run_live(
         target_position = np.asarray(target_position, dtype=np.float64).copy()
         minimum_flange_clearance = max(
             float(tip_paper_clearance_m),
-            float(virtual_brush_length) - float(mapper.max_brush_compression),
+            float(virtual_pen_tcp_length) - float(mapper.max_brush_compression),
         )
         minimum_tip_z = float(ur5_paper_z) + minimum_flange_clearance
         if float(target_position[2]) < minimum_tip_z:
@@ -1397,14 +1449,16 @@ def run_live(
         "transition_step_m": transition_step,
         "transition_interval_s": transition_interval,
         "pen_lift_clearance_m": pen_lift_clearance,
-        "virtual_brush_length_m": virtual_brush_length,
+        "virtual_brush_bundle_length_m": virtual_brush_length,
+        "virtual_pen_handle_length_m": virtual_pen_handle_length,
+        "virtual_pen_tcp_length_m": virtual_pen_tcp_length,
         "virtual_brush_max_compression_m": mapper.max_brush_compression,
         "signed_pressure_z_range_m": [
             -mapper.max_brush_compression,
             0.0,
         ],
         "mechanical_target_semantics": (
-            "paper_contact_z + signed_pressure_z + virtual_brush_length"
+            "paper_contact_z + signed_pressure_z + fixed_pen_tcp_length"
         ),
         "motion_phase_steps": motion_phase_steps,
         "motion_phase_failures": motion_phase_failures,
@@ -1417,7 +1471,8 @@ def run_live(
             if orientation_mode == "csv_pose"
             else "fixed_pen_down_with_free_gamma"
         ),
-        "rigid_pen_attachment": "fixed_to_ur5_flange_dummy",
+        "rigid_pen_attachment": "fixed_to_official_ur5_connection_frame",
+        "rigid_pen_mount_source": ur5["tool_mount_alias"],
         "air_motion_trails_visible": False,
         "ik_allow_error": not strict_ik,
         "tool_quaternion_xyzw": ur5["tool_quaternion_xyzw"],
@@ -1443,7 +1498,7 @@ def run_live(
         "tip_paper_clearance_m": tip_paper_clearance_m,
         "minimum_required_flange_paper_clearance_m": max(
             float(tip_paper_clearance_m),
-            float(virtual_brush_length) - float(mapper.max_brush_compression),
+            float(virtual_pen_tcp_length) - float(mapper.max_brush_compression),
         ),
         "paper_target_clamp_steps": paper_target_clamp_steps,
         "paper_rejected_steps": paper_rejected_steps,
@@ -1526,10 +1581,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--virtual_brush_length_m",
         type=float,
-        default=0.08,
+        default=0.048,
         help=(
             "Fixed Langhao brush-bundle length (m). Guo & Yan (2024) use "
-            "L=48 mm and R=6 mm. The rigid pen is fixed to the UR5 flange."
+            "L=48 mm and R=6 mm. The rigid pen is fixed to the official "
+            "UR5 connection frame."
+        ),
+    )
+    parser.add_argument(
+        "--virtual_pen_handle_length_m",
+        type=float,
+        default=0.060,
+        help=(
+            "Visible rigid pen-handle length between the UR5 connection mount "
+            "and the 48 mm brush bundle (m)."
         ),
     )
     parser.add_argument(
@@ -1641,9 +1706,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def main(args: argparse.Namespace) -> None:
-    if args.virtual_brush_length_m <= args.max_brush_compression_m:
+    total_pen_length = (
+        args.virtual_pen_handle_length_m + args.virtual_brush_length_m
+    )
+    if total_pen_length <= args.max_brush_compression_m:
         raise ValueError(
-            "virtual_brush_length_m must exceed max_brush_compression_m so "
+            "total rigid pen length must exceed max_brush_compression_m so "
             "the rigid UR5 flange remains above the paper"
         )
     rows = load_rows(args.trajectory_csv, character=args.character, sample_id=args.sample_id)
@@ -1688,6 +1756,7 @@ def main(args: argparse.Namespace) -> None:
         transition_interval=args.transition_interval,
         pen_lift_clearance=args.pen_lift_clearance_m,
         virtual_brush_length=args.virtual_brush_length_m,
+        virtual_pen_handle_length=args.virtual_pen_handle_length_m,
         arm_base_z=args.arm_base_z_m,
         ground_clearance_m=args.ground_clearance_m,
         tip_paper_clearance_m=args.tip_paper_clearance_m,

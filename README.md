@@ -2003,6 +2003,7 @@ PYTHONPATH=. /home/robot/miniconda3/envs/ddpm/bin/python -u \
   --character 武 --sample_id 武_fake_sim \
   --output_dir outputs/coppeliasim_wu_latest_csv_pose_v1 \
   --orientation_mode csv_pose --strict_ik \
+  --virtual_pen_handle_length_m 0.060 --virtual_brush_length_m 0.048 \
   --interval 0.015 --max_step_m 0.002 --client_port 23000 \
   --keep_scene
 ```
@@ -2030,14 +2031,17 @@ UR5 的 IK 目标为：
 法兰 z = 纸面 z + 虚拟笔长 + 有符号压力 z
 ```
 
-虚拟笔采用论文实验的狼毫笔锋尺寸 `L=48 mm, R=6 mm`，并作为刚性工具固定
-在法兰末端，不渲染毛笔柔性或长度变化。因此接触书写时法兰位于纸面上方
-28–37 mm。输出目录的 `mapped_pressure_trajectory.csv` 同时保存
+虚拟笔的笔毛部分采用论文实验的狼毫笔锋尺寸 `L=48 mm, R=6 mm`，并在其上方
+增加默认 `60 mm` 的可见刚性笔杆，总 TCP 长度为 `108 mm`。整个工具固定在官方
+UR5 模型的黑色 `/UR5/connection` 工具连接点外侧，而不是固定在
+`link7_visible` 的几何中心；因此笔身不会再藏入腕部模型。仿真不渲染毛笔柔性
+或长度变化。接触书写时连接点位于纸面上方约 `88–97 mm`。输出目录的
+`mapped_pressure_trajectory.csv` 同时保存
 `original_h_mm` 与负的 `z`，防止姿态 H、压力坐标和机器人 TCP 坐标混淆。
 笔轴始终指向纸面；抬笔、笔间运笔和落笔动作照常执行，但只在接触书写阶段
 显示墨迹，不显示空中运动轨迹。真实执行前仍须用实际装夹长度和 TCP 标定替换。
 
 回放默认调用 `sim.startSimulation()`，因此 CoppeliaSim 工具栏会显示运行状态；
 仅在调试远程 IK 时才使用 `--no_start_simulation`。场景中显式创建与法兰固定的
-夹持板、笔体、笔锋和 `virtualPenTip`，夹持板平面与纸面平行、笔轴朝世界负 Z。
+夹持板、笔杆、笔毛和 `virtualPenTip`，夹持板平面与纸面平行、笔轴朝世界负 Z。
 墨迹坐标取实际 `virtualPenTip` 的 x/y 并投影到纸面，而不是使用法兰或 IK dummy。
