@@ -67,6 +67,7 @@ class PoseRow:
 class WorldPoint:
     position: Tuple[float, float, float]
     orientation: Tuple[float, float, float]
+    signed_pressure_z: float
     state: int
     stroke_id: int
     point_id: int
@@ -86,8 +87,13 @@ class CoordinateMapper:
     paper_height: float = 0.24
     paper_z: float = 0.015
     margin: float = 0.018
-    contact_clearance: float = 0.004
-    z_height: float = 0.045
+    # B-BSMG H is a posture variable, not a robot world-Z coordinate.  The
+    # cross-paper bridge maps H=11..20 mm to Wang z=0..15 mm.  Expressing that
+    # displacement relative to the neutral/lifted H=20 mm pose gives a signed
+    # pressure coordinate in [-15, 0] mm: negative means brush compression.
+    posture_h_min_mm: float = 11.0
+    posture_h_neutral_mm: float = 20.0
+    max_brush_compression: float = 0.015
     lift_height: float = 0.075
     # The CSV uses image/paper coordinates (y grows downwards).  CoppeliaSim's
     # standard top view is the reference view for writing, so the default
@@ -99,7 +105,6 @@ class CoordinateMapper:
     def map_row(self, row: PoseRow) -> WorldPoint:
         x_span = max(self.x_max - self.x_min, 1e-9)
         y_span = max(self.y_max - self.y_min, 1e-9)
-        z_span = max(self.z_max - self.z_min, 1e-9)
         usable_x = self.paper_width - 2.0 * self.margin
         usable_y = self.paper_height - 2.0 * self.margin
         x_norm = (row.x - self.x_min) / x_span
@@ -108,14 +113,22 @@ class CoordinateMapper:
             y_norm = 1.0 - y_norm
         world_x = -0.5 * self.paper_width + self.margin + x_norm * usable_x
         world_y = -0.5 * self.paper_height + self.margin + y_norm * usable_y
-        z_norm = (row.z - self.z_min) / z_span
+        h_span = max(self.posture_h_neutral_mm - self.posture_h_min_mm, 1e-9)
+        pressure_progress = np.clip(
+            (self.posture_h_neutral_mm - row.z) / h_span, 0.0, 1.0
+        )
+        signed_pressure_z = -float(pressure_progress) * self.max_brush_compression
         if row.state in (2, 3):  # UP/TRANSITION: visibly clear the paper.
             world_z = self.paper_z + self.lift_height
         else:
-            world_z = self.paper_z + self.contact_clearance + z_norm * self.z_height
+            # This is the virtual brush contact coordinate.  A separate TCP
+            # offset is added for UR5 IK so its rigid flange never goes below
+            # the paper when pressure_z is negative.
+            world_z = self.paper_z + signed_pressure_z
         return WorldPoint(
             position=(float(world_x), float(world_y), float(world_z)),
             orientation=(float(row.alpha), float(row.beta), float(row.gamma)),
+            signed_pressure_z=float(signed_pressure_z),
             state=int(row.state),
             stroke_id=row.stroke_id,
             point_id=row.point_id,
@@ -296,6 +309,10 @@ def interpolate_stroke(points: Sequence[WorldPoint], max_step: float) -> List[Wo
                 WorldPoint(
                     position=position,
                     orientation=orientation,
+                    signed_pressure_z=(
+                        (1.0 - ratio) * left.signed_pressure_z
+                        + ratio * right.signed_pressure_z
+                    ),
                     state=right.state,
                     stroke_id=right.stroke_id,
                     point_id=right.point_id,
@@ -338,12 +355,21 @@ def build_report(
             "source_x_bounds": [mapper.x_min, mapper.x_max],
             "source_y_bounds": [mapper.y_min, mapper.y_max],
             "source_z_bounds": [mapper.z_min, mapper.z_max],
+            "z_semantics": "signed_brush_compression_relative_to_H20",
+            "posture_h_range_mm": [
+                mapper.posture_h_min_mm,
+                mapper.posture_h_neutral_mm,
+            ],
+            "signed_pressure_z_range_m": [
+                -mapper.max_brush_compression,
+                0.0,
+            ],
         },
         "safety": {
             "no_cross_stroke_drawing": True,
             "lift_states": [2, 3],
             "actual_robot_ik": False,
-            "brush_physics": False,
+            "brush_physics": "virtual_linear_compression_only",
         },
     }
     if provenance is not None:
@@ -386,6 +412,44 @@ def save_offline_preview(
     (output_dir / "trajectory_report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+
+def save_pressure_trajectory(
+    rows: Sequence[PoseRow], mapper: CoordinateMapper, output_dir: Path
+) -> Path:
+    """Export the pressure-space trajectory without overwriting source H."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "mapped_pressure_trajectory.csv"
+    fieldnames = [
+        "character", "sample_id", "stroke_id", "point_id", "state",
+        "x_paper_m", "y_paper_m", "z", "z_unit", "z_semantics",
+        "original_h_mm", "alpha", "beta", "gamma", "angle_unit",
+    ]
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            point = mapper.map_row(row)
+            writer.writerow(
+                {
+                    "character": row.character,
+                    "sample_id": row.sample_id,
+                    "stroke_id": row.stroke_id,
+                    "point_id": row.point_id,
+                    "state": row.state,
+                    "x_paper_m": point.position[0],
+                    "y_paper_m": point.position[1],
+                    "z": point.signed_pressure_z,
+                    "z_unit": "m",
+                    "z_semantics": "negative_brush_compression",
+                    "original_h_mm": row.z,
+                    "alpha": row.alpha,
+                    "beta": row.beta,
+                    "gamma": row.gamma,
+                    "angle_unit": "rad",
+                }
+            )
+    return path
 
 
 def _add_drawing(sim, drawing_type: int, size: float, max_items: int, color: Sequence[float]):
@@ -776,6 +840,7 @@ def run_live(
     transition_step: float,
     transition_interval: float,
     pen_lift_clearance: float,
+    virtual_brush_length: float,
     arm_base_z: float,
     ground_clearance_m: float,
     tip_paper_clearance_m: float,
@@ -857,7 +922,13 @@ def run_live(
         center_x=paper_offset_x,
         center_y=paper_offset_y,
     )
+    # The CSV pressure coordinate may be negative.  The rigid UR5 flange is
+    # therefore separated from the virtual paper contact point by a positive
+    # brush/TCP length instead of being commanded to the pressure coordinate.
     _add_ur5_tool(sim, ur5["tip"])
+    virtual_brush_drawing = _add_drawing(
+        sim, sim.drawing_lines, 7, 2, [0.08, 0.08, 0.08]
+    )
     tip_drawing = _add_drawing(sim, sim.drawing_spherepoints, 0.008, 200000, [0.9, 0.1, 0.05])
     phase_drawings = {
         "lift": _add_drawing(sim, sim.drawing_lines, 4, 200000, [1.0, 0.72, 0.05]),
@@ -896,6 +967,24 @@ def run_live(
     min_attempted_tip_paper_clearance = float("inf")
     min_tip_paper_clearance = float("inf")
 
+    def flange_target(point: WorldPoint) -> np.ndarray:
+        target = np.asarray(point.position, dtype=np.float64) + offset
+        target[2] += float(virtual_brush_length)
+        return target
+
+    def paper_trace(position: Sequence[float]) -> List[float]:
+        return [float(position[0]), float(position[1]), float(ur5_paper_z) + 0.001]
+
+    def update_virtual_brush(flange_position: Sequence[float]) -> None:
+        try:
+            sim.addDrawingObjectItem(virtual_brush_drawing, None)
+            contact = paper_trace(flange_position)
+            sim.addDrawingObjectItem(
+                virtual_brush_drawing, list(flange_position) + contact
+            )
+        except Exception:
+            pass
+
     # Draw the requested path before IK starts.  It is deliberately separate
     # from the measured tip path: a failed IK step must not make a short stroke
     # (for example the top horizontal of ``止``) disappear from the scene.
@@ -906,8 +995,8 @@ def run_live(
             draw_points = dense_points
             planned_fallback_strokes += 1
         for left, right in zip(draw_points, draw_points[1:]):
-            left_position = np.asarray(left.position, dtype=np.float64) + offset
-            right_position = np.asarray(right.position, dtype=np.float64) + offset
+            left_position = paper_trace(np.asarray(left.position, dtype=np.float64) + offset)
+            right_position = paper_trace(np.asarray(right.position, dtype=np.float64) + offset)
             sim.addDrawingObjectItem(
                 planned_drawings[stroke_index], list(left_position) + list(right_position)
             )
@@ -925,7 +1014,11 @@ def run_live(
         nonlocal paper_target_clamp_steps, paper_rejected_steps
         nonlocal min_attempted_tip_paper_clearance, min_tip_paper_clearance
         target_position = np.asarray(target_position, dtype=np.float64).copy()
-        minimum_tip_z = float(ur5_paper_z) + float(tip_paper_clearance_m)
+        minimum_flange_clearance = max(
+            float(tip_paper_clearance_m),
+            float(virtual_brush_length) - float(mapper.max_brush_compression),
+        )
+        minimum_tip_z = float(ur5_paper_z) + minimum_flange_clearance
         if float(target_position[2]) < minimum_tip_z:
             target_position[2] = minimum_tip_z
             paper_target_clamp_steps += 1
@@ -1004,6 +1097,7 @@ def run_live(
             min_body_geometry_z, min(final_geometry_z, default=float("inf"))
         )
         actual_position = np.asarray(sim.getObjectPosition(ur5["tip"], -1), dtype=np.float64)
+        update_virtual_brush(actual_position)
         min_tip_paper_clearance = min(
             min_tip_paper_clearance,
             float(actual_position[2] - ur5_paper_z),
@@ -1084,7 +1178,7 @@ def run_live(
             stroke_success = 0
             stroke_failures = 0
             dense_points = interpolate_stroke(raw_points, max_step)
-            first_target = np.asarray(dense_points[0].position, dtype=np.float64) + offset
+            first_target = flange_target(dense_points[0])
             first_orientation = dense_points[0].orientation
             lift_plane_z = max(
                 float(ur5_paper_z) + float(pen_lift_clearance),
@@ -1157,7 +1251,7 @@ def run_live(
                     "descend",
                 )
             for point in dense_points:
-                target_position = np.asarray(point.position, dtype=np.float64) + offset
+                target_position = flange_target(point)
                 actual_position, status, residual = solve_target(
                     target_position, point.orientation
                 )
@@ -1166,13 +1260,14 @@ def run_live(
                 else:
                     stroke_failures += 1
                 if point.state not in (2, 3):
+                    actual_trace = paper_trace(actual_position)
                     previous = previous_by_stroke.get(stroke_id)
                     if previous is not None:
                         sim.addDrawingObjectItem(
-                            trajectory_drawings[stroke_index], list(previous) + list(actual_position)
+                            trajectory_drawings[stroke_index], list(previous) + actual_trace
                         )
-                    sim.addDrawingObjectItem(tip_drawing, list(actual_position))
-                    previous_by_stroke[stroke_id] = tuple(actual_position.tolist())
+                    sim.addDrawingObjectItem(tip_drawing, actual_trace)
+                    previous_by_stroke[stroke_id] = tuple(actual_trace)
                 else:
                     previous_by_stroke.pop(stroke_id, None)
                 if point.state in (2, 3):
@@ -1182,7 +1277,7 @@ def run_live(
                     time.sleep(max(float(transition_interval), 0.0))
                 else:
                     time.sleep(max(interval, 0.0))
-            previous_target = np.asarray(dense_points[-1].position, dtype=np.float64) + offset
+            previous_target = flange_target(dense_points[-1])
             previous_orientation = dense_points[-1].orientation
             ik_success_by_stroke[str(stroke_id)] = stroke_success
             ik_failure_by_stroke[str(stroke_id)] = stroke_failures
@@ -1219,6 +1314,15 @@ def run_live(
         "transition_step_m": transition_step,
         "transition_interval_s": transition_interval,
         "pen_lift_clearance_m": pen_lift_clearance,
+        "virtual_brush_length_m": virtual_brush_length,
+        "virtual_brush_max_compression_m": mapper.max_brush_compression,
+        "signed_pressure_z_range_m": [
+            -mapper.max_brush_compression,
+            0.0,
+        ],
+        "mechanical_target_semantics": (
+            "paper_contact_z + signed_pressure_z + virtual_brush_length"
+        ),
         "motion_phase_steps": motion_phase_steps,
         "motion_phase_failures": motion_phase_failures,
         "paper_offset_x_m": paper_offset_x,
@@ -1251,6 +1355,10 @@ def run_live(
             min_body_geometry_z >= float(ground_clearance_m)
         ),
         "tip_paper_clearance_m": tip_paper_clearance_m,
+        "minimum_required_flange_paper_clearance_m": max(
+            float(tip_paper_clearance_m),
+            float(virtual_brush_length) - float(mapper.max_brush_compression),
+        ),
         "paper_target_clamp_steps": paper_target_clamp_steps,
         "paper_rejected_steps": paper_rejected_steps,
         "minimum_attempted_tip_paper_clearance_m": min_attempted_tip_paper_clearance,
@@ -1323,6 +1431,25 @@ def parse_args() -> argparse.Namespace:
         help="Explicit pen-up clearance above each stroke start/end (m).",
     )
     parser.add_argument(
+        "--virtual_brush_length_m",
+        type=float,
+        default=0.08,
+        help=(
+            "Simulation-only TCP-to-paper brush length (m). Negative model z "
+            "compresses this virtual brush instead of moving the UR5 flange "
+            "below the paper. Replace after real TCP/brush calibration."
+        ),
+    )
+    parser.add_argument(
+        "--max_brush_compression_m",
+        type=float,
+        default=0.015,
+        help=(
+            "Maximum signed compression magnitude at B-BSMG H=11 mm; H=20 mm "
+            "is zero pressure. The default follows the simulation bridge only."
+        ),
+    )
+    parser.add_argument(
         "--arm_base_z_m",
         type=float,
         default=0.04,
@@ -1354,8 +1481,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ur5_paper_z_m",
         type=float,
-        default=0.65,
-        help="Top surface of the writing plane above the world floor (m); default is 65 cm.",
+        default=0.60,
+        help="Top surface of the writing plane above the world floor (m); default is 60 cm.",
     )
     parser.add_argument(
         "--paper_offset_x_m",
@@ -1379,7 +1506,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--paper_width_m", type=float, default=0.24)
     parser.add_argument("--paper_height_m", type=float, default=0.24)
     parser.add_argument("--margin_m", type=float, default=0.018)
-    parser.add_argument("--z_height_m", type=float, default=0.045)
+    parser.add_argument(
+        "--z_height_m",
+        type=float,
+        default=None,
+        help="Deprecated compatibility option; use --max_brush_compression_m.",
+    )
     parser.add_argument("--lift_height_m", type=float, default=0.075)
     view_group = parser.add_mutually_exclusive_group()
     view_group.add_argument(
@@ -1408,6 +1540,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def main(args: argparse.Namespace) -> None:
+    if args.virtual_brush_length_m <= args.max_brush_compression_m:
+        raise ValueError(
+            "virtual_brush_length_m must exceed max_brush_compression_m so "
+            "the rigid UR5 flange remains above the paper"
+        )
     rows = load_rows(args.trajectory_csv, character=args.character, sample_id=args.sample_id)
     provenance = trajectory_provenance(
         args.trajectory_csv,
@@ -1425,7 +1562,7 @@ def main(args: argparse.Namespace) -> None:
         paper_height=args.paper_height_m,
         paper_z=args.paper_z_m,
         margin=args.margin_m,
-        z_height=args.z_height_m,
+        max_brush_compression=args.max_brush_compression_m,
         lift_height=args.lift_height_m,
         flip_y=bool(args.flip_y),
     )
@@ -1433,6 +1570,11 @@ def main(args: argparse.Namespace) -> None:
     report = build_report(rows, strokes, mapper, provenance=provenance)
     output_dir = Path(args.output_dir)
     save_offline_preview(strokes, output_dir, report, mapper)
+    pressure_path = save_pressure_trajectory(rows, mapper, output_dir)
+    report["mapped_pressure_trajectory"] = str(pressure_path.resolve())
+    (output_dir / "trajectory_report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     if args.offline:
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return
@@ -1444,6 +1586,7 @@ def main(args: argparse.Namespace) -> None:
         transition_step=args.transition_step_m,
         transition_interval=args.transition_interval,
         pen_lift_clearance=args.pen_lift_clearance_m,
+        virtual_brush_length=args.virtual_brush_length_m,
         arm_base_z=args.arm_base_z_m,
         ground_clearance_m=args.ground_clearance_m,
         tip_paper_clearance_m=args.tip_paper_clearance_m,

@@ -10,6 +10,7 @@ from tools.coppeliasim_virtual_arm import (
     build_report,
     interpolate_stroke,
     mapped_strokes,
+    save_pressure_trajectory,
     trajectory_provenance,
     validate_trajectory_identity,
 )
@@ -31,6 +32,29 @@ def test_mapper_lifts_up_states_and_preserves_pose_orientation():
     up = strokes[1][0]
     assert up.position[2] > down.position[2]
     assert down.orientation == (0.1, 0.2, 0.3)
+
+
+def test_bbsmg_h_maps_to_negative_signed_brush_compression():
+    mapper = CoordinateMapper(0.0, 1.0, 0.0, 1.0, 11.0, 20.0)
+    maximum_pressure = mapper.map_row(
+        PoseRow("武", "s", 0, 0, 0.0, 0.0, 11.0, 0.0, 0.0, 0.0, 1)
+    )
+    neutral = mapper.map_row(
+        PoseRow("武", "s", 0, 1, 0.0, 0.0, 20.0, 0.0, 0.0, 0.0, 1)
+    )
+    assert abs(maximum_pressure.signed_pressure_z + 0.015) < 1e-12
+    assert abs(neutral.signed_pressure_z) < 1e-12
+    assert maximum_pressure.position[2] < mapper.paper_z
+    assert neutral.position[2] == mapper.paper_z
+
+
+def test_pressure_export_keeps_original_h_and_writes_negative_z(tmp_path: Path):
+    mapper = CoordinateMapper(0.0, 1.0, 0.0, 1.0, 11.0, 20.0)
+    path = save_pressure_trajectory(_rows(), mapper, tmp_path)
+    text = path.read_text(encoding="utf-8-sig")
+    assert "negative_brush_compression" in text
+    assert "original_h_mm" in text
+    assert "-0.013333" in text
 
 
 def test_default_mapping_is_for_standard_top_view_and_legacy_flip_is_opt_in():
