@@ -455,11 +455,49 @@ def _tool_axis_angle_error(left: Sequence[float], right: Sequence[float]) -> flo
     return float(math.acos(dot))
 
 
+def _remove_existing_ur5_models(sim) -> int:
+    """Remove UR5 model roots left by an earlier ``--keep_scene`` replay.
+
+    Live replays deliberately keep the scene open for visual inspection.  If
+    another replay then loads a fresh ``UR5.ttm`` without removing the prior
+    one, CoppeliaSim displays multiple arms (often with an older arm still at
+    the ground plane).  Only exact model-root aliases are removed; links,
+    drawing objects, and unrelated user models are left untouched.
+    """
+    roots = []
+    try:
+        handles = sim.getObjectsInTree(sim.handle_scene, sim.handle_all, 0)
+    except Exception:
+        handles = []
+    for handle in handles:
+        try:
+            alias = str(sim.getObjectAlias(handle, 1))
+        except Exception:
+            continue
+        leaf = alias.rsplit("/", 1)[-1]
+        if leaf == "UR5" or (leaf.startswith("UR5[") and leaf.endswith("]")):
+            # A model root is the only object with an alias consisting solely
+            # of UR5/UR5[n]; child links have additional path components.
+            if alias.count("/") == 1:
+                roots.append(handle)
+    removed = 0
+    for handle in roots:
+        try:
+            sim.removeModel(handle)
+            removed += 1
+        except Exception:
+            # A stale handle may disappear if CoppeliaSim removes a model as
+            # part of another cleanup; the new load can still proceed.
+            continue
+    return removed
+
+
 def _load_ur5_ik(
     sim,
     ik,
     model_path: str,
     base_x: float,
+    base_z: float,
     orientation_mode: str,
 ):
     """Load CoppeliaSim's official UR5 model and configure simIK.
@@ -468,8 +506,9 @@ def _load_ur5_ik(
     links come from ``UR5.ttm``.  IK is position-constrained so the standard
     UR5 wrist orientation is retained while the pen tip follows the paper.
     """
+    _remove_existing_ur5_models(sim)
     root = sim.loadModel(model_path)
-    sim.setObjectPosition(root, -1, [float(base_x), 0.0, 0.0])
+    sim.setObjectPosition(root, -1, [float(base_x), 0.0, float(base_z)])
     joints = sim.getObjectsInTree(root, sim.object_joint_type, 0)
     shapes = sim.getObjectsInTree(root, sim.object_shape_type, 0)
     if len(joints) != 6:
@@ -530,10 +569,18 @@ def _load_ur5_ik(
     ik.setGroupCalculation(
         environment, group, ik.method_damped_least_squares, 0.03, 500
     )
+    body_shapes = []
+    for handle in shapes:
+        try:
+            alias = sim.getObjectAlias(handle, 1).lower()
+        except Exception:
+            alias = ""
+        if handle != last_link and "link" in alias:
+            body_shapes.append(handle)
     return {
         "root": root,
         "joints": joints,
-        "body_shapes": [handle for handle in shapes if handle != last_link],
+        "body_shapes": body_shapes,
         "terminal_shape": last_link,
         "tip": tip,
         "target": target,
@@ -647,6 +694,7 @@ def run_live(
     max_step: float,
     interval: float,
     arm_base_z: float,
+    ground_clearance_m: float,
     keep_scene: bool,
     client_port: int,
     scene_output: Optional[str],
@@ -693,6 +741,7 @@ def run_live(
         ik,
         ur5_model_path,
         ur5_base_x,
+        arm_base_z,
         orientation_mode,
     )
     _add_paper(
@@ -732,6 +781,10 @@ def run_live(
     planned_fallback_strokes = 0
     max_orientation_residual = 0.0
     max_tool_axis_residual = 0.0
+    below_ground_steps = 0
+    ground_rejected_steps = 0
+    min_body_link_center_z = float("inf")
+    min_attempted_body_link_center_z = float("inf")
 
     # Draw the requested path before IK starts.  It is deliberately separate
     # from the measured tip path: a failed IK step must not make a short stroke
@@ -756,6 +809,9 @@ def run_live(
         nonlocal ik_success, ik_failures, max_residual, max_orientation_residual
         nonlocal max_tool_axis_residual
         nonlocal body_overlap_steps, min_body_clearance
+        nonlocal below_ground_steps, ground_rejected_steps
+        nonlocal min_body_link_center_z, min_attempted_body_link_center_z
+        joint_snapshot = [float(sim.getJointPosition(joint)) for joint in ur5["joints"]]
         sim.setObjectPosition(ur5["target"], -1, target_position.tolist())
         desired_quaternion = ur5["tool_quaternion_xyzw"]
         if orientation_mode == "csv_pose":
@@ -770,6 +826,28 @@ def run_live(
             {"syncWorlds": True, "allowError": not strict_ik},
         )
         status = int(result[0]) if isinstance(result, tuple) else int(result)
+        attempted_link_z = [
+            float(sim.getObjectPosition(shape, -1)[2])
+            for shape in ur5["body_shapes"]
+        ]
+        attempted_min_link_z = min(attempted_link_z, default=float("inf"))
+        min_attempted_body_link_center_z = min(
+            min_attempted_body_link_center_z, attempted_min_link_z
+        )
+        if attempted_min_link_z < 0.0:
+            below_ground_steps += 1
+        if attempted_min_link_z < float(ground_clearance_m):
+            for joint, position in zip(ur5["joints"], joint_snapshot):
+                sim.setJointPosition(joint, position)
+            status = 0
+            ground_rejected_steps += 1
+        final_link_z = [
+            float(sim.getObjectPosition(shape, -1)[2])
+            for shape in ur5["body_shapes"]
+        ]
+        min_body_link_center_z = min(
+            min_body_link_center_z, min(final_link_z, default=float("inf"))
+        )
         actual_position = np.asarray(sim.getObjectPosition(ur5["tip"], -1), dtype=np.float64)
         residual = float(np.linalg.norm(actual_position - target_position))
         max_residual = max(max_residual, residual)
@@ -901,6 +979,7 @@ def run_live(
         "ik_approach_success_steps": approach_success,
         "ik_approach_failure_steps": approach_failures,
         "dynamics_enabled": False,
+        "arm_base_z_m": arm_base_z,
         "paper_top_z_m": ur5_paper_z,
         "paper_height_above_ground_m": ur5_paper_z,
         "replay_max_step_m": max_step,
@@ -921,6 +1000,14 @@ def run_live(
         "minimum_nonterminal_link_clearance_m": min_body_clearance,
         "nonterminal_link_clearance_passed": body_overlap_steps == 0,
         "planned_fallback_strokes": planned_fallback_strokes,
+        "below_ground_steps": below_ground_steps,
+        "ground_rejected_steps": ground_rejected_steps,
+        "minimum_body_link_center_z_m": min_body_link_center_z,
+        "minimum_attempted_body_link_center_z_m": min_attempted_body_link_center_z,
+        "ground_clearance_m": ground_clearance_m,
+        "ground_clearance_passed": (
+            min_body_link_center_z >= float(ground_clearance_m)
+        ),
     }
 
 
@@ -967,7 +1054,18 @@ def parse_args() -> argparse.Namespace:
         default=0.04,
         help="Delay between replay samples in seconds; larger is slower to watch.",
     )
-    parser.add_argument("--arm_base_z_m", type=float, default=0.18)
+    parser.add_argument(
+        "--arm_base_z_m",
+        type=float,
+        default=0.04,
+        help="Lift the UR5 model base above the ground plane (m); default is 4 cm.",
+    )
+    parser.add_argument(
+        "--ground_clearance_m",
+        type=float,
+        default=0.02,
+        help="Reject IK poses whose nonterminal link center is below this height (m).",
+    )
     parser.add_argument(
         "--arm_model",
         choices=("ur5",),
@@ -1070,6 +1168,7 @@ def main(args: argparse.Namespace) -> None:
         max_step=args.max_step_m,
         interval=args.interval,
         arm_base_z=args.arm_base_z_m,
+        ground_clearance_m=args.ground_clearance_m,
         keep_scene=args.keep_scene,
         client_port=args.client_port,
         scene_output=args.scene_output,
