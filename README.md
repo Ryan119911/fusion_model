@@ -2036,3 +2036,8 @@ UR5 的 IK 目标为：
 `original_h_mm` 与负的 `z`，防止姿态 H、压力坐标和机器人 TCP 坐标混淆。
 笔轴始终指向纸面；抬笔、笔间运笔和落笔动作照常执行，但只在接触书写阶段
 显示墨迹，不显示空中运动轨迹。真实执行前仍须用实际装夹长度和 TCP 标定替换。
+
+回放默认调用 `sim.startSimulation()`，因此 CoppeliaSim 工具栏会显示运行状态；
+仅在调试远程 IK 时才使用 `--no_start_simulation`。场景中显式创建与法兰固定的
+夹持板、笔体、笔锋和 `virtualPenTip`，夹持板平面与纸面平行、笔轴朝世界负 Z。
+墨迹坐标取实际 `virtualPenTip` 的 x/y 并投影到纸面，而不是使用法兰或 IK dummy。

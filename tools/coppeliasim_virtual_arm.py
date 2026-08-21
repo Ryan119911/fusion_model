@@ -635,6 +635,15 @@ def _load_ur5_ik(
     _remove_existing_ur5_models(sim)
     root = sim.loadModel(model_path)
     sim.setObjectPosition(root, -1, [float(base_x), 0.0, float(base_z)])
+    disabled_model_scripts = 0
+    for script in sim.getObjectsInTree(root, sim.object_script_type, 0):
+        try:
+            sim.setScriptInt32Param(script, sim.scriptintparam_enabled, 0)
+            disabled_model_scripts += 1
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not disable the stock UR5 controller script"
+            ) from exc
     joints = sim.getObjectsInTree(root, sim.object_joint_type, 0)
     shapes = sim.getObjectsInTree(root, sim.object_shape_type, 0)
     if len(joints) != 6:
@@ -735,6 +744,7 @@ def _load_ur5_ik(
         "initial_tip_quaternion_xyzw": initial_tip_quaternion,
         "initial_joint_seed_rad": initial_joint_seed,
         "initial_body_geometry_min_z_m": initial_body_geometry_min_z,
+        "disabled_stock_model_scripts": disabled_model_scripts,
         "environment": environment,
         "group": group,
         "ik_tip": ik_tip,
@@ -773,13 +783,14 @@ def _add_paper(
     center_y: float = 0.0,
 ):
     """Add a thin static paper plane only for visual contact reference."""
+    paper = sim.createPrimitiveShape(
+        sim.primitiveshape_cuboid, [width, height, 0.004], 0
+    )
+    sim.setObjectAlias(paper, "writingPaper")
     try:
-        paper = sim.createPureShape(sim.primitiveshape_cuboid, 0, [width, height, 0.004], 0, [])
+        sim.setObjectInt32Param(paper, sim.shapeintparam_static, 1)
     except Exception:
-        # Some 4.7 builds reject run-time pure-shape creation from the remote
-        # API.  The official UR5 model remains fully visible; the paper is
-        # cosmetic, so omit it rather than aborting the replay.
-        return None
+        pass
     sim.setObjectPosition(paper, -1, [float(center_x), float(center_y), float(top_z) - 0.002])
     try:
         sim.setShapeColor(paper, None, sim.colorcomponent_ambient_diffuse, [0.92, 0.92, 0.86])
@@ -820,43 +831,58 @@ def _add_paper_reference(
     return drawing
 
 
-def _set_tool_visible(sim, tool: int, visible: bool) -> None:
-    try:
-        sim.setObjectInt32Param(
-            tool,
-            sim.objintparam_visibility_layer,
-            1 if visible else 0,
-        )
-    except Exception:
-        pass
+def _set_tool_visible(sim, tools: Sequence[int], visible: bool) -> None:
+    for tool in tools:
+        try:
+            sim.setObjectInt32Param(
+                tool,
+                sim.objintparam_visibility_layer,
+                1 if visible else 0,
+            )
+        except Exception:
+            pass
 
 
 def _add_ur5_tool(sim, tip: int, brush_length: float, brush_radius: float = 0.006):
-    """Attach one rigid paper-length brush bundle to the UR5 flange dummy."""
-    try:
-        diameter = 2.0 * float(brush_radius)
-        tool = sim.createPureShape(
-            sim.primitiveshape_cylinder,
-            0,
-            [diameter, diameter, float(brush_length)],
-            0,
-            [],
-        )
-    except Exception:
-        tool = sim.createDummy(0.014, 12 * [0.0])
-    sim.setObjectParent(tool, tip, False)
-    # The cylinder starts at the flange and extends along local +Z.  IK maps
-    # that axis to world -Z, so its fixed distal endpoint is always downward.
-    sim.setObjectPosition(tool, tip, [0.0, 0.0, 0.5 * float(brush_length)])
-    sim.setObjectQuaternion(tool, tip, [0.0, 0.0, 0.0, 1.0])
-    try:
-        sim.setShapeColor(tool, None, sim.colorcomponent_ambient_diffuse, [0.12, 0.12, 0.12])
-    except Exception:
-        pass
+    """Attach a visible rigid holder, brush body and distal tip marker."""
+    diameter = 2.0 * float(brush_radius)
+    holder = sim.createPrimitiveShape(
+        sim.primitiveshape_cuboid, [0.050, 0.036, 0.008], 0
+    )
+    body_length = max(float(brush_length) - 0.008, 0.001)
+    body = sim.createPrimitiveShape(
+        sim.primitiveshape_cylinder, [diameter, diameter, body_length], 0
+    )
+    nib = sim.createPrimitiveShape(
+        sim.primitiveshape_cone, [diameter, diameter, 0.008], 0
+    )
+    pen_tip = sim.createDummy(0.006, 12 * [0.0])
+    objects = [holder, body, nib, pen_tip]
+    aliases = ["virtualPenHolder", "virtualPenBody", "virtualPenNib", "virtualPenTip"]
+    for handle, alias in zip(objects, aliases):
+        sim.setObjectAlias(handle, alias)
+        sim.setObjectParent(handle, tip, False)
+        sim.setObjectQuaternion(handle, tip, [0.0, 0.0, 0.0, 1.0])
+    # The holder's broad XY face is parallel to paper.  All pen components
+    # extend along the flange dummy's local +Z, constrained to world -Z.
+    sim.setObjectPosition(holder, tip, [0.0, 0.0, 0.004])
+    sim.setObjectPosition(body, tip, [0.0, 0.0, 0.008 + 0.5 * body_length])
+    sim.setObjectPosition(nib, tip, [0.0, 0.0, float(brush_length) - 0.004])
+    sim.setObjectPosition(pen_tip, tip, [0.0, 0.0, float(brush_length)])
+    for handle, color in (
+        (holder, [0.18, 0.18, 0.20]),
+        (body, [0.38, 0.16, 0.06]),
+        (nib, [0.04, 0.04, 0.04]),
+    ):
+        sim.setShapeColor(handle, None, sim.colorcomponent_ambient_diffuse, color)
+        try:
+            sim.setObjectInt32Param(handle, sim.shapeintparam_static, 1)
+        except Exception:
+            pass
     # Do not briefly show the stock model's arbitrary initial wrist pose.  The
     # rigid pen becomes visible only after the first accepted downward IK pose.
-    _set_tool_visible(sim, tool, False)
-    return tool
+    _set_tool_visible(sim, objects, False)
+    return {"objects": objects, "pen_tip": pen_tip}
 
 
 def run_live(
@@ -899,6 +925,26 @@ def run_live(
 
     client = RemoteAPIClient(host="localhost", port=client_port)
     sim = client.require("sim")
+    # A running CoppeliaSim clock is useful for an authentic GUI replay, but
+    # the stock UR5 dynamic controller must not compete with remote simIK.
+    # Rebuild from a stopped state and disable physics handling while keeping
+    # the simulation/play state active for deterministic kinematic animation.
+    if sim.getSimulationState() != sim.simulation_stopped:
+        sim.stopSimulation()
+        deadline = time.time() + 8.0
+        while (
+            sim.getSimulationState() != sim.simulation_stopped
+            and time.time() < deadline
+        ):
+            time.sleep(0.05)
+        if sim.getSimulationState() != sim.simulation_stopped:
+            raise RuntimeError("CoppeliaSim did not reach stopped state before replay")
+    try:
+        sim.setBoolParam(sim.boolparam_dynamics_handling_enabled, False)
+    except Exception as exc:
+        raise RuntimeError(
+            "Could not disable CoppeliaSim dynamics for deterministic remote IK"
+        ) from exc
     if arm_model != "ur5":
         raise ValueError("Only the official CoppeliaSim UR5 model is supported in live mode")
     ik = client.require("simIK")
@@ -983,6 +1029,8 @@ def run_live(
     paper_rejected_steps = 0
     min_attempted_tip_paper_clearance = float("inf")
     min_tip_paper_clearance = float("inf")
+    min_pen_endpoint_paper_clearance = float("inf")
+    max_pen_endpoint_paper_clearance = -float("inf")
     upward_pen_rejected_steps = 0
     minimum_pen_downward_component = float("inf")
 
@@ -1008,6 +1056,7 @@ def run_live(
         nonlocal min_attempted_tip_paper_clearance, min_tip_paper_clearance
         nonlocal upward_pen_rejected_steps, minimum_pen_downward_component
         nonlocal rigid_pen_visible
+        nonlocal min_pen_endpoint_paper_clearance, max_pen_endpoint_paper_clearance
         target_position = np.asarray(target_position, dtype=np.float64).copy()
         minimum_flange_clearance = max(
             float(tip_paper_clearance_m),
@@ -1062,7 +1111,7 @@ def run_live(
         if status == 1:
             ik.syncToSim(ur5["environment"], [ur5["group"]])
             if not rigid_pen_visible:
-                _set_tool_visible(sim, rigid_pen, True)
+                _set_tool_visible(sim, rigid_pen["objects"], True)
                 rigid_pen_visible = True
         attempted_link_z = [
             float(sim.getObjectPosition(shape, -1)[2])
@@ -1106,6 +1155,16 @@ def run_live(
             min_body_geometry_z, min(final_geometry_z, default=float("inf"))
         )
         actual_position = np.asarray(sim.getObjectPosition(ur5["tip"], -1), dtype=np.float64)
+        actual_pen_endpoint = np.asarray(
+            sim.getObjectPosition(rigid_pen["pen_tip"], -1), dtype=np.float64
+        )
+        pen_endpoint_clearance = float(actual_pen_endpoint[2] - ur5_paper_z)
+        min_pen_endpoint_paper_clearance = min(
+            min_pen_endpoint_paper_clearance, pen_endpoint_clearance
+        )
+        max_pen_endpoint_paper_clearance = max(
+            max_pen_endpoint_paper_clearance, pen_endpoint_clearance
+        )
         min_tip_paper_clearance = min(
             min_tip_paper_clearance,
             float(actual_position[2] - ur5_paper_z),
@@ -1183,9 +1242,11 @@ def run_live(
             time.sleep(max(float(transition_interval), 0.0))
         return previous_actual
 
+    simulation_started_here = False
     try:
-        if start_simulation:
+        if start_simulation and sim.getSimulationState() == sim.simulation_stopped:
             sim.startSimulation()
+            simulation_started_here = True
         for stroke_index, (stroke_id, raw_points) in enumerate(strokes.items()):
             previous_by_stroke.pop(stroke_id, None)
             stroke_success = 0
@@ -1273,7 +1334,13 @@ def run_live(
                 else:
                     stroke_failures += 1
                 if point.state not in (2, 3):
-                    actual_trace = paper_trace(actual_position)
+                    # Ink follows the actual distal virtual-pen marker, not
+                    # the UR5 flange or IK dummy.  Z is projected onto paper
+                    # only for displaying the deposited trace.
+                    actual_pen_endpoint = sim.getObjectPosition(
+                        rigid_pen["pen_tip"], -1
+                    )
+                    actual_trace = paper_trace(actual_pen_endpoint)
                     previous = previous_by_stroke.get(stroke_id)
                     if previous is not None:
                         sim.addDrawingObjectItem(
@@ -1300,7 +1367,7 @@ def run_live(
                 raise RuntimeError(f"CoppeliaSim failed to save scene: {scene_path}")
             print(f"[DONE] Saved CoppeliaSim scene: {scene_path}")
     finally:
-        if start_simulation and not keep_scene:
+        if simulation_started_here and not keep_scene:
             try:
                 sim.stopSimulation()
             except Exception:
@@ -1319,6 +1386,9 @@ def run_live(
         "ik_approach_success_steps": approach_success,
         "ik_approach_failure_steps": approach_failures,
         "dynamics_enabled": False,
+        "kinematic_replay_with_running_simulation": True,
+        "coppeliasim_simulation_started": start_simulation,
+        "coppeliasim_simulation_left_running": bool(start_simulation and keep_scene),
         "arm_base_z_m": arm_base_z,
         "paper_top_z_m": ur5_paper_z,
         "paper_height_above_ground_m": ur5_paper_z,
@@ -1353,6 +1423,7 @@ def run_live(
         "tool_quaternion_xyzw": ur5["tool_quaternion_xyzw"],
         "initial_tip_quaternion_xyzw": ur5["initial_tip_quaternion_xyzw"],
         "initial_joint_seed_rad": ur5["initial_joint_seed_rad"],
+        "disabled_stock_model_scripts": ur5["disabled_stock_model_scripts"],
         "initial_body_geometry_min_z_m": ur5["initial_body_geometry_min_z_m"],
         "initial_tip_paper_clearance_m": initial_tip_paper_clearance,
         "nonterminal_link_overlap_steps": body_overlap_steps,
@@ -1382,6 +1453,9 @@ def run_live(
         "rigid_pen_visible_after_first_valid_ik": rigid_pen_visible,
         "minimum_attempted_tip_paper_clearance_m": min_attempted_tip_paper_clearance,
         "minimum_tip_paper_clearance_m": min_tip_paper_clearance,
+        "minimum_pen_endpoint_paper_clearance_m": min_pen_endpoint_paper_clearance,
+        "maximum_pen_endpoint_paper_clearance_m": max_pen_endpoint_paper_clearance,
+        "ink_trace_source": "actual_virtual_pen_tip_xy_projected_to_paper",
         "tip_stays_above_paper": (
             min_tip_paper_clearance >= float(tip_paper_clearance_m)
         ),
@@ -1544,10 +1618,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--client_port", type=int, default=23000)
     parser.add_argument("--keep_scene", action="store_true")
-    parser.add_argument(
+    simulation_group = parser.add_mutually_exclusive_group()
+    simulation_group.add_argument(
         "--start_simulation",
+        dest="start_simulation",
         action="store_true",
-        help="Also start CoppeliaSim physics. Omit for stable kinematic IK visualization.",
+        default=True,
+        help="Start CoppeliaSim so the GUI play control enters the running state (default).",
+    )
+    simulation_group.add_argument(
+        "--no_start_simulation",
+        dest="start_simulation",
+        action="store_false",
+        help="Run kinematic remote IK without starting CoppeliaSim simulation.",
     )
     parser.add_argument(
         "--scene_output",
