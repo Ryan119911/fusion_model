@@ -465,11 +465,27 @@ def save_pressure_trajectory(
     return path
 
 
-def _add_drawing(sim, drawing_type: int, size: float, max_items: int, color: Sequence[float]):
+def _add_drawing(
+    sim,
+    drawing_type: int,
+    size: float,
+    max_items: int,
+    color: Sequence[float],
+    parent: int = -1,
+):
     try:
-        return sim.addDrawingObject(drawing_type, size, 0, -1, max_items, list(color))
+        return sim.addDrawingObject(
+            drawing_type, size, 0, int(parent), max_items, list(color)
+        )
     except Exception:
-        return sim.addDrawingObject(sim.drawing_spherepoints, size * 0.002, 0, -1, max_items, list(color))
+        return sim.addDrawingObject(
+            sim.drawing_spherepoints,
+            size * 0.002,
+            0,
+            int(parent),
+            max_items,
+            list(color),
+        )
 
 
 def _multiply_quaternions(left: Sequence[float], right: Sequence[float]) -> List[float]:
@@ -618,6 +634,67 @@ def _remove_existing_ur5_models(sim) -> int:
     return removed
 
 
+def _remove_replay_artifacts(sim) -> dict:
+    """Remove only scene artifacts created by earlier runs of this tool."""
+    removed_objects = 0
+    removed_drawings = 0
+    roots = []
+    for handle in sim.getObjectsInTree(sim.handle_scene, sim.handle_all, 0):
+        try:
+            alias = sim.getObjectAlias(handle, 1).rstrip("/").split("/")[-1]
+        except Exception:
+            continue
+        if alias == "fusionReplayArtifacts":
+            roots.append(handle)
+    for handle in roots:
+        try:
+            payload = sim.readCustomDataBlock(
+                handle, "fusion_model_drawing_handles"
+            )
+            if payload:
+                if isinstance(payload, str):
+                    payload_text = payload
+                else:
+                    payload_text = bytes(payload).decode("utf-8")
+                drawing_handles = json.loads(payload_text)
+                for drawing_handle in drawing_handles:
+                    try:
+                        sim.removeDrawingObject(int(drawing_handle))
+                        removed_drawings += 1
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        try:
+            sim.removeObjects([handle], False)
+            removed_objects += 1
+        except Exception:
+            try:
+                sim.removeObject(handle)
+                removed_objects += 1
+            except Exception:
+                pass
+    return {
+        "removed_generated_scene_objects": removed_objects,
+        "removed_previous_drawing_objects": removed_drawings,
+    }
+
+
+def _create_replay_artifact_root(sim) -> int:
+    root = sim.createDummy(0.001, 12 * [0.0])
+    sim.setObjectAlias(root, "fusionReplayArtifacts")
+    try:
+        sim.setObjectInt32Param(root, sim.objintparam_visibility_layer, 0)
+    except Exception:
+        pass
+    return root
+
+
+def _record_replay_drawing_handles(sim, root: int, handles: Sequence[int]) -> None:
+    payload = json.dumps([int(handle) for handle in handles]).encode("utf-8")
+    sim.writeCustomDataBlock(root, "fusion_model_drawing_handles", payload)
+
+
 def _load_ur5_ik(
     sim,
     ik,
@@ -648,16 +725,20 @@ def _load_ur5_ik(
     shapes = sim.getObjectsInTree(root, sim.object_shape_type, 0)
     if len(joints) != 6:
         raise RuntimeError(f"Expected 6 UR5 joints, found {len(joints)}")
-    # The stock model's zero pose is elbow-down and can place the long middle
-    # links below the ground plane.  Seed simIK from a compact elbow-up pose so
-    # both the initial scene and every rollback state are physically safe.
+    # Writing-ready elbow-up configuration identified by the strict v12
+    # reachability audit at the first-stroke hover for the default workspace.
+    # Keep the original continuous joint values returned by simIK: replacing
+    # them with modulo-2pi equivalents changes the numerical IK branch even
+    # though the visible pose is identical.  Starting from this ready pose avoids asking
+    # Cartesian DLS to cross an unnecessary wrist singularity from the stock
+    # display pose before the actual writing task begins.
     initial_joint_seed = [
-        0.0,
-        -0.6,
-        1.4,
-        -1.5,
-        -math.pi / 2.0,
-        0.0,
+        -5.038839848704874,
+        0.10130931642406296,
+        0.780943596985915,
+        0.6885403128679785,
+        -1.5707963865462338,
+        -3.312319769570236,
     ]
     for joint, value in zip(joints, initial_joint_seed):
         sim.setJointPosition(joint, value)
@@ -703,6 +784,7 @@ def _load_ur5_ik(
     # perpendicular even though the dummy reported a horizontal pose.
     sim.setObjectQuaternion(tip, -1, initial_tip_quaternion)
     target = sim.createDummy(0.012, 12 * [0.0])
+    sim.setObjectAlias(target, "penMountIKTarget")
     sim.setObjectPosition(target, -1, tip_position)
     sim.setObjectQuaternion(target, -1, pen_down_quaternion)
     environment = ik.createEnvironment()
@@ -764,6 +846,7 @@ def _load_ur5_ik(
         "disabled_stock_model_scripts": disabled_model_scripts,
         "environment": environment,
         "group": group,
+        "ik_joints": [sim_to_ik_mapping[joint] for joint in joints],
         "ik_tip": ik_tip,
         "tip_position": tip_position,
     }
@@ -823,6 +906,7 @@ def _add_paper_reference(
     top_z: float,
     center_x: float = 0.0,
     center_y: float = 0.0,
+    parent: int = -1,
 ):
     """Draw a thin outline at the actual writing height.
 
@@ -831,7 +915,9 @@ def _add_paper_reference(
     object as well as the optional cosmetic cuboid, so the low writing plane
     remains visible even when the cuboid cannot be created.
     """
-    drawing = _add_drawing(sim, sim.drawing_lines, 2, 32, [0.78, 0.78, 0.70])
+    drawing = _add_drawing(
+        sim, sim.drawing_lines, 2, 32, [0.78, 0.78, 0.70], parent
+    )
     half_w = float(width) * 0.5
     half_h = float(height) * 0.5
     corners = [
@@ -958,6 +1044,11 @@ def run_live(
     paper_height: float,
     orientation_mode: str,
     strict_ik: bool,
+    joint_space_travel: bool,
+    joint_travel_step_rad: float,
+    global_ik_timeout_s: float,
+    air_orientation_strategy: str,
+    orientation_step_rad: float,
     start_simulation: bool,
 ) -> dict:
     """Create the scene objects and replay the mapped trajectory."""
@@ -993,13 +1084,22 @@ def run_live(
         ) from exc
     if arm_model != "ur5":
         raise ValueError("Only the official CoppeliaSim UR5 model is supported in live mode")
+    cleanup_report = _remove_replay_artifacts(sim)
+    artifact_root = _create_replay_artifact_root(sim)
     ik = client.require("simIK")
     strokes = mapped_strokes(rows, mapper)
     colors = ([0.05, 0.35, 0.95], [0.95, 0.18, 0.08], [0.08, 0.65, 0.22], [0.65, 0.2, 0.8])
     trajectory_drawings = []
     for index, _ in enumerate(strokes):
         trajectory_drawings.append(
-            _add_drawing(sim, sim.drawing_lines, 3, 200000, colors[index % len(colors)])
+            _add_drawing(
+                sim,
+                sim.drawing_lines,
+                3,
+                200000,
+                colors[index % len(colors)],
+                artifact_root,
+            )
         )
     ur5 = _load_ur5_ik(
         sim,
@@ -1022,7 +1122,7 @@ def run_live(
             f"{initial_tip_paper_clearance:.6f} m < "
             f"{float(tip_paper_clearance_m):.6f} m"
         )
-    _add_paper(
+    paper_object = _add_paper(
         sim,
         paper_width,
         paper_height,
@@ -1030,14 +1130,17 @@ def run_live(
         center_x=paper_offset_x,
         center_y=paper_offset_y,
     )
-    _add_paper_reference(
+    sim.setObjectParent(paper_object, artifact_root, True)
+    paper_reference_drawing = _add_paper_reference(
         sim,
         paper_width,
         paper_height,
         ur5_paper_z,
         center_x=paper_offset_x,
         center_y=paper_offset_y,
+        parent=artifact_root,
     )
+    sim.setObjectParent(ur5["target"], artifact_root, True)
     # The CSV pressure coordinate may be negative.  The rigid UR5 flange is
     # therefore separated from the virtual paper contact point by a positive
     # brush/TCP length instead of being commanded to the pressure coordinate.
@@ -1049,7 +1152,19 @@ def run_live(
     )
     virtual_pen_tcp_length = rigid_pen["tcp_length_m"]
     rigid_pen_visible = False
-    tip_drawing = _add_drawing(sim, sim.drawing_spherepoints, 0.008, 200000, [0.9, 0.1, 0.05])
+    tip_drawing = _add_drawing(
+        sim,
+        sim.drawing_spherepoints,
+        0.008,
+        200000,
+        [0.9, 0.1, 0.05],
+        artifact_root,
+    )
+    _record_replay_drawing_handles(
+        sim,
+        artifact_root,
+        [*trajectory_drawings, paper_reference_drawing, tip_drawing],
+    )
     previous_by_stroke: Dict[int, Tuple[float, float, float]] = {}
     offset = np.asarray(
         [paper_offset_x, paper_offset_y, float(ur5_paper_z - mapper.paper_z)],
@@ -1075,16 +1190,24 @@ def run_live(
     min_attempted_body_link_center_z = float("inf")
     min_body_geometry_z = float("inf")
     min_attempted_body_geometry_z = float("inf")
-    motion_phase_steps = {"lift": 0, "travel": 0, "descend": 0}
-    motion_phase_failures = {"lift": 0, "travel": 0, "descend": 0}
+    motion_phase_steps = {"lift": 0, "orient": 0, "travel": 0, "descend": 0}
+    motion_phase_failures = {"lift": 0, "orient": 0, "travel": 0, "descend": 0}
+    motion_phase_failure_events: List[dict] = []
+    active_transition_to_stroke: Optional[str] = None
     paper_target_clamp_steps = 0
     paper_rejected_steps = 0
     min_attempted_tip_paper_clearance = float("inf")
     min_tip_paper_clearance = float("inf")
     min_pen_endpoint_paper_clearance = float("inf")
     max_pen_endpoint_paper_clearance = -float("inf")
+    min_air_pen_endpoint_paper_clearance = float("inf")
     upward_pen_rejected_steps = 0
     minimum_pen_downward_component = float("inf")
+    joint_space_travel_attempts = 0
+    joint_space_travel_successes = 0
+    joint_space_travel_failures = 0
+    joint_space_travel_steps = 0
+    maximum_joint_travel_step = 0.0
 
     def flange_target(point: WorldPoint) -> np.ndarray:
         target = np.asarray(point.position, dtype=np.float64) + offset
@@ -1093,6 +1216,15 @@ def run_live(
 
     def paper_trace(position: Sequence[float]) -> List[float]:
         return [float(position[0]), float(position[1]), float(ur5_paper_z) + 0.001]
+
+    def target_quaternion(target_orientation: Sequence[float]) -> List[float]:
+        quaternion = ur5["tool_quaternion_xyzw"]
+        if orientation_mode == "csv_pose":
+            quaternion = _multiply_quaternions(
+                ur5["tool_quaternion_xyzw"],
+                _euler_xyz_to_quaternion(target_orientation),
+            )
+        return [float(value) for value in quaternion]
 
     def solve_target(
         target_position: np.ndarray,
@@ -1120,12 +1252,7 @@ def run_live(
             paper_target_clamp_steps += 1
         joint_snapshot = [float(sim.getJointPosition(joint)) for joint in ur5["joints"]]
         sim.setObjectPosition(ur5["target"], -1, target_position.tolist())
-        desired_quaternion = ur5["tool_quaternion_xyzw"]
-        if orientation_mode == "csv_pose":
-            desired_quaternion = _multiply_quaternions(
-                ur5["tool_quaternion_xyzw"],
-                _euler_xyz_to_quaternion(target_orientation),
-            )
+        desired_quaternion = target_quaternion(target_orientation)
         sim.setObjectQuaternion(ur5["target"], -1, desired_quaternion)
         # Solve in the private IK world first.  The visible UR5 is only updated
         # after the candidate tip has passed the paper-height guard, preventing
@@ -1262,6 +1389,160 @@ def run_live(
             ik_failures += 1
         return actual_position, status, residual
 
+    def animate_joint_travel(
+        target_position: np.ndarray,
+        target_orientation: Sequence[float],
+    ) -> Optional[np.ndarray]:
+        """Find a nearby goal configuration and replay a safe joint path.
+
+        Cartesian DLS can cross a wrist singularity while the pen is in the
+        air even when both stroke endpoints are reachable.  ``findConfigs``
+        supplies configurations sorted by distance from the current joints;
+        each candidate is preflighted for ground clearance, a downward pen,
+        and pen-tip clearance before anything is animated.
+        """
+        nonlocal ik_success, rigid_pen_visible
+        nonlocal joint_space_travel_attempts, joint_space_travel_successes
+        nonlocal joint_space_travel_failures, joint_space_travel_steps
+        nonlocal maximum_joint_travel_step
+        nonlocal motion_phase_steps
+        nonlocal min_body_geometry_z, min_body_link_center_z
+        nonlocal minimum_pen_downward_component
+        joint_space_travel_attempts += 1
+        target_position = np.asarray(target_position, dtype=np.float64)
+        sim.setObjectPosition(ur5["target"], -1, target_position.tolist())
+        sim.setObjectQuaternion(
+            ur5["target"], -1, target_quaternion(target_orientation)
+        )
+        ik.syncFromSim(ur5["environment"], [ur5["group"]])
+        params = {
+            "maxDist": 0.5,
+            "maxTime": max(float(global_ik_timeout_s), 0.01),
+            "pMetric": [1.0, 1.0, 1.0, 0.15],
+            "cMetric": [1.0] * len(ur5["ik_joints"]),
+            "findMultiple": True,
+        }
+        try:
+            configs = ik.findConfigs(
+                ur5["environment"],
+                ur5["group"],
+                ur5["ik_joints"],
+                params,
+            )
+        except Exception:
+            config = ik.getConfigForTipPose(
+                ur5["environment"],
+                ur5["group"],
+                ur5["ik_joints"],
+                0.5,
+                max(float(global_ik_timeout_s), 0.01),
+                [1.0, 1.0, 1.0, 0.15],
+            )
+            configs = [config] if config else []
+        start = np.asarray(
+            [sim.getJointPosition(joint) for joint in ur5["joints"]],
+            dtype=np.float64,
+        )
+        selected_path: Optional[List[np.ndarray]] = None
+        for raw_config in configs:
+            goal = np.asarray(raw_config, dtype=np.float64)
+            if goal.shape != start.shape:
+                continue
+            delta = (goal - start + math.pi) % (2.0 * math.pi) - math.pi
+            # Reject remote elbow/wrist flips.  The global solver is a local
+            # singularity escape, not permission to teleport to another arm
+            # branch.
+            if float(np.max(np.abs(delta))) > math.radians(35.0):
+                continue
+            count = max(
+                2,
+                int(
+                    math.ceil(
+                        float(np.max(np.abs(delta)))
+                        / max(float(joint_travel_step_rad), math.radians(0.25))
+                    )
+                ),
+            )
+            path = [start + (index / count) * delta for index in range(1, count + 1)]
+            safe = True
+            for config in path:
+                for joint, value in zip(ur5["joints"], config):
+                    sim.setJointPosition(joint, float(value))
+                geometry_min = min(
+                    (
+                        _shape_world_bbox_min_z(
+                            sim, shape, ur5["body_shape_bounds"][shape]
+                        )
+                        for shape in ur5["body_shapes"]
+                    ),
+                    default=float("inf"),
+                )
+                pen_endpoint = sim.getObjectPosition(rigid_pen["pen_tip"], -1)
+                quaternion = sim.getObjectQuaternion(ur5["tip"], -1)
+                axis = np.asarray(
+                    _rotate_vector_by_quaternion(quaternion, [0.0, 0.0, 1.0]),
+                    dtype=np.float64,
+                )
+                axis /= max(float(np.linalg.norm(axis)), 1e-12)
+                if (
+                    geometry_min < float(ground_clearance_m)
+                    or float(pen_endpoint[2])
+                    < float(ur5_paper_z) + float(tip_paper_clearance_m)
+                    or float(-axis[2]) < math.cos(math.radians(20.0))
+                ):
+                    safe = False
+                    break
+            for joint, value in zip(ur5["joints"], start):
+                sim.setJointPosition(joint, float(value))
+            if safe:
+                selected_path = path
+                break
+        if selected_path is None:
+            joint_space_travel_failures += 1
+            return None
+        previous = start
+        for config in selected_path:
+            for joint, value in zip(ur5["joints"], config):
+                sim.setJointPosition(joint, float(value))
+            step = float(np.max(np.abs(config - previous)))
+            maximum_joint_travel_step = max(maximum_joint_travel_step, step)
+            previous = config
+            geometry_z = [
+                _shape_world_bbox_min_z(
+                    sim, shape, ur5["body_shape_bounds"][shape]
+                )
+                for shape in ur5["body_shapes"]
+            ]
+            link_z = [
+                float(sim.getObjectPosition(shape, -1)[2])
+                for shape in ur5["body_shapes"]
+            ]
+            min_body_geometry_z = min(
+                min_body_geometry_z, min(geometry_z, default=float("inf"))
+            )
+            min_body_link_center_z = min(
+                min_body_link_center_z, min(link_z, default=float("inf"))
+            )
+            quaternion = sim.getObjectQuaternion(ur5["tip"], -1)
+            axis = np.asarray(
+                _rotate_vector_by_quaternion(quaternion, [0.0, 0.0, 1.0]),
+                dtype=np.float64,
+            )
+            axis /= max(float(np.linalg.norm(axis)), 1e-12)
+            minimum_pen_downward_component = min(
+                minimum_pen_downward_component, float(-axis[2])
+            )
+            if not rigid_pen_visible:
+                _set_tool_visible(sim, rigid_pen["objects"], True)
+                rigid_pen_visible = True
+            joint_space_travel_steps += 1
+            motion_phase_steps["travel"] += 1
+            ik_success += 1
+            time.sleep(max(float(transition_interval), 0.0))
+        ik.syncFromSim(ur5["environment"], [ur5["group"]])
+        joint_space_travel_successes += 1
+        return np.asarray(sim.getObjectPosition(ur5["tip"], -1), dtype=np.float64)
+
     def animate_motion_phase(
         start_position: np.ndarray,
         end_position: np.ndarray,
@@ -1270,10 +1551,27 @@ def run_live(
         phase: str,
     ) -> np.ndarray:
         """Animate one explicit lift/travel/descend phase without teleporting."""
+        nonlocal min_air_pen_endpoint_paper_clearance
         distance = float(np.linalg.norm(end_position - start_position))
+        angular_distance = max(
+            (
+                abs(
+                    (float(end) - float(start) + math.pi)
+                    % (2.0 * math.pi)
+                    - math.pi
+                )
+                for start, end in zip(start_orientation, end_orientation)
+            ),
+            default=0.0,
+        )
         count = max(
             1,
             int(math.ceil(distance / max(float(transition_step), 1e-5))),
+            int(
+                math.ceil(
+                    angular_distance / max(float(orientation_step_rad), 1e-5)
+                )
+            ),
         )
         previous_actual = np.asarray(
             sim.getObjectPosition(ur5["tip"], -1), dtype=np.float64
@@ -1288,18 +1586,55 @@ def run_live(
             motion_phase_steps[phase] += 1
             if status != 1:
                 motion_phase_failures[phase] += 1
+                motion_phase_failure_events.append(
+                    {
+                        "target_stroke_id": active_transition_to_stroke,
+                        "phase": phase,
+                        "phase_sample_index": index,
+                        "phase_sample_count": count,
+                        "target_position_m": [float(value) for value in position],
+                        "target_orientation_rad": [
+                            float(value) for value in orientation
+                        ],
+                        "actual_position_m": [
+                            float(value) for value in actual
+                        ],
+                        "position_residual_m": float(
+                            np.linalg.norm(actual - position)
+                        ),
+                    }
+                )
+            commanded_endpoint_clearance = (
+                float(position[2])
+                - float(virtual_pen_tcp_length)
+                - float(ur5_paper_z)
+            )
+            # Lift starts inside the pressure/compression interval and descent
+            # ends inside it.  Those samples are intentional contact, not air.
+            # Audit the real rigid endpoint only where the commanded endpoint
+            # itself is above the paper.
+            if commanded_endpoint_clearance > 0.0:
+                air_pen_endpoint = sim.getObjectPosition(
+                    rigid_pen["pen_tip"], -1
+                )
+                min_air_pen_endpoint_paper_clearance = min(
+                    min_air_pen_endpoint_paper_clearance,
+                    float(air_pen_endpoint[2]) - float(ur5_paper_z),
+                )
             # Lift/travel/descend motion is executed and timed, but no ink or
             # auxiliary path is drawn while the rigid pen is off the paper.
             previous_actual = actual
             time.sleep(max(float(transition_interval), 0.0))
         return previous_actual
 
+    first_hover_joint_configuration: Optional[List[float]] = None
     simulation_started_here = False
     try:
         if start_simulation and sim.getSimulationState() == sim.simulation_stopped:
             sim.startSimulation()
             simulation_started_here = True
         for stroke_index, (stroke_id, raw_points) in enumerate(strokes.items()):
+            active_transition_to_stroke = str(stroke_id)
             previous_by_stroke.pop(stroke_id, None)
             stroke_success = 0
             stroke_failures = 0
@@ -1320,13 +1655,22 @@ def run_live(
                 hover_target[2] = lift_plane_z
                 before_steps = motion_phase_steps["travel"]
                 before_failures = motion_phase_failures["travel"]
-                hover_actual = animate_motion_phase(
-                    current_tip,
-                    hover_target,
-                    first_orientation,
-                    first_orientation,
-                    "travel",
+                hover_actual = (
+                    animate_joint_travel(hover_target, first_orientation)
+                    if joint_space_travel
+                    else None
                 )
+                if hover_actual is None:
+                    hover_actual = animate_motion_phase(
+                        current_tip,
+                        hover_target,
+                        first_orientation,
+                        first_orientation,
+                        "travel",
+                    )
+                first_hover_joint_configuration = [
+                    float(sim.getJointPosition(joint)) for joint in ur5["joints"]
+                ]
                 added_steps = motion_phase_steps["travel"] - before_steps
                 added_failures = motion_phase_failures["travel"] - before_failures
                 approach_failures += added_failures
@@ -1360,15 +1704,60 @@ def run_live(
                     previous_pose,
                     "lift",
                 )
+                travel_start = lift_actual
+                travel_start_orientation = previous_pose
+                if air_orientation_strategy == "neutral":
+                    neutral_orientation = (0.0, 0.0, 0.0)
+                    travel_start = animate_motion_phase(
+                        lift_actual,
+                        lift_actual,
+                        previous_pose,
+                        neutral_orientation,
+                        "orient",
+                    )
+                    travel_start_orientation = neutral_orientation
+                elif air_orientation_strategy == "next":
+                    travel_start = animate_motion_phase(
+                        lift_actual,
+                        lift_actual,
+                        previous_pose,
+                        first_orientation,
+                        "orient",
+                    )
+                    travel_start_orientation = first_orientation
                 travel_end = first_target.copy()
-                travel_end[2] = lift_end[2]
-                travel_actual = animate_motion_phase(
-                    lift_actual,
-                    travel_end,
-                    previous_pose,
-                    first_orientation,
-                    "travel",
+                # Source and destination strokes can have different pressure
+                # depths.  Copying the higher source hover Z to the target
+                # made left-edge points unnecessarily unreachable.  Use the
+                # destination's own contact height plus the audited clearance;
+                # animate_motion_phase then creates a smooth airborne ramp.
+                travel_end[2] = lift_plane_z
+                travel_end_orientation = (
+                    first_orientation
+                    if air_orientation_strategy == "interpolate"
+                    else travel_start_orientation
                 )
+                travel_actual = (
+                    animate_joint_travel(travel_end, travel_end_orientation)
+                    if joint_space_travel
+                    else None
+                )
+                if travel_actual is None:
+                    travel_actual = animate_motion_phase(
+                        travel_start,
+                        travel_end,
+                        travel_start_orientation,
+                        travel_end_orientation,
+                        "travel",
+                    )
+                if air_orientation_strategy == "neutral":
+                    travel_actual = animate_motion_phase(
+                        travel_actual,
+                        travel_actual,
+                        travel_start_orientation,
+                        first_orientation,
+                        "orient",
+                    )
                 animate_motion_phase(
                     travel_actual,
                     first_target,
@@ -1427,6 +1816,7 @@ def run_live(
     print("[DONE] CoppeliaSim virtual-arm trajectory replay finished")
     return {
         "arm_model": "CoppeliaSim_official_UR5.ttm",
+        "scene_cleanup": cleanup_report,
         "actual_robot_ik": True,
         "ik_success_steps": ik_success,
         "ik_failure_steps": ik_failures,
@@ -1462,6 +1852,18 @@ def run_live(
         ),
         "motion_phase_steps": motion_phase_steps,
         "motion_phase_failures": motion_phase_failures,
+        "motion_phase_failure_events": motion_phase_failure_events,
+        "joint_space_travel_enabled": joint_space_travel,
+        "joint_space_travel_attempts": joint_space_travel_attempts,
+        "joint_space_travel_successes": joint_space_travel_successes,
+        "joint_space_travel_failures": joint_space_travel_failures,
+        "joint_space_travel_steps": joint_space_travel_steps,
+        "maximum_joint_travel_step_rad": maximum_joint_travel_step,
+        "global_ik_timeout_s": global_ik_timeout_s,
+        "air_orientation_strategy": air_orientation_strategy,
+        "neutral_air_orientation_enabled": air_orientation_strategy == "neutral",
+        "orientation_step_rad": orientation_step_rad,
+        "first_hover_joint_configuration_rad": first_hover_joint_configuration,
         "paper_offset_x_m": paper_offset_x,
         "paper_offset_y_m": paper_offset_y,
         "tool_orientation_constraint": ur5["tool_orientation_constraint"],
@@ -1510,9 +1912,34 @@ def run_live(
         "minimum_tip_paper_clearance_m": min_tip_paper_clearance,
         "minimum_pen_endpoint_paper_clearance_m": min_pen_endpoint_paper_clearance,
         "maximum_pen_endpoint_paper_clearance_m": max_pen_endpoint_paper_clearance,
+        "minimum_air_pen_endpoint_paper_clearance_m": (
+            min_air_pen_endpoint_paper_clearance
+        ),
+        "air_pen_stays_above_paper": (
+            min_air_pen_endpoint_paper_clearance >= 0.0
+        ),
         "ink_trace_source": "actual_virtual_pen_tip_xy_projected_to_paper",
         "tip_stays_above_paper": (
             min_tip_paper_clearance >= float(tip_paper_clearance_m)
+        ),
+        "strict_reachability_passed": (
+            ik_failures == 0
+            and ground_rejected_steps == 0
+            and paper_rejected_steps == 0
+            and upward_pen_rejected_steps == 0
+            and min_body_geometry_z >= float(ground_clearance_m)
+            and min_tip_paper_clearance >= float(tip_paper_clearance_m)
+            and min_air_pen_endpoint_paper_clearance >= 0.0
+        ),
+        "writing_reachability_passed": (
+            sum(ik_failure_by_stroke.values()) == 0
+            and ground_rejected_steps == 0
+            and paper_rejected_steps == 0
+            and upward_pen_rejected_steps == 0
+        ),
+        "air_motion_reachability_passed": (
+            sum(motion_phase_failures.values()) == 0
+            and min_air_pen_endpoint_paper_clearance >= 0.0
         ),
     }
 
@@ -1563,7 +1990,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--transition_step_m",
         type=float,
-        default=0.004,
+        default=0.025,
         help="Maximum step for lift/travel/descend phases (m).",
     )
     parser.add_argument(
@@ -1575,8 +2002,73 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pen_lift_clearance_m",
         type=float,
-        default=0.07,
+        default=0.025,
         help="Explicit pen-up clearance above each stroke start/end (m).",
+    )
+    travel_group = parser.add_mutually_exclusive_group()
+    travel_group.add_argument(
+        "--joint_space_travel",
+        dest="joint_space_travel",
+        action="store_true",
+        help=(
+            "Experimental: use closest-configuration global IK and a safety-"
+            "preflighted joint path for pen-up travel. Disabled by default to "
+            "avoid changing the elbow/wrist branch without look-ahead."
+        ),
+    )
+    travel_group.add_argument(
+        "--no_joint_space_travel",
+        dest="joint_space_travel",
+        action="store_false",
+        help="Use only Cartesian DLS for pen-up travel (diagnostic fallback).",
+    )
+    parser.set_defaults(joint_space_travel=False)
+    air_orientation_group = parser.add_mutually_exclusive_group()
+    air_orientation_group.add_argument(
+        "--air_orientation_strategy",
+        choices=("previous", "next", "interpolate", "neutral"),
+        dest="air_orientation_strategy",
+        help=(
+            "Airborne pose policy: keep the previous pose (default), rotate "
+            "at hover to the next stroke, interpolate during travel, or fully "
+            "straighten."
+        ),
+    )
+    air_orientation_group.add_argument(
+        "--neutral_air_orientation",
+        dest="air_orientation_strategy",
+        action="store_const",
+        const="neutral",
+        help=(
+            "Keep the learned CSV pose at contact, but smoothly straighten the "
+            "pen while it is lifted for inter-stroke travel (default)."
+        ),
+    )
+    air_orientation_group.add_argument(
+        "--no_neutral_air_orientation",
+        dest="air_orientation_strategy",
+        action="store_const",
+        const="previous",
+        help="Keep the previous stroke pose throughout pen-up travel.",
+    )
+    parser.set_defaults(air_orientation_strategy="next")
+    parser.add_argument(
+        "--orientation_step_rad",
+        type=float,
+        default=0.05,
+        help="Maximum Euler-angle increment during explicit airborne reorientation (rad).",
+    )
+    parser.add_argument(
+        "--joint_travel_step_rad",
+        type=float,
+        default=0.035,
+        help="Maximum displayed joint increment during planned pen-up travel (rad).",
+    )
+    parser.add_argument(
+        "--global_ik_timeout_s",
+        type=float,
+        default=0.20,
+        help="Maximum randomized global-IK search time per pen-up transfer (s).",
     )
     parser.add_argument(
         "--virtual_brush_length_m",
@@ -1638,14 +2130,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ur5_paper_z_m",
         type=float,
-        default=0.60,
-        help="Top surface of the writing plane above the world floor (m); default is 60 cm.",
+        default=0.58,
+        help="Top surface of the writing plane above the world floor (m); reachability-audited default is 58 cm.",
     )
     parser.add_argument(
         "--paper_offset_x_m",
         type=float,
-        default=-0.28,
-        help="World x offset of the paper/trajectory from the UR5 base frame (m).",
+        default=-0.21,
+        help="World x offset of the paper/trajectory from the UR5 base frame (m); audited default is -0.21 m.",
     )
     parser.add_argument(
         "--paper_offset_y_m",
@@ -1714,6 +2206,17 @@ def main(args: argparse.Namespace) -> None:
             "total rigid pen length must exceed max_brush_compression_m so "
             "the rigid UR5 flange remains above the paper"
         )
+    if args.joint_travel_step_rad <= 0.0:
+        raise ValueError("joint_travel_step_rad must be positive")
+    if args.global_ik_timeout_s <= 0.0:
+        raise ValueError("global_ik_timeout_s must be positive")
+    if args.orientation_step_rad <= 0.0:
+        raise ValueError("orientation_step_rad must be positive")
+    if args.pen_lift_clearance_m <= args.max_brush_compression_m:
+        raise ValueError(
+            "pen_lift_clearance_m must exceed max_brush_compression_m so "
+            "the rigid pen endpoint stays above the paper during air motion"
+        )
     rows = load_rows(args.trajectory_csv, character=args.character, sample_id=args.sample_id)
     provenance = trajectory_provenance(
         args.trajectory_csv,
@@ -1774,6 +2277,11 @@ def main(args: argparse.Namespace) -> None:
         paper_height=args.paper_height_m,
         orientation_mode=args.orientation_mode,
         strict_ik=bool(args.strict_ik),
+        joint_space_travel=bool(args.joint_space_travel),
+        joint_travel_step_rad=args.joint_travel_step_rad,
+        global_ik_timeout_s=args.global_ik_timeout_s,
+        air_orientation_strategy=args.air_orientation_strategy,
+        orientation_step_rad=args.orientation_step_rad,
         start_simulation=args.start_simulation,
     )
     report["live_replay"] = True

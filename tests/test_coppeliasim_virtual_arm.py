@@ -1,15 +1,18 @@
 from pathlib import Path
+import sys
 
 from tools.coppeliasim_virtual_arm import (
     CoordinateMapper,
     PoseRow,
     _euler_xyz_to_quaternion,
     _interpolate_euler_shortest,
+    _remove_replay_artifacts,
     _rotate_vector_by_quaternion,
     _world_bbox_min_z,
     build_report,
     interpolate_stroke,
     mapped_strokes,
+    parse_args,
     save_pressure_trajectory,
     trajectory_provenance,
     validate_trajectory_identity,
@@ -155,3 +158,65 @@ def test_world_bbox_min_z_uses_oriented_geometry_not_object_center():
     ]
     bounds = [-0.04, -0.02, -0.20, 0.04, 0.02, 0.20]
     assert abs(_world_bbox_min_z(matrix, bounds) - 0.06) < 1e-9
+
+
+def test_replay_cleanup_only_removes_owned_artifact_container():
+    class FakeSim:
+        handle_scene = -1
+        handle_all = -2
+
+        def __init__(self):
+            self.removed_drawings = []
+            self.removed_objects = []
+
+        def getObjectsInTree(self, *_args):
+            return [10, 20]
+
+        def getObjectAlias(self, handle, _options):
+            return {
+                10: "/fusionReplayArtifacts",
+                20: "/userDrawingRoot",
+            }[handle]
+
+        def readCustomDataBlock(self, handle, tag):
+            assert handle == 10
+            assert tag == "fusion_model_drawing_handles"
+            return "[101, 102]"
+
+        def removeDrawingObject(self, handle):
+            self.removed_drawings.append(handle)
+
+        def removeObjects(self, handles, delayed):
+            assert delayed is False
+            self.removed_objects.extend(handles)
+
+    sim = FakeSim()
+    report = _remove_replay_artifacts(sim)
+    assert sim.removed_drawings == [101, 102]
+    assert sim.removed_objects == [10]
+    assert report == {
+        "removed_generated_scene_objects": 1,
+        "removed_previous_drawing_objects": 2,
+    }
+
+
+def test_reachability_audited_cli_defaults(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "coppeliasim_virtual_arm.py",
+            "--trajectory_csv",
+            "pose.csv",
+            "--output_dir",
+            "out",
+        ],
+    )
+    args = parse_args()
+    assert args.ur5_paper_z_m == 0.58
+    assert args.paper_offset_x_m == -0.21
+    assert args.pen_lift_clearance_m == 0.025
+    assert args.transition_step_m == 0.025
+    assert args.joint_space_travel is False
+    assert args.air_orientation_strategy == "next"
+    assert args.orientation_step_rad == 0.05

@@ -2001,15 +2001,19 @@ PYTHONPATH=. /home/robot/miniconda3/envs/ddpm/bin/python -u \
   --require_trajectory_prototype paper_target_local_footprint_v44 \
   --require_trajectory_sha256 52e15c5f1b4cdf454a78a5345cd6516896740aebc72b2b56b436016ba0df3251 \
   --character 武 --sample_id 武_fake_sim \
-  --output_dir outputs/coppeliasim_wu_latest_csv_pose_v1 \
+  --output_dir outputs/coppeliasim_reachability_v22_final \
   --orientation_mode csv_pose --strict_ik \
   --virtual_pen_handle_length_m 0.060 --virtual_brush_length_m 0.048 \
+  --ur5_paper_z_m 0.58 --paper_offset_x_m -0.21 \
+  --paper_offset_y_m 0 --pen_lift_clearance_m 0.025 \
+  --air_orientation_strategy next --orientation_step_rad 0.05 \
+  --transition_step_m 0.025 --no_joint_space_travel \
   --interval 0.015 --max_step_m 0.002 --client_port 23000 \
   --keep_scene
 ```
 
-默认把图像坐标 y 轴翻转为纸面世界坐标；若需要保持原始方向，添加
-`--no_flip_y`。`trajectory_report.json` 会记录输入 CSV 的绝对路径、SHA256、
+默认采用标准俯视坐标，不翻转图像 y 轴；只有回放旧的仰视轨迹时才添加
+`--flip_y`。`trajectory_report.json` 会记录输入 CSV 的绝对路径、SHA256、
 prototype、姿态单位/范围、状态计数、抬笔规则和仿真安全声明；来源或哈希不匹配
 时会在加载 UR5 前终止。`--orientation_mode csv_pose` 将 CSV 的
 `alpha/beta/gamma` 作为相对于纸面平行基准姿态的局部 XYZ 弧度偏移，
@@ -2045,3 +2049,48 @@ UR5 模型的黑色 `/UR5/connection` 工具连接点外侧，而不是固定在
 仅在调试远程 IK 时才使用 `--no_start_simulation`。场景中显式创建与法兰固定的
 夹持板、笔杆、笔毛和 `virtualPenTip`，夹持板平面与纸面平行、笔轴朝世界负 Z。
 墨迹坐标取实际 `virtualPenTip` 的 x/y 并投影到纸面，而不是使用法兰或 IK dummy。
+
+### UR5 可达性审计
+
+完整 `alpha/beta/gamma` 严格 IK 网格搜索得到当前推荐工作区：
+
+```text
+paper_z = 0.58 m
+paper_offset_x = -0.21 m
+paper_offset_y = 0.00 m
+pen_lift_clearance = 0.025 m
+air_orientation_strategy = next
+```
+
+在相同快速审计采样下，旧工作区 `z=0.60 m, x=-0.28 m` 有 23 个失败点。
+v22 使用经严格审计的连续关节值作为写字 ready pose；笔抬起后先在源端悬停点
+平滑切换到下一笔 `alpha/beta/gamma`，再从源笔悬停高度斜向移动到目标笔自己的
+悬停高度，避免在工作区左边界保持不必要的高位。25 mm 净空高于数据中的最大
+20 mm 下压量，因此最深压力点在空中仍至少保留约 5 mm 理论纸面净空。
+
+`outputs/coppeliasim_reachability_v22_final/trajectory_report.json` 的实测结果为：
+
+```text
+ik_success_steps = 322
+ik_failure_steps = 0
+motion_phase_failures = {lift: 0, orient: 0, travel: 0, descend: 0}
+all eight ik_failure_by_stroke values = 0
+ik_max_residual_m = 0.000494
+minimum_body_geometry_z_m = 0.037442
+minimum_air_pen_endpoint_paper_clearance_m = 0.001480
+air_pen_stays_above_paper = true
+writing_reachability_passed = true
+air_motion_reachability_passed = true
+strict_reachability_passed = true
+```
+
+报告同时保存每个失败点（若存在）的目标笔画、阶段、插值序号、目标/实际坐标和
+残差，便于以后更换字或工作区后重新审计。严格通过仅表示当前 CoppeliaSim UR5
+模型、当前工具长度和仿真工作区可达，不等同于真实机器人已经完成 TCP、碰撞体、
+关节限位或纸面标定。
+
+`--joint_space_travel` 会尝试全局 IK 关节路径，但它可能改变肘/腕支路，当前仅作
+实验选项，默认关闭；当前默认的连续笛卡尔转场已经严格通过，未来更换机械臂或
+工作区后若再次出现奇异点，再引入带前视和碰撞约束的 OMPL 关节空间规划。每轮
+回放创建专属 `fusionReplayArtifacts` 容器并记录自己的绘图
+句柄；下一轮只删除该容器及其绘图，不清理用户场景中的其他对象。
