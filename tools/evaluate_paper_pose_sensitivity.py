@@ -46,7 +46,14 @@ def evaluate_field(
     device: torch.device,
 ) -> dict:
     feature_names = normalization["feature_names"]
-    gamma_conditioned = "gamma_rad" in feature_names
+    # v15 checkpoints use ``gamma_relative_rad`` while older checkpoints use
+    # ``gamma_rad``.  Both are a fourth orientation condition for the
+    # renderer; keep the name so field indexing and the report remain exact.
+    gamma_feature = next(
+        (name for name in ("gamma_rad", "gamma_relative_rad") if name in feature_names),
+        None,
+    )
+    gamma_conditioned = gamma_feature is not None
     baseline = np.asarray(
         [
             float((PAPER_POSTURE_MIN[0] + PAPER_POSTURE_MAX[0]) / 2.0),
@@ -172,10 +179,14 @@ def main(args: argparse.Namespace) -> None:
             float(PAPER_POSTURE_MAX[2]),
         ),
     }
-    if "gamma_rad" in feature_names:
-        gamma_index = feature_names.index("gamma_rad")
+    gamma_feature = next(
+        (name for name in ("gamma_rad", "gamma_relative_rad") if name in feature_names),
+        None,
+    )
+    if gamma_feature is not None:
+        gamma_index = feature_names.index(gamma_feature)
         gamma_scale = float(normalization["scales"][gamma_index])
-        limits["gamma_rad"] = (-gamma_scale, gamma_scale)
+        limits[gamma_feature] = (-gamma_scale, gamma_scale)
 
     results = {}
     for field_name, bounds in limits.items():
@@ -205,7 +216,8 @@ def main(args: argparse.Namespace) -> None:
         "checkpoint": args.checkpoint,
         "checkpoint_format": normalization.get("checkpoint_format"),
         "feature_names": feature_names,
-        "gamma_conditioned": "gamma_rad" in feature_names,
+        "gamma_conditioned": gamma_feature is not None,
+        "gamma_feature": gamma_feature,
         "results": results,
         "interpretation": (
             "Response ratio near one means the network reproduces the analytic "
