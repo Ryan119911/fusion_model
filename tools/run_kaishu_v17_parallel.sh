@@ -26,9 +26,9 @@ run_shard() {
   echo "[SHARD ${shard}] exit=$? $(date -Is)"
 }
 
-for shard in 0 1 2; do
+for shard in 0 1 2 3; do
   run_shard "${shard}" > "/tmp/kaishu_v17_full_snap_shard_${shard}.log" 2>&1 &
   echo "[LAUNCHED] shard=${shard} pid=$!"
 done
 wait
-echo "[PARALLEL] shards 0-2 finished $(date -Is)"
+echo "[PARALLEL] shards 0-3 finished $(date -Is)"
