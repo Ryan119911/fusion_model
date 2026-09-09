@@ -24,7 +24,7 @@ def _write_pose_csv(path):
                     "stroke_id": stroke_id,
                     "point_id": point_id,
                     "x": 10 + 20 * point_id,
-                    "y": 10 + 5 * stroke_id,
+                    "y": 10 + 5 * point_id + 5 * stroke_id,
                 }
             )
     with open(path, "w", encoding="utf-8", newline="") as stream:
@@ -51,6 +51,9 @@ def test_random_truth_is_seeded_and_in_bounds(tmp_path):
     assert all(11.0 < float(row["z"]) < 20.0 for row in rows)
     assert all(0.0 < float(row["alpha"]) < np.deg2rad(10.0) for row in rows)
     assert all(0.0 < float(row["beta"]) < np.deg2rad(5.0) for row in rows)
+    # Source y increases along each stroke, therefore canvas-frame heading is
+    # negative after the y-axis flip in CanvasTransform.map_point.
+    assert np.isclose(float(rows[1]["gamma"]), -np.arctan2(5.0, 20.0))
     assert json.loads(first.with_suffix(".json").read_text())["simulation_only"]
 
 
