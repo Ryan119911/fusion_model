@@ -13,7 +13,7 @@ for shard in 0 1 2 3; do
     --model_support_width_px 7 \
     --chirography 楷 \
     --shard_count 4 --shard_index "${shard}" \
-    --order 1 --max_steps 3 --optimization_size 48 \
+    --order 1 --max_steps 3 --optimization_size 64 \
     --pixel_weight 12 --h_smoothness_weight 0.2 \
     --h_point_velocity_weight 5 --h_point_acceleration_weight 10 \
     --perturbation_scales -1 0 1 --top_k 3 \
