@@ -16,6 +16,10 @@ for shard in 0 1 2 3; do
     --pixel_weight 12 --h_smoothness_weight 0.2 \
     --h_point_velocity_weight 5 --h_point_acceleration_weight 10 \
     --perturbation_scales -1 0 1 --top_k 3 \
+    --optimize_xy --xy_max_offset_px 3 --xy_smoothness_weight 1 \
+    --xy_prior_weight 0.5 --xy_segment_length_weight 0.10 \
+    --xy_segment_direction_weight 0.10 --xy_target_skeleton_weight 0.20 \
+    --xy_target_skeleton_max_distance_px 8 \
     --device cuda --resume_completed \
     --target_override 武=data/raw/targets/wu_kaishu_target.png \
     --timeout_seconds 1800

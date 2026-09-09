@@ -29,6 +29,7 @@ from datasets.trajectory_dataset import load_trajectory_csv
 from tools.invert_kaishu_trajectory_batch import (
     _write_json,
     build_kaishu_dataset,
+    build_skeleton_snap_initial_pose,
     character_stem,
     choose_target,
     filter_target_items,
@@ -111,6 +112,20 @@ def _v17_command(args: argparse.Namespace, sample_id: str, target: Path,
         "--perturbation_scales", *[str(x) for x in args.perturbation_scales],
         "--copy_top_k",
     ]
+    if args.optimize_xy:
+        command.extend(
+            [
+                "--optimize_xy",
+                "--xy_max_offset_px", str(args.xy_max_offset_px),
+                "--xy_smoothness_weight", str(args.xy_smoothness_weight),
+                "--xy_prior_weight", str(args.xy_prior_weight),
+                "--xy_segment_length_weight", str(args.xy_segment_length_weight),
+                "--xy_segment_direction_weight", str(args.xy_segment_direction_weight),
+                "--xy_target_skeleton_weight", str(args.xy_target_skeleton_weight),
+                "--xy_target_skeleton_max_distance_px", str(args.xy_target_skeleton_max_distance_px),
+                "--xy_target_skeleton_threshold", str(args.xy_target_skeleton_threshold),
+            ]
+        )
     if args.resume_completed:
         command.append("--resume_completed")
     return command
@@ -227,7 +242,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     write_trajectory_csv(sample, input_csv)
                 prior_csv = char_dir / "initial_pose.csv"
                 if not prior_csv.exists():
-                    _make_initial_pose(sample, prior_csv, args.initial_h_mm)
+                    if args.optimize_xy:
+                        snap_report = build_skeleton_snap_initial_pose(
+                            sample, target_canvas, prior_csv, args.image_size,
+                            args.padding, args.snap_threshold, args.snap_max_px,
+                            args.snap_blend, args.snap_smooth_sigma,
+                            args.initial_h_mm, 0.0, 0.0, 0.0,
+                        )
+                        _write_json(char_dir / "skeleton_snap_report.json", snap_report)
+                    else:
+                        _make_initial_pose(sample, prior_csv, args.initial_h_mm)
                 command = _v17_command(args, str(sample.meta.get("sample_id", "")), target_path,
                                        input_csv, prior_csv, v17_dir, character)
                 record["command"] = " ".join(command)
@@ -329,6 +353,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min_iou", type=float, default=0.95)
     parser.add_argument("--max_boundary_fraction", type=float, default=0.05)
     parser.add_argument("--max_continuity_jump", type=float, default=0.25)
+    parser.add_argument("--optimize_xy", action="store_true")
+    parser.add_argument("--xy_max_offset_px", type=float, default=3.0)
+    parser.add_argument("--xy_smoothness_weight", type=float, default=1.0)
+    parser.add_argument("--xy_prior_weight", type=float, default=0.5)
+    parser.add_argument("--xy_segment_length_weight", type=float, default=0.10)
+    parser.add_argument("--xy_segment_direction_weight", type=float, default=0.10)
+    parser.add_argument("--xy_target_skeleton_weight", type=float, default=0.20)
+    parser.add_argument("--xy_target_skeleton_max_distance_px", type=float, default=8.0)
+    parser.add_argument("--xy_target_skeleton_threshold", type=float, default=0.35)
+    parser.add_argument("--snap_threshold", type=float, default=0.35)
+    parser.add_argument("--snap_max_px", type=float, default=8.0)
+    parser.add_argument("--snap_blend", type=float, default=0.75)
+    parser.add_argument("--snap_smooth_sigma", type=float, default=0.75)
     return parser
 
 

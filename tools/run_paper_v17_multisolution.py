@@ -321,7 +321,31 @@ def build_inversion_command(args: argparse.Namespace, initial_csv: Path, run_dir
         str(args.render_max_step_px),
         "--point_batch_size",
         str(args.point_batch_size),
+        "--initial_pose_xy_source",
+        "csv",
     ]
+    if args.optimize_xy:
+        command.extend(
+            [
+                "--optimize_xy",
+                "--xy_max_offset_px",
+                str(args.xy_max_offset_px),
+                "--xy_smoothness_weight",
+                str(args.xy_smoothness_weight),
+                "--xy_prior_weight",
+                str(args.xy_prior_weight),
+                "--xy_segment_length_weight",
+                str(args.xy_segment_length_weight),
+                "--xy_segment_direction_weight",
+                str(args.xy_segment_direction_weight),
+                "--xy_target_skeleton_weight",
+                str(args.xy_target_skeleton_weight),
+                "--xy_target_skeleton_max_distance_px",
+                str(args.xy_target_skeleton_max_distance_px),
+                "--xy_target_skeleton_threshold",
+                str(args.xy_target_skeleton_threshold),
+            ]
+        )
     return command
 
 
@@ -955,6 +979,15 @@ def main() -> None:
     parser.add_argument("--pixels_per_model_unit", type=float, default=20.0)
     parser.add_argument("--render_max_step_px", type=float, default=2.0)
     parser.add_argument("--point_batch_size", type=int, default=64)
+    parser.add_argument("--optimize_xy", action="store_true")
+    parser.add_argument("--xy_max_offset_px", type=float, default=3.0)
+    parser.add_argument("--xy_smoothness_weight", type=float, default=1.0)
+    parser.add_argument("--xy_prior_weight", type=float, default=0.5)
+    parser.add_argument("--xy_segment_length_weight", type=float, default=0.10)
+    parser.add_argument("--xy_segment_direction_weight", type=float, default=0.10)
+    parser.add_argument("--xy_target_skeleton_weight", type=float, default=0.20)
+    parser.add_argument("--xy_target_skeleton_max_distance_px", type=float, default=8.0)
+    parser.add_argument("--xy_target_skeleton_threshold", type=float, default=0.35)
     parser.add_argument("--footprint_radius_px", type=float, default=10.0)
     parser.add_argument("--footprint_samples", type=int, default=33)
     parser.add_argument("--footprint_threshold", type=float, default=0.35)
