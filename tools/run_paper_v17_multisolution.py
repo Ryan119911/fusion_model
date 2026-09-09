@@ -295,6 +295,10 @@ def build_inversion_command(args: argparse.Namespace, initial_csv: Path, run_dir
         str(args.pixel_weight),
         "--h_smoothness_weight",
         str(args.h_smoothness_weight),
+        "--h_point_velocity_weight",
+        str(args.h_point_velocity_weight),
+        "--h_point_acceleration_weight",
+        str(args.h_point_acceleration_weight),
         "--alpha_smoothness_weight",
         str(args.alpha_smoothness_weight),
         "--beta_smoothness_weight",
@@ -569,20 +573,39 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
     root = Path(args.output_dir)
     root.mkdir(parents=True, exist_ok=True)
-    truth_csv = Path(args.truth_pose_csv) if args.truth_pose_csv else root / "synthetic_truth.csv"
-    if not truth_csv.exists():
-        build_random_truth(
-            args.trajectory_csv,
-            str(truth_csv),
-            character=args.character,
-            sample_id=args.sample_id,
-            seed=args.seed,
-            gamma_mode=args.gamma_truth_mode,
-        )
-    target_image = Path(args.target_image) if args.target_image else root / "synthetic_target.png"
+    if args.real_target:
+        # Real database targets have no physical pose ground truth.  The
+        # initial pose is used only to seed multi-start optimization and is
+        # never treated as a recovery label.
+        if not args.target_image:
+            raise ValueError("--real_target requires --target_image")
+        if not args.initial_pose_csv:
+            raise ValueError(
+                "--real_target requires --initial_pose_csv for multi-start initialization"
+            )
+        truth_csv = None
+        initial_pose_csv = Path(args.initial_pose_csv)
+        if not initial_pose_csv.exists():
+            raise FileNotFoundError(initial_pose_csv)
+        target_image = Path(args.target_image)
+        if not target_image.exists():
+            raise FileNotFoundError(target_image)
+    else:
+        truth_csv = Path(args.truth_pose_csv) if args.truth_pose_csv else root / "synthetic_truth.csv"
+        if not truth_csv.exists():
+            build_random_truth(
+                args.trajectory_csv,
+                str(truth_csv),
+                character=args.character,
+                sample_id=args.sample_id,
+                seed=args.seed,
+                gamma_mode=args.gamma_truth_mode,
+            )
+        target_image = Path(args.target_image) if args.target_image else root / "synthetic_target.png"
+        if not target_image.exists():
+            _render_truth_target(args, truth_csv, target_image)
+        initial_pose_csv = truth_csv
     args.target_image = str(target_image)
-    if not target_image.exists():
-        _render_truth_target(args, truth_csv, target_image)
 
     samples = load_trajectory_csv(args.trajectory_csv)
     sample = repair_sample_states(
@@ -620,7 +643,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "format": "paper_pose_multisolution_runner_v17",
         "simulation_only": True,
         "trajectory_csv": args.trajectory_csv,
-        "truth_pose_csv": str(truth_csv),
+        "real_target": bool(args.real_target),
+        "truth_pose_csv": None if truth_csv is None else str(truth_csv),
+        "initial_pose_csv": str(initial_pose_csv),
         "target_image": str(target_image),
         "bbsmg_ckpt": args.bbsmg_ckpt,
         "character": args.character,
@@ -640,7 +665,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         estimate_csv = run_dir / f"{args.output_stem}_trajectory.csv"
         report_json = run_dir / f"{args.output_stem}_report.json"
         build_probe(
-            str(truth_csv),
+            str(initial_pose_csv),
             str(initial_csv),
             profile="perturbed_initial",
             perturbation_scale=scale,
@@ -677,7 +702,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
         continuity = continuity_metrics(posture, gamma, stroke_ids)
         gamma_heading = gamma_heading_metrics(gamma, xy, stroke_ids)
-        recovery = pose_recovery_metrics(str(truth_csv), posture, gamma, sample)
+        recovery = (
+            None
+            if args.real_target
+            else pose_recovery_metrics(str(truth_csv), posture, gamma, sample)
+        )
         bounds = boundary_fractions(posture, gamma)
         item = {
             "label": label,
@@ -772,28 +801,37 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         serializable = dict(item)
         serializable_candidates.append(serializable)
     acceptance = {
-        "synthetic_target_iou_min": float(
+        "target_iou_min": float(
             min(item["image_metrics"].get("iou_at_0.5", 0.0) for item in ranked)
         ),
-        "synthetic_target_iou_threshold": float(args.min_iou),
-        "h_normalized_rmse_threshold": 0.05,
-        "h_normalized_rmse_worst": float(
-            max(item["pose_recovery"]["z"]["normalized_rmse"] for item in ranked)
-        ),
-        "h_recovery_passed": all(
-            item["pose_recovery"]["z"]["normalized_rmse"] <= 0.05
-            for item in ranked
-        ),
+        "target_iou_threshold": float(args.min_iou),
         "no_boundary_saturation_threshold": float(args.max_boundary_fraction),
         "different_initial_images_consistent": all(
             value["passed_v17_stability"] for value in field_stability.values()
         ),
         "alpha_beta_unique_from_single_image": False,
     }
+    if not args.real_target:
+        acceptance.update(
+            {
+                "synthetic_target_iou_min": acceptance["target_iou_min"],
+                "synthetic_target_iou_threshold": float(args.min_iou),
+                "h_normalized_rmse_threshold": 0.05,
+                "h_normalized_rmse_worst": float(
+                    max(item["pose_recovery"]["z"]["normalized_rmse"] for item in ranked)
+                ),
+                "h_recovery_passed": all(
+                    item["pose_recovery"]["z"]["normalized_rmse"] <= 0.05
+                    for item in ranked
+                ),
+            }
+        )
     summary = {
         "format": "paper_pose_multisolution_v17",
         "simulation_only": True,
-        "truth_pose_csv": str(truth_csv),
+        "real_target": bool(args.real_target),
+        "truth_pose_csv": None if truth_csv is None else str(truth_csv),
+        "initial_pose_csv": str(initial_pose_csv),
         "target_image": str(target_image),
         "candidate_count": len(ranked),
         "top_k": top_k,
@@ -865,6 +903,19 @@ def main() -> None:
     parser.add_argument("--trajectory_csv", required=True)
     parser.add_argument("--truth_pose_csv", default=None)
     parser.add_argument("--target_image", default=None)
+    parser.add_argument(
+        "--real_target",
+        action="store_true",
+        help=(
+            "rank multi-start candidates against an existing target image; "
+            "requires --initial_pose_csv and never treats it as pose truth"
+        ),
+    )
+    parser.add_argument(
+        "--initial_pose_csv",
+        default=None,
+        help="prior pose CSV used only to seed real-target multi-start inversion",
+    )
     parser.add_argument("--bbsmg_ckpt", required=True)
     parser.add_argument("--character", default="武")
     parser.add_argument("--sample_id", default=None)
@@ -890,6 +941,8 @@ def main() -> None:
     parser.add_argument("--offset_transfer_scale", type=float, default=1.0)
     parser.add_argument("--pixel_weight", type=float, default=5.0)
     parser.add_argument("--h_smoothness_weight", type=float, default=0.01)
+    parser.add_argument("--h_point_velocity_weight", type=float, default=5.0)
+    parser.add_argument("--h_point_acceleration_weight", type=float, default=10.0)
     parser.add_argument("--alpha_smoothness_weight", type=float, default=0.10)
     parser.add_argument("--beta_smoothness_weight", type=float, default=0.10)
     parser.add_argument("--gamma_smoothness_weight", type=float, default=0.10)
