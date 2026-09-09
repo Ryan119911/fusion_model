@@ -37,6 +37,13 @@ def _wrap_angle(value: float) -> float:
 
 
 def _heading_by_key(rows: Iterable[dict]) -> dict[tuple[int, int], float]:
+    """Return forward headings in the renderer's canvas frame.
+
+    ``CanvasTransform.map_point`` preserves x but flips y (source trajectory
+    coordinates use an upward-positive axis while PIL/canvas pixels use a
+    downward-positive axis).  The dynamic renderer consumes the latter frame,
+    so the synthetic heading truth must apply the same flip before atan2.
+    """
     grouped: dict[int, list[dict]] = defaultdict(list)
     for row in rows:
         grouped[int(row["stroke_id"])].append(row)
@@ -51,7 +58,9 @@ def _heading_by_key(rows: Iterable[dict]) -> dict[tuple[int, int], float]:
             dtype=np.float64,
         )
         delta = np.diff(points, axis=0)
-        angles = np.arctan2(delta[:, 1], delta[:, 0])
+        # Match models.geometry.CanvasTransform.map_point: ny is based on
+        # (src_max_y - y), hence dy_canvas = -dy_source.
+        angles = np.arctan2(-delta[:, 1], delta[:, 0])
         # Use the forward segment at each point and the last segment at the
         # terminal point.  Zero-length segments inherit the previous heading.
         previous = float(angles[0])
@@ -188,6 +197,7 @@ def build_random_truth(
         "stroke_count": len(profile_by_stroke),
         "angle_unit": "rad",
         "pose_frame": "paper_model",
+        "gamma_frame": "canvas_xy_after_source_y_flip",
         "profiles_are_stroke_affine": True,
         "ranges": {
             field: [float(array.min()), float(array.max())]

@@ -554,6 +554,19 @@ def _copy_ranked_artifacts(item: dict[str, Any], rank_dir: Path) -> None:
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
+    # In heading mode gamma is the absolute forward tangent in the canvas
+    # frame, so a stroke may legitimately point anywhere in [-pi, pi].  The
+    # historical ±30° default is appropriate only for a bounded relative
+    # brush twist and silently clips vertical/diagonal strokes.  Expand the
+    # default-like value for heading mode while still allowing an explicit
+    # wider bound to pass through unchanged.
+    if args.gamma_truth_mode == "heading" and args.gamma_max_abs_deg < 90.0:
+        args.gamma_max_abs_deg = 180.0
+        print(
+            "[GAMMA] heading truth uses absolute canvas tangent; "
+            "expanded gamma_max_abs_deg to 180",
+            flush=True,
+        )
     root = Path(args.output_dir)
     root.mkdir(parents=True, exist_ok=True)
     truth_csv = Path(args.truth_pose_csv) if args.truth_pose_csv else root / "synthetic_truth.csv"
@@ -613,6 +626,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "character": args.character,
         "seed": args.seed,
         "gamma_truth_mode": args.gamma_truth_mode,
+        "gamma_max_abs_deg": args.gamma_max_abs_deg,
         "perturbation_scales": args.perturbation_scales,
         "runs": {},
     }

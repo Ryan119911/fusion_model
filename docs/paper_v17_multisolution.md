@@ -25,7 +25,9 @@ $PY -u tools/run_paper_v17_multisolution.py \
 若要测试“`gamma` 由相邻 x/y 方向推导”的约定，把
 `--gamma_truth_mode random` 换成 `--gamma_truth_mode heading`。汇总中会额外报告
 每个候选的 `gamma_heading_metrics`（由相邻 x/y 得到的前进方向与 CSV gamma 的
-环差）；这仍是纸面几何候选，不是机器人角度标定。
+环差）。heading 模式的 γ 是画布坐标系中的绝对切向角，工具会自动把历史的
+±30° 默认上限扩展为 ±180°，避免竖直笔画被截断；这仍是纸面几何候选，不是机器人
+角度标定。
 
 ## 输出与判定
 
