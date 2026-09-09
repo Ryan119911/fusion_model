@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -u
 cd /home/robot/coppeliasim/machine_learning/model
+OUTPUT_DIR="${OUTPUT_DIR:-outputs/kaishu_pose_v17_full}"
 
 for shard in 0 1 2 3; do
   echo "[SUPERVISOR] starting shard ${shard} at $(date -Is)"
   /home/robot/miniconda3/envs/ddpm/bin/python -u tools/invert_kaishu_v17_batch.py \
     --trajectory_csv data/raw/trajectories.csv \
     --bbsmg_ckpt outputs/paper_bbsmg_general_v16_pose_dense/bbsmg_best.pt \
-    --output_dir outputs/kaishu_pose_v17_full \
+    --output_dir "${OUTPUT_DIR}" \
     --target_selection best_model_support \
     --model_support_width_px 7 \
     --chirography 楷 \
