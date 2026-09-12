@@ -2094,3 +2094,13 @@ strict_reachability_passed = true
 工作区后若再次出现奇异点，再引入带前视和碰撞约束的 OMPL 关节空间规划。每轮
 回放创建专属 `fusionReplayArtifacts` 容器并记录自己的绘图
 句柄；下一轮只删除该容器及其绘图，不清理用户场景中的其他对象。
+
+### 模型输出注册到 ROS
+
+模型输出目录不能直接作为 ROS 正式轨迹库。每次完整迭代结束后运行
+`tools/register_pose_library_for_ros.py`：模型门负责检查 Top-1 的图像质量、边界、
+连续性、多初值稳定性、字段置信度和 CSV 契约；机器人门负责检查指定机器人上的
+IK、碰撞、奇异位姿、关节限位和轨迹连续性。正式 `manifest.jsonl` 只包含两个门
+都通过的字符，其余结果进入完整筛选清单或机器人验证队列。v17 四 shard 的审计、
+正式注册命令、机器人报告格式以及后续版本接入约定见
+[`docs/ros_pose_registry.md`](docs/ros_pose_registry.md)。
