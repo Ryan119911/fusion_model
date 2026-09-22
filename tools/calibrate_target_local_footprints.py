@@ -2,7 +2,9 @@
 
 This remains a simulation calibration candidate: image cross sections are not
 robot/TCP calibration data.  H and x/y are preserved from the input pose CSV;
-gamma is exported as the per-stroke forward x/y heading.
+Gamma interpretation is explicit.  For legacy heading-based trajectories the
+tool exports the per-stroke forward x/y heading; for gamma-disabled inversion
+results it preserves the input CSV gamma and renders with ``gamma_mode=ignore``.
 """
 from __future__ import annotations
 
@@ -179,6 +181,25 @@ def _save_overlay(
     image.save(path)
 
 
+def resolve_calibration_gamma(
+    input_gamma: np.ndarray,
+    heading: np.ndarray,
+    gamma_mode: str,
+) -> tuple[np.ndarray, str, str]:
+    """Return exported gamma plus its provenance and human-readable semantics."""
+    if gamma_mode == "relative_to_heading":
+        return (
+            heading.astype(np.float32),
+            "forward_xy_heading",
+            "absolute per-stroke forward atan2(dy,dx), radians",
+        )
+    return (
+        input_gamma.astype(np.float32),
+        "input_pose_csv",
+        f"preserved input CSV gamma; renderer mode={gamma_mode}",
+    )
+
+
 def main(args: argparse.Namespace) -> None:
     if not 0 < args.min_ink_ratio <= args.max_ink_ratio:
         raise ValueError("ink-ratio bounds must be positive and ordered")
@@ -193,7 +214,7 @@ def main(args: argparse.Namespace) -> None:
         character=args.character,
         index=args.index,
     )
-    posture, xy_source, _ = load_pose_csv(args.pose_csv, sample)
+    posture, xy_source, input_gamma = load_pose_csv(args.pose_csv, sample)
     xy = source_xy_to_canvas(sample, xy_source, args.image_size, args.padding)
     stroke_ids = np.asarray(
         [point.stroke_id for point in sample.all_points()], dtype=np.int64
@@ -208,6 +229,7 @@ def main(args: argparse.Namespace) -> None:
             footprint_longitudinal_scale=args.footprint_longitudinal_scale,
             footprint_transverse_scale=args.footprint_transverse_scale,
             fused_pose_from_height=True,
+            gamma_mode=args.gamma_mode,
             inverse_regularization=args.pose_inverse_regularization,
         ),
     )
@@ -275,7 +297,11 @@ def main(args: argparse.Namespace) -> None:
         )
     calibrated = posture.copy()
     calibrated[:, 1:] = angles.cpu().numpy()
-    gamma = heading.astype(np.float32)
+    gamma, gamma_source, gamma_semantics = resolve_calibration_gamma(
+        input_gamma, heading, args.gamma_mode
+    )
+    input_gamma_t = torch.as_tensor(input_gamma, device=device)
+    gamma_t = torch.as_tensor(gamma, device=device)
 
     baseline_renderer = PaperFusionRenderer.from_checkpoint(
         args.bbsmg_ckpt,
@@ -286,6 +312,7 @@ def main(args: argparse.Namespace) -> None:
             footprint_longitudinal_scale=args.footprint_longitudinal_scale,
             footprint_transverse_scale=args.footprint_transverse_scale,
             fused_pose_from_height=False,
+            gamma_mode=args.gamma_mode,
             inverse_regularization=args.pose_inverse_regularization,
         ),
     )
@@ -294,7 +321,7 @@ def main(args: argparse.Namespace) -> None:
             xy_t,
             posture_t,
             stroke_t,
-            torch.zeros(len(xy), device=device),
+            input_gamma_t,
         )[0, 0].cpu().numpy()
 
     # Validate through the non-fused forward chain; gamma is absolute robot
@@ -308,6 +335,7 @@ def main(args: argparse.Namespace) -> None:
             footprint_longitudinal_scale=calibrated_longitudinal_scale,
             footprint_transverse_scale=calibrated_transverse_scale,
             fused_pose_from_height=False,
+            gamma_mode=args.gamma_mode,
             inverse_regularization=args.pose_inverse_regularization,
         ),
     )
@@ -316,13 +344,13 @@ def main(args: argparse.Namespace) -> None:
             xy_t,
             posture_t,
             stroke_t,
-            torch.zeros(len(xy), device=device),
+            gamma_t,
         )[0, 0].cpu().numpy()
         rendered = forward_renderer(
             xy_t,
             torch.as_tensor(calibrated, device=device),
             stroke_t,
-            torch.zeros(len(xy), device=device),
+            gamma_t,
         )[0, 0].cpu().numpy()
 
     output = Path(args.output_dir)
@@ -333,7 +361,7 @@ def main(args: argparse.Namespace) -> None:
         "H": {"source": "input_pose_csv", "confidence": 1.0},
         "alpha": {"source": "target_local_footprint", "confidence": float(confidence.mean())},
         "beta": {"source": "target_local_footprint", "confidence": float(confidence.mean())},
-        "gamma": {"source": "forward_xy_heading", "confidence": 1.0},
+        "gamma": {"source": gamma_source, "confidence": 1.0},
     }
     csv_path = output / f"{sample.character}_target_footprint_trajectory.csv"
     save_pose_csv(
@@ -432,7 +460,12 @@ def main(args: argparse.Namespace) -> None:
         "pose_csv": args.pose_csv,
         "preserved_fields": ["x", "y", "H"],
         "calibrated_fields": ["alpha", "beta"],
-        "gamma_semantics": "per-stroke forward atan2(dy,dx), radians",
+        "gamma_mode": args.gamma_mode,
+        "gamma_semantics": gamma_semantics,
+        "input_gamma_range_rad": [
+            float(input_gamma.min()),
+            float(input_gamma.max()),
+        ],
         "measurement": {
             "threshold": args.ink_threshold,
             "radius_px": args.radius_px,
@@ -510,6 +543,15 @@ if __name__ == "__main__":
     parser.add_argument("--pixels_per_model_unit", type=float, default=20.0)
     parser.add_argument("--footprint_longitudinal_scale", type=float, default=0.22)
     parser.add_argument("--footprint_transverse_scale", type=float, default=0.262)
+    parser.add_argument(
+        "--gamma_mode",
+        choices=("relative_to_heading", "absolute_heading", "ignore"),
+        default="relative_to_heading",
+        help=(
+            "Must match the source inversion/replay semantics. Use ignore for "
+            "gamma-disabled pose CSVs; relative_to_heading exports x/y heading."
+        ),
+    )
     parser.add_argument("--pose_inverse_regularization", type=float, default=1e-5)
     parser.add_argument("--angle_regularization", type=float, default=0.01)
     parser.add_argument("--radius_px", type=float, default=12.0)

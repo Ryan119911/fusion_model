@@ -121,6 +121,73 @@ def trajectory_shape_residuals(
     return residuals
 
 
+def target_local_footprint_geometry(
+    target_image: torch.Tensor,
+    xy: torch.Tensor,
+    stroke_ids: torch.Tensor,
+    radius_px: float,
+    samples: int,
+    threshold: float,
+    temperature: float,
+    pixels_per_model_unit: float,
+    longitudinal_scale: float,
+    transverse_scale: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Measure differentiable target drag/half-width at fixed input points.
+
+    The samples are anchored at the original x/y trajectory. During x/y
+    optimization only the predicted footprint is moved, so this term cannot
+    reward a point for moving its own target cross-section along with it.
+    """
+    if target_image.ndim != 2:
+        raise ValueError("target_image must have shape [H,W]")
+    if radius_px <= 0 or samples < 3 or temperature <= 0:
+        raise ValueError("invalid target footprint sampling parameters")
+    heading = PaperFusionRenderer.forward_trajectory_heading(xy, stroke_ids)
+    offsets = torch.linspace(
+        -radius_px,
+        radius_px,
+        samples,
+        dtype=xy.dtype,
+        device=xy.device,
+    )
+    tangent = torch.stack((torch.cos(heading), torch.sin(heading)), dim=-1)
+    normal = torch.stack((-torch.sin(heading), torch.cos(heading)), dim=-1)
+    tangent_points = xy[:, None, :] + offsets[None, :, None] * tangent[:, None, :]
+    normal_points = xy[:, None, :] + offsets[None, :, None] * normal[:, None, :]
+    height, width = target_image.shape
+
+    def sample(points: torch.Tensor) -> torch.Tensor:
+        grid = torch.stack(
+            (
+                2.0 * points[..., 0] / max(width - 1, 1) - 1.0,
+                2.0 * points[..., 1] / max(height - 1, 1) - 1.0,
+            ),
+            dim=-1,
+        ).view(1, 1, -1, 2)
+        values = F.grid_sample(
+            target_image.view(1, 1, height, width),
+            grid,
+            mode="bilinear",
+            padding_mode="zeros",
+            align_corners=True,
+        )
+        return values.view(len(points), samples)
+
+    occupancy_t = torch.sigmoid((sample(tangent_points) - threshold) / temperature)
+    occupancy_n = torch.sigmoid((sample(normal_points) - threshold) / temperature)
+    step = 2.0 * radius_px / max(samples - 1, 1)
+    length_px = occupancy_t.sum(dim=-1) * step
+    width_px = occupancy_n.sum(dim=-1) * step
+    target_drag = length_px / max(
+        2.0 * pixels_per_model_unit * longitudinal_scale, 1e-6
+    )
+    target_half_width = width_px / max(
+        2.0 * pixels_per_model_unit * transverse_scale, 1e-6
+    )
+    return target_drag, target_half_width
+
+
 def summarize_joint_identifiability(
     pixel_jacobian: torch.Tensor,
     field_column_positions: Dict[str, torch.Tensor],
@@ -396,6 +463,11 @@ class PaperPSOCLM:
         xy_target_skeleton_weight: float = 0.0,
         xy_target_skeleton_max_distance_px: float = 12.0,
         xy_target_skeleton_threshold: float = 0.35,
+        target_footprint_weight: float = 0.0,
+        target_footprint_radius_px: float = 10.0,
+        target_footprint_samples: int = 33,
+        target_footprint_threshold: float = 0.35,
+        target_footprint_temperature: float = 0.08,
         h_point_velocity_weight: float = 0.0,
         h_point_acceleration_weight: float = 0.0,
         cap_order_to_points: bool = False,
@@ -482,6 +554,17 @@ class PaperPSOCLM:
         self.xy_target_skeleton_threshold = float(
             xy_target_skeleton_threshold
         )
+        if target_footprint_weight < 0 or target_footprint_radius_px <= 0:
+            raise ValueError("invalid target footprint loss configuration")
+        if target_footprint_samples < 3 or target_footprint_temperature <= 0:
+            raise ValueError("invalid target footprint sampling configuration")
+        if target_footprint_threshold <= 0 or target_footprint_threshold >= 1:
+            raise ValueError("target_footprint_threshold must be in (0,1)")
+        self.target_footprint_weight = float(target_footprint_weight)
+        self.target_footprint_radius_px = float(target_footprint_radius_px)
+        self.target_footprint_samples = int(target_footprint_samples)
+        self.target_footprint_threshold = float(target_footprint_threshold)
+        self.target_footprint_temperature = float(target_footprint_temperature)
         if h_point_velocity_weight < 0 or h_point_acceleration_weight < 0:
             raise ValueError(
                 "H point-space regularization weights must be non-negative"
@@ -782,6 +865,20 @@ class PaperPSOCLM:
             target_skeleton_distance = torch.as_tensor(
                 distance, dtype=torch.float32, device=self.device
             ).view(1, 1, *distance.shape)
+        target_footprint = None
+        if self.target_footprint_weight > 0:
+            target_footprint = target_local_footprint_geometry(
+                target[0, 0],
+                xy,
+                ids,
+                self.target_footprint_radius_px,
+                self.target_footprint_samples,
+                self.target_footprint_threshold,
+                self.target_footprint_temperature,
+                self.renderer.dynamic.pixels_per_model_unit,
+                self.renderer.dynamic.longitudinal_scale,
+                self.renderer.dynamic.transverse_scale,
+            )
         (
             matrices,
             point_indices,
@@ -1287,6 +1384,24 @@ class PaperPSOCLM:
                 ).reshape(-1)
                 residuals.append(
                     self.xy_target_skeleton_weight**0.5 * sampled_distance
+                )
+            if target_footprint is not None and self.target_footprint_weight > 0:
+                geometry = self.renderer.compute_dynamic_states(
+                    rendered_xy, posture, ids
+                )["geometry"]
+                predicted_drag = geometry[:, 0] + geometry[:, 1]
+                predicted_width = geometry[:, 2]
+                target_drag, target_width = target_footprint
+                footprint_residual = torch.cat(
+                    (
+                        (predicted_drag - target_drag)
+                        / target_drag.abs().clamp_min(0.25),
+                        (predicted_width - target_width)
+                        / target_width.abs().clamp_min(0.08),
+                    )
+                )
+                residuals.append(
+                    self.target_footprint_weight**0.5 * footprint_residual
                 )
             normalized_h_points = (
                 posture[:, 0] - float(PAPER_POSTURE_MIN[0])
@@ -2028,6 +2143,11 @@ class PaperPSOCLM:
                 "xy_target_skeleton_threshold": (
                     self.xy_target_skeleton_threshold
                 ),
+                "target_footprint_weight": self.target_footprint_weight,
+                "target_footprint_radius_px": self.target_footprint_radius_px,
+                "target_footprint_samples": self.target_footprint_samples,
+                "target_footprint_threshold": self.target_footprint_threshold,
+                "target_footprint_temperature": self.target_footprint_temperature,
                 "h_point_velocity_weight": self.h_point_velocity_weight,
                 "h_point_acceleration_weight": (
                     self.h_point_acceleration_weight

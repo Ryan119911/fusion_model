@@ -687,6 +687,11 @@ def main(args: argparse.Namespace) -> None:
                 args.xy_target_skeleton_max_distance_px
             ),
             xy_target_skeleton_threshold=args.xy_target_skeleton_threshold,
+            target_footprint_weight=args.target_footprint_weight,
+            target_footprint_radius_px=args.target_footprint_radius_px,
+            target_footprint_samples=args.target_footprint_samples,
+            target_footprint_threshold=args.target_footprint_threshold,
+            target_footprint_temperature=args.target_footprint_temperature,
             h_point_velocity_weight=args.h_point_velocity_weight,
             h_point_acceleration_weight=args.h_point_acceleration_weight,
             cap_order_to_points=args.cap_order_to_points,
@@ -1326,6 +1331,19 @@ if __name__ == "__main__":
             "retaining the requested allocation for backward compatibility"
         ),
     )
+    parser.add_argument(
+        "--target_footprint_weight",
+        type=float,
+        default=0.0,
+        help=(
+            "auxiliary local drag/half-width residual measured on the fixed "
+            "target image; use with optimize_xy to discourage width/length drift"
+        ),
+    )
+    parser.add_argument("--target_footprint_radius_px", type=float, default=10.0)
+    parser.add_argument("--target_footprint_samples", type=int, default=33)
+    parser.add_argument("--target_footprint_threshold", type=float, default=0.35)
+    parser.add_argument("--target_footprint_temperature", type=float, default=0.08)
     parser.add_argument(
         "--h_point_velocity_weight",
         type=float,

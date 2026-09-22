@@ -18,6 +18,7 @@ from typing import Any
 import numpy as np
 import torch
 import torch.nn.functional as F
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -28,6 +29,7 @@ from models.paper_bbsm import PAPER_POSTURE_MAX, PAPER_POSTURE_MIN  # noqa: E402
 from models.paper_fusion_renderer import PaperDynamicConfig, PaperFusionRenderer  # noqa: E402
 from optim.trajectory_optimizer import load_target_image  # noqa: E402
 from tools.invert_paper_trajectory import (  # noqa: E402
+    binary_metrics,
     canvas_xy_to_source,
     pick_sample,
     source_xy_to_canvas,
@@ -236,7 +238,8 @@ def main(args: argparse.Namespace) -> None:
     base_xy_canvas = source_xy_to_canvas(sample, base_source_xy, args.image_size, args.padding)
     stroke_ids = np.asarray([p.stroke_id for p in sample.all_points()], dtype=np.int64)
     _, _, confidence = _targets(Path(args.footprint_csv), rows)
-    image = torch.as_tensor(load_target_image(args.target_image, args.image_size), dtype=torch.float32, device=device)[None, None]
+    target = load_target_image(args.target_image, args.image_size)
+    image = torch.as_tensor(target, dtype=torch.float32, device=device)[None, None]
     renderer = PaperFusionRenderer.from_checkpoint(
         args.bbsmg_ckpt, device=device, image_size=args.image_size,
         dynamic=PaperDynamicConfig(
@@ -244,12 +247,27 @@ def main(args: argparse.Namespace) -> None:
             footprint_longitudinal_scale=args.footprint_longitudinal_scale,
             footprint_transverse_scale=args.footprint_transverse_scale,
             fused_pose_from_height=False,
+            gamma_mode=args.gamma_mode,
         ),
     )
     xy_base = torch.as_tensor(base_xy_canvas, dtype=torch.float32, device=device)
     stroke = torch.as_tensor(stroke_ids, dtype=torch.long, device=device)
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
+    with torch.no_grad():
+        baseline_rendered = renderer(
+            xy_base,
+            torch.as_tensor(base_posture, dtype=torch.float32, device=device),
+            stroke,
+            torch.as_tensor(base_gamma, dtype=torch.float32, device=device),
+        )[0, 0].cpu().numpy()
+    baseline_metrics = binary_metrics(baseline_rendered, target)
+    Image.fromarray(np.rint(np.clip(target, 0, 1) * 255).astype(np.uint8)).save(
+        output / "target.png"
+    )
+    Image.fromarray(
+        np.rint(np.clip(baseline_rendered, 0, 1) * 255).astype(np.uint8)
+    ).save(output / "render_baseline.png")
     specs = [("xy_pose_base", 0.0, 0.0), ("xy_pose_low_h", -0.75, 0.0), ("xy_pose_high_h", 0.75, 0.0), ("xy_pose_heading_plus5", 0.0, 5.0)]
     summaries: list[dict[str, Any]] = []
     for index, (name, h_shift, gamma_offset) in enumerate(specs[: args.candidate_count]):
@@ -265,6 +283,27 @@ def main(args: argparse.Namespace) -> None:
         candidate_dir = output / candidate_id
         _write_pose(candidate_dir / "pose.csv", rows, xy_source, base_source_xy, posture, gamma, report["target_drag"], report["target_width"], report["predicted_drag"], report["predicted_width"])
         xy_norm = np.linalg.norm(xy_delta, axis=1)
+        with torch.no_grad():
+            rendered = renderer(
+                torch.as_tensor(xy_canvas, dtype=torch.float32, device=device),
+                torch.as_tensor(posture, dtype=torch.float32, device=device),
+                stroke,
+                torch.as_tensor(gamma, dtype=torch.float32, device=device),
+            )[0, 0].cpu().numpy()
+        metrics = binary_metrics(rendered, target)
+        Image.fromarray(
+            np.rint(np.clip(rendered, 0, 1) * 255).astype(np.uint8)
+        ).save(candidate_dir / "render.png")
+        Image.fromarray(
+            np.rint(np.abs(target - rendered) * 255).astype(np.uint8)
+        ).save(candidate_dir / "diff.png")
+        boundary_fraction = float(np.mean(np.any((posture <= PAPER_POSTURE_MIN[None, :] + 1e-4) | (posture >= PAPER_POSTURE_MAX[None, :] - 1e-4), axis=1)))
+        accepted = bool(
+            metrics["iou_at_0.5"] >= baseline_metrics["iou_at_0.5"]
+            and metrics["plain_mse"] <= baseline_metrics["plain_mse"]
+            and boundary_fraction <= args.max_boundary_fraction
+            and float(xy_norm.max()) <= args.xy_max_delta_px * np.sqrt(2.0) + 1e-6
+        )
         item = {
             "candidate_id": candidate_id, "pose_csv": str(candidate_dir / "pose.csv"),
             "simulation_only": True, "real_brush_calibration_used": False,
@@ -275,13 +314,34 @@ def main(args: argparse.Namespace) -> None:
             "max_alpha_step_rad": float(max(np.max(np.abs(np.diff(posture[stroke_ids == sid, 1]))) if np.sum(stroke_ids == sid) > 1 else 0.0 for sid in np.unique(stroke_ids))),
             "max_beta_step_rad": float(max(np.max(np.abs(np.diff(posture[stroke_ids == sid, 2]))) if np.sum(stroke_ids == sid) > 1 else 0.0 for sid in np.unique(stroke_ids))),
             "max_gamma_step_rad": float(max(np.max(np.abs(np.arctan2(np.sin(np.diff(gamma[stroke_ids == sid])), np.cos(np.diff(gamma[stroke_ids == sid]))))) if np.sum(stroke_ids == sid) > 1 else 0.0 for sid in np.unique(stroke_ids))),
-            "boundary_fraction": float(np.mean(np.any((posture <= PAPER_POSTURE_MIN[None, :] + 1e-4) | (posture >= PAPER_POSTURE_MAX[None, :] - 1e-4), axis=1))),
+            "boundary_fraction": boundary_fraction,
             "footprint_points": int(report["valid_count"]), "drag_relative_rmse": float(report["drag_relative_rmse"]), "width_relative_rmse": float(report["width_relative_rmse"]),
             "target_semantics": "differentiable target-image cross-sections at refined x/y",
+            "gamma_mode": args.gamma_mode,
+            "forward_metrics": metrics,
+            "accepted": accepted,
         }
         (candidate_dir / "report.json").write_text(json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8")
         summaries.append(item)
-    summary = {"format": "paper_joint_xy_pose_footprint_candidates_v1", "target_image": args.target_image, "footprint_csv": args.footprint_csv, "simulation_only": True, "real_brush_calibration_used": False, "candidates": summaries}
+    accepted_candidates = [item for item in summaries if item["accepted"]]
+    summary = {
+        "format": "paper_joint_xy_pose_footprint_candidates_v2_validated",
+        "target_image": args.target_image,
+        "footprint_csv": args.footprint_csv,
+        "simulation_only": True,
+        "real_brush_calibration_used": False,
+        "gamma_mode": args.gamma_mode,
+        "baseline_forward_metrics": baseline_metrics,
+        "acceptance": {
+            "accepted_count": len(accepted_candidates),
+            "recommended_candidate": (
+                max(accepted_candidates, key=lambda item: item["forward_metrics"]["iou_at_0.5"])["candidate_id"]
+                if accepted_candidates else None
+            ),
+            "fallback": "input_pose_csv" if not accepted_candidates else None,
+        },
+        "candidates": summaries,
+    }
     (output / "candidate_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
@@ -293,8 +353,8 @@ if __name__ == "__main__":
     parser.add_argument("--pose_csv", required=True)
     parser.add_argument("--footprint_csv", required=True)
     parser.add_argument("--target_image", required=True)
-    parser.add_argument("--character", default="武")
-    parser.add_argument("--sample_id", default="武_fake_sim")
+    parser.add_argument("--character", default=None)
+    parser.add_argument("--sample_id", default=None)
     parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--output_dir", default="outputs/wu_joint_xy_pose_footprint_candidates_v1")
     parser.add_argument("--device", default="cuda")
@@ -303,6 +363,12 @@ if __name__ == "__main__":
     parser.add_argument("--pixels_per_model_unit", type=float, default=24.0)
     parser.add_argument("--footprint_longitudinal_scale", type=float, default=0.2302875519)
     parser.add_argument("--footprint_transverse_scale", type=float, default=0.3296116590)
+    parser.add_argument(
+        "--gamma_mode",
+        choices=("relative_to_heading", "absolute_heading", "ignore"),
+        default="relative_to_heading",
+        help="Must match the source inversion/replay semantics.",
+    )
     parser.add_argument("--xy_max_delta_px", type=float, default=3.0)
     parser.add_argument("--xy_smooth_scale", type=float, default=1.0)
     parser.add_argument("--radius_px", type=float, default=10.0)
@@ -318,6 +384,7 @@ if __name__ == "__main__":
     parser.add_argument("--xy_prior_weight", type=float, default=0.20)
     parser.add_argument("--endpoint_weight", type=float, default=0.50)
     parser.add_argument("--boundary_weight", type=float, default=0.20)
+    parser.add_argument("--max_boundary_fraction", type=float, default=0.25)
     parser.add_argument("--minimum_confidence", type=float, default=0.1)
     parser.add_argument("--candidate_count", type=int, default=4)
     parser.add_argument("--gamma_max_step_rad", type=float, default=0.75)
