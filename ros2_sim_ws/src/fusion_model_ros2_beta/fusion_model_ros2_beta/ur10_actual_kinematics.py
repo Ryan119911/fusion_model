@@ -86,7 +86,7 @@ def joint_origins(joints: Sequence[float]) -> list[np.ndarray]:
     return points
 
 
-def attachment_envelopes(joints: Sequence[float]):
+def attachment_envelopes(joints: Sequence[float], *, oriented=False):
     """Return conservative oriented-box envelopes in controller ``base``.
 
     Each item is ``(name, centre, axis-aligned half extents)`` after rotating
@@ -105,5 +105,34 @@ def attachment_envelopes(joints: Sequence[float]):
         pose = tool @ local
         centre = pose[:3, 3]
         axis_aligned_half_extent = np.abs(pose[:3, :3]) @ half_size
-        result.append((name, centre, axis_aligned_half_extent))
+        result.append((name, centre, (pose[:3, :3], half_size) if oriented else axis_aligned_half_extent))
     return result
+
+
+def attachment_intersects_obstacle(centre, orientation, half_size, bounds):
+    """Exact OBB/vertical keep-out intersection via the separating-axis theorem.
+
+    Bounds are xmin, xmax, ymin, ymax, top. The lower plane is placed below
+    the attachment, equivalent to an infinitely downward keep-out prism.
+    """
+    xmin, xmax, ymin, ymax, top = bounds
+    centre = np.asarray(centre, float)
+    rotation = np.asarray(orientation, float)
+    half_size = np.asarray(half_size, float)
+    extent = np.abs(rotation) @ half_size
+    if centre[2]-extent[2] >= top:
+        return False
+    bottom = min(top-1., centre[2]-extent[2]-1.)
+    box_centre = np.array([(xmin+xmax)/2, (ymin+ymax)/2, (bottom+top)/2])
+    box_half = np.array([(xmax-xmin)/2, (ymax-ymin)/2, (top-bottom)/2])
+    world = np.eye(3)
+    axes = [*world, *rotation.T]
+    axes += [np.cross(a, b) for a in world for b in rotation.T]
+    delta = centre-box_centre
+    for axis in axes:
+        if np.linalg.norm(axis) < 1e-12:
+            continue
+        radius = np.abs(axis) @ box_half + np.abs(axis @ rotation) @ half_size
+        if abs(axis @ delta) > radius + 1e-12:
+            return False
+    return True

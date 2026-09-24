@@ -34,8 +34,11 @@ calib_15120592593058779304; controller coordinate frame base.
 3. Existing in-domain 137.5 mm candidate was independently planned with strict IK.
    IK converged, but no collision-free route was found at stroke 0. Diagnostic:
    paper:mecheye_camera, envelope point [-0.00250953, -0.87451813, 0.12949571] m.
-   The camera collision uses a conservative world AABB; this is not evidence of
-   independently measured physical collision.
+   Replacing the world AABB check with exact oriented-box SAT, preserving all
+   attachment dimensions, still rejects this path. The initial posture itself
+   passes collision checking. This is not evidence of independently measured
+   physical collision. Two additional OBB tests cover rotation false positives,
+   containment, and the obstacle top plane.
 
 No motion was published during these full-case checks. No full-case success,
 physical readiness or visual acceptance is claimed. Current ordinary launch still

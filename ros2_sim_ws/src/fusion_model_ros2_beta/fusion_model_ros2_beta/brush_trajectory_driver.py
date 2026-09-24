@@ -1497,19 +1497,16 @@ class BrushTrajectoryDriver(Node):
                         )
                         if over_obstacle and point[2] - link_radius < safe_z:
                             return obstacle_name, link_index, point
+            from .ur10_actual_kinematics import attachment_intersects_obstacle
             for attachment_index, (
                 attachment_name,
                 centre,
-                half_extent,
-            ) in enumerate(actual_attachment_envelopes(joints), start=6):
+                oriented_box,
+            ) in enumerate(actual_attachment_envelopes(joints, oriented=True), start=6):
                 for obstacle_name, x_min, x_max, y_min, y_max, safe_z in obstacles:
-                    overlaps_xy = (
-                        centre[0] + half_extent[0] >= x_min
-                        and centre[0] - half_extent[0] <= x_max
-                        and centre[1] + half_extent[1] >= y_min
-                        and centre[1] - half_extent[1] <= y_max
-                    )
-                    if overlaps_xy and centre[2] - half_extent[2] < safe_z:
+                    if attachment_intersects_obstacle(
+                        centre, *oriented_box, (x_min, x_max, y_min, y_max, safe_z)
+                    ):
                         return (
                             f"{obstacle_name}:{attachment_name}",
                             attachment_index,
