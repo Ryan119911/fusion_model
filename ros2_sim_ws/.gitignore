@@ -1,0 +1,10 @@
+build*/
+install*/
+log/
+__pycache__/
+.pytest_cache/
+*.pyc
+# Historical duplicate entrypoints; canonical versions are under launch/ and urdf/.
+/src/fusion_model_ros2_beta/ur10_brush_ros2_beta.launch.py
+/src/fusion_model_ros2_beta/ur5_brush_ros2_beta.launch.py
+/src/fusion_model_ros2_beta/ur5_official.urdf

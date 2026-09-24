@@ -1,0 +1,9 @@
+fusion_beta_controller_manager:
+  ros__parameters:
+    update_rate: 125
+
+    fusion_beta_joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    fusion_beta_joint_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
