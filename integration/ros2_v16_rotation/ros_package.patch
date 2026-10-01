@@ -112,7 +112,7 @@ index b1092f7..800c84f 100644
  
  def _sha256(path: Path) -> str:
 diff --git a/fusion_model_ros2_beta/original_target_inversion.py b/fusion_model_ros2_beta/original_target_inversion.py
-index 08adbcd..98fa516 100644
+index 08adbcd..950bf2d 100644
 --- a/fusion_model_ros2_beta/original_target_inversion.py
 +++ b/fusion_model_ros2_beta/original_target_inversion.py
 @@ -34,7 +34,7 @@ from .offline_fontsize_inversion import (
@@ -142,7 +142,25 @@ index 08adbcd..98fa516 100644
              self.config.model_root / "models/paper_fusion_renderer.py",
              self.config.model_root / "tools/invert_paper_trajectory.py",
              self.config.model_root / "utils/image_preprocessing.py",
-@@ -267,7 +271,9 @@ class OriginalTargetFontSizeGenerator:
+@@ -231,6 +235,17 @@ class OriginalTargetFontSizeGenerator:
+             for row in rows:
+                 row["x"] = repr(cx + (float(row["x"]) - cx) * size / seed_size)
+                 row["y"] = repr(cy + (float(row["y"]) - cy) * size / seed_size)
++            # The model CLI renders its initial image from canvas-absolute
++            # gamma before the wrapper converts it to decoder-local twist.
++            # A trusted inversion seed stores LOCAL gamma, unlike the legacy
++            # source CSV: re-encode once so initialization and its preview agree.
++            from .gamma_semantics import local_to_absolute
++            source_xy = np.asarray([[float(r["x"]), float(r["y"])] for r in rows])
++            local_gamma = np.asarray([float(r["gamma"]) for r in rows])
++            ids = np.asarray([int(float(r["stroke_id"])) for r in rows])
++            canvas_gamma = local_to_absolute(local_gamma, source_xy * [1., -1.], ids)
++            for row, value in zip(rows, canvas_gamma):
++                row["gamma"] = repr(float(value))
+             with initial.open("w", encoding="utf-8", newline="") as handle:
+                 writer = csv.DictWriter(handle, fieldnames=seed_fields)
+                 writer.writeheader()
+@@ -267,7 +282,9 @@ class OriginalTargetFontSizeGenerator:
              self.config, source, initial, scaled_target, output,
              entry.character, entry.sample_id,
          )
@@ -153,7 +171,7 @@ index 08adbcd..98fa516 100644
          if progress:
              progress(
                  f"正在以原始目标图对‘{entry.character}’ {size * 1000:.3f} mm "
-@@ -311,6 +317,10 @@ class OriginalTargetFontSizeGenerator:
+@@ -311,6 +328,10 @@ class OriginalTargetFontSizeGenerator:
          gamma_semantics = convert_physical_csv_local_to_absolute(
              output / "physical_trajectory.csv"
          )
@@ -164,10 +182,11 @@ index 08adbcd..98fa516 100644
          metadata = {
              "format": INTERFACE,
              "character": entry.character,
-@@ -326,6 +336,9 @@ class OriginalTargetFontSizeGenerator:
+@@ -326,6 +347,10 @@ class OriginalTargetFontSizeGenerator:
              "fixed_fields": [],
              "derived_fields": ["ros_absolute_gamma_from_local_twist_and_xy_heading"],
              "gamma_semantics": gamma_semantics,
++            "initial_gamma_frame": "canvas_absolute; trusted local seeds re-encoded before CLI initialization",
 +            "tool_absolute_rotation_weight": self.config.joint_tool_absolute_rotation_weight,
 +            "absolute_tool_rotation": rotation_audit,
 +            "pen_up_orientation_owner": "ROS UR10 planner",

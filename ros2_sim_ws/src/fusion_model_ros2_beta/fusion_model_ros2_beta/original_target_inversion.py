@@ -34,7 +34,7 @@ from .offline_fontsize_inversion import (
 from .target_provenance import render_scaled_original_target, validate_original_target_record
 
 
-INTERFACE = "v16_original_target_joint_fontsize_v2"
+INTERFACE = "v16_original_target_joint_fontsize_v3_rotation"
 MANIFEST_FORMAT = "v16_original_target_manifest_v1"
 
 
@@ -87,6 +87,8 @@ class OriginalTargetFontSizeGenerator:
             "model_weight_version": "V16",
             "foreground_loss_weight": self.config.joint_foreground_weight,
             "target_skeleton_weight": self.config.joint_xy_target_skeleton_weight,
+            "tool_absolute_rotation_weight": self.config.joint_tool_absolute_rotation_weight,
+            "pen_up_orientation_owner": "ROS UR10 planner",
             "inversion_pipeline": "V16 six-field original-target inversion",
             "checkpoint_sha256": V16_CHECKPOINT_SHA256,
             "optimized_fields": sorted(FIELDS),
@@ -170,6 +172,8 @@ class OriginalTargetFontSizeGenerator:
             Path(__file__).with_name("joint_candidate.py"),
             Path(__file__).with_name("run_joint_inversion.py"),
             Path(__file__).with_name("export_neural_ink.py"),
+            Path(__file__).with_name("gamma_semantics.py"),
+            self.config.model_root / "optim/tool_orientation.py",
             self.config.model_root / "models/paper_fusion_renderer.py",
             self.config.model_root / "tools/invert_paper_trajectory.py",
             self.config.model_root / "utils/image_preprocessing.py",
@@ -231,6 +235,17 @@ class OriginalTargetFontSizeGenerator:
             for row in rows:
                 row["x"] = repr(cx + (float(row["x"]) - cx) * size / seed_size)
                 row["y"] = repr(cy + (float(row["y"]) - cy) * size / seed_size)
+            # The model CLI renders its initial image from canvas-absolute
+            # gamma before the wrapper converts it to decoder-local twist.
+            # A trusted inversion seed stores LOCAL gamma, unlike the legacy
+            # source CSV: re-encode once so initialization and its preview agree.
+            from .gamma_semantics import local_to_absolute
+            source_xy = np.asarray([[float(r["x"]), float(r["y"])] for r in rows])
+            local_gamma = np.asarray([float(r["gamma"]) for r in rows])
+            ids = np.asarray([int(float(r["stroke_id"])) for r in rows])
+            canvas_gamma = local_to_absolute(local_gamma, source_xy * [1., -1.], ids)
+            for row, value in zip(rows, canvas_gamma):
+                row["gamma"] = repr(float(value))
             with initial.open("w", encoding="utf-8", newline="") as handle:
                 writer = csv.DictWriter(handle, fieldnames=seed_fields)
                 writer.writeheader()
@@ -267,6 +282,9 @@ class OriginalTargetFontSizeGenerator:
             self.config, source, initial, scaled_target, output,
             entry.character, entry.sample_id,
         )
+        command.extend(("--beta_gamma_local_relative", "--gamma_max_abs_deg", "30",
+                        "--beta_tool_absolute_rotation_weight",
+                        str(self.config.joint_tool_absolute_rotation_weight)))
         if progress:
             progress(
                 f"正在以原始目标图对‘{entry.character}’ {size * 1000:.3f} mm "
@@ -306,6 +324,14 @@ class OriginalTargetFontSizeGenerator:
             font_size_m=size,
             inversion_label="v16_original_target_joint_pose_metric_units",
         )
+        from .gamma_semantics import convert_physical_csv_local_to_absolute
+        gamma_semantics = convert_physical_csv_local_to_absolute(
+            output / "physical_trajectory.csv"
+        )
+        rotation_audit = report["lm"]["diagnostics"]["absolute_tool_rotation"]
+        (output / "absolute_tool_rotation_audit.json").write_text(
+            json.dumps(rotation_audit, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         metadata = {
             "format": INTERFACE,
             "character": entry.character,
@@ -319,7 +345,12 @@ class OriginalTargetFontSizeGenerator:
             "command": command,
             "optimized_fields": sorted(FIELDS),
             "fixed_fields": [],
-            "derived_fields": [],
+            "derived_fields": ["ros_absolute_gamma_from_local_twist_and_xy_heading"],
+            "gamma_semantics": gamma_semantics,
+            "initial_gamma_frame": "canvas_absolute; trusted local seeds re-encoded before CLI initialization",
+            "tool_absolute_rotation_weight": self.config.joint_tool_absolute_rotation_weight,
+            "absolute_tool_rotation": rotation_audit,
+            "pen_up_orientation_owner": "ROS UR10 planner",
             "quality_metrics": report["metrics"],
             "target_provenance": provenance,
             "target_scaling": scaling,

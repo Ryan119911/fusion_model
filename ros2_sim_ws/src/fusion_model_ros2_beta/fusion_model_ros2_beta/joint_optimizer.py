@@ -17,6 +17,7 @@ from scipy.ndimage import distance_transform_edt
 from models.paper_bbsm import PAPER_POSTURE_MAX, PAPER_POSTURE_MIN
 from models.paper_fusion_renderer import PaperFusionRenderer
 from optim.chebyshev import barycentric_weights, cgl_nodes, normalize_time_grid
+from optim.tool_orientation import absolute_tool_rotation_residuals, absolute_tool_rotation_report
 from utils.structure_mask import skeletonize_binary
 
 
@@ -552,12 +553,14 @@ class PaperPSOCLM:
         gamma_max_abs_rad: float = np.pi,
         gamma_smoothness_weight: float = 0.10,
         gamma_prior_weight: float = 0.05,
+        gamma_inputs_local_relative: bool = False,
         observability_gate_mode: str = "field_relative",
         observability_noise_rmse: float | None = None,
         min_observability_snr: float = 1.0,
         joint_gate_action: str = "report",
         allowed_pose_fields: Sequence[str] | None = None,
         angle_point_weight: float = 0.0,
+        tool_absolute_rotation_weight: float = 0.0,
         depth_spatial_weight: float = 0.0,
         depth_mm_per_pixel: float = 1.0,
         difference_scheme: str = 'forward',
@@ -584,6 +587,11 @@ class PaperPSOCLM:
         if not np.isfinite(angle_point_weight) or angle_point_weight < 0:
             raise ValueError('angle point weight must be finite and nonnegative')
         self.angle_point_weight = float(angle_point_weight)
+        if not np.isfinite(tool_absolute_rotation_weight) or tool_absolute_rotation_weight < 0:
+            raise ValueError('absolute tool rotation weight must be finite and nonnegative')
+        self.tool_absolute_rotation_weight = float(tool_absolute_rotation_weight)
+        if self.tool_absolute_rotation_weight and not gamma_inputs_local_relative:
+            raise ValueError('absolute tool rotation cost requires explicit local-relative gamma inputs')
         if order < 1:
             raise ValueError("order must be >= 1")
         if optimization_size < 8:
@@ -684,6 +692,7 @@ class PaperPSOCLM:
                 "gamma regularization weights must be non-negative"
             )
         self.optimize_gamma = bool(optimize_gamma)
+        self.gamma_inputs_local_relative = bool(gamma_inputs_local_relative)
         self.gamma_max_abs_rad = float(gamma_max_abs_rad)
         self.gamma_smoothness_weight = float(gamma_smoothness_weight)
         self.gamma_prior_weight = float(gamma_prior_weight)
@@ -1044,12 +1053,15 @@ class PaperPSOCLM:
             raise ValueError(
                 "Initial gamma exceeds configured symmetric angular bounds"
             )
-        if self.hard_neural_domain:
+        if self.hard_neural_domain and not self.gamma_inputs_local_relative:
             from .domain_seed import initialize_gamma
             initial_gamma_points, constrained_gamma_node_logits = initialize_gamma(self.renderer, xy,
                 torch.as_tensor(initial_points,device=xy.device,dtype=xy.dtype), ids,
                 initial_gamma_points, matrices, point_indices, return_node_logits=True)
             print('[DOMAIN] constrained CGL gamma initialization found; all six fields remain active',flush=True)
+        elif self.hard_neural_domain:
+            constrained_gamma_node_logits = None
+            print('[DOMAIN] gamma is local relative twist; +/-30 degree decoder bound is exact', flush=True)
         prior_points = (
             initial_points
             if prior_posture is None
@@ -1167,7 +1179,7 @@ class PaperPSOCLM:
             (len(matrices), self.order + 1), dtype=np.float32
         )
         if gamma_decision_count:
-            if self.hard_neural_domain:
+            if self.hard_neural_domain and constrained_gamma_node_logits is not None:
                 initial_gamma_node_logits[:] = constrained_gamma_node_logits
             else:
                 normalized_gamma = np.clip(
@@ -1571,6 +1583,10 @@ class PaperPSOCLM:
             residuals.extend(angle_point_residuals(
                 torch.stack((posture[:, 1], posture[:, 2], gamma_points), dim=1),
                 point_indices, self.angle_point_weight,
+            ))
+            residuals.extend(absolute_tool_rotation_residuals(
+                rendered_xy, posture, gamma_points, point_indices,
+                self.tool_absolute_rotation_weight,
             ))
             residuals.extend(spatial_depth_residuals(
                 rendered_xy, posture[:, 0], point_indices,
@@ -2131,6 +2147,7 @@ class PaperPSOCLM:
             self.h_point_acceleration_weight,
             self.target_footprint_weight,
             self.angle_point_weight,
+            self.tool_absolute_rotation_weight,
             self.depth_spatial_weight,
             self.neural_domain_weight,
         ))
@@ -2328,6 +2345,10 @@ class PaperPSOCLM:
                 else self.renderer(optimized_xy, posture, ids)
             )[0, 0]
         diagnostics: Dict[str, Any] = {
+            "absolute_tool_rotation": (
+                absolute_tool_rotation_report(optimized_xy, posture, optimized_gamma, point_indices)
+                if self.gamma_inputs_local_relative else None
+            ),
             "checkpoint_selection": {
                 "metric": selection_metric,
                 "selected_metric_value": best_selection_value,
@@ -2352,6 +2373,9 @@ class PaperPSOCLM:
                 "depth_spatial_penalty": "integrated squared spatial gradient; 0.25 mm length floor; not velocity",
                 "angle_point_weight": self.angle_point_weight,
                 "angle_point_penalty": "periodic decoded angles; within stroke only; not angular velocity",
+                "tool_absolute_rotation_weight": self.tool_absolute_rotation_weight,
+                "tool_absolute_rotation_penalty": "SO(3) chord changes of ROS absolute tool rotation; paper y up; within stroke only",
+                "pen_up_orientation_owner": "ROS UR10 planner; no interstroke image-objective penalty",
                 "initial_posture_source": initial_posture_source,
                 "posture_prior_source": posture_prior_source,
                 "field_order": list(self.FIELD_NAMES),

@@ -237,6 +237,8 @@ def solve_ur10_ik(
             float(np.linalg.norm(error[:3])) <= position_tolerance_m
             and float(np.linalg.norm(error[3:])) <= orientation_tolerance_rad
         ):
+            from .joint_continuity import nearest_equivalent
+            joints = nearest_equivalent(joints, np.asarray(seed), JOINT_LOWER_LIMITS, JOINT_UPPER_LIMITS)
             return joints, float(np.linalg.norm(error[:3])), float(np.linalg.norm(error[3:])), True
         jacobian = np.zeros((6, 6), dtype=np.float64)
         for index in range(6):
@@ -251,7 +253,8 @@ def solve_ur10_ik(
         step = -np.linalg.solve(normal, jacobian.T @ error)
         step = np.clip(step, -0.12, 0.12)
         joints += step
-        joints = (joints + math.pi) % (2.0 * math.pi) - math.pi
+        # Preserve the local continuous iterate across +/-pi. Angular
+        # representatives are chosen relative to the seed before collision checks.
     error = _pose_error(joints, target)
     return joints, float(np.linalg.norm(error[:3])), float(np.linalg.norm(error[3:])), False
 
@@ -527,6 +530,7 @@ class BrushTrajectoryDriver(Node):
         self.declare_parameter("offline_original_target_manifest", "")
         self.declare_parameter("offline_joint_max_steps", 16)
         self.declare_parameter("offline_joint_foreground_weight", 1.0)
+        self.declare_parameter("offline_joint_tool_absolute_rotation_weight", 0.0)
         self.declare_parameter("offline_joint_target_skeleton_weight", 0.0)
         self.declare_parameter("offline_joint_target_skeleton_max_distance_px", 12.0)
         self.declare_parameter("offline_joint_target_skeleton_threshold", 0.35)
@@ -666,6 +670,9 @@ class BrushTrajectoryDriver(Node):
                 timeout_s=int(self._param("offline_inversion_timeout_s")),
                 device=str(self._param("offline_inversion_device")),
                 joint_foreground_weight=float(self._param("offline_joint_foreground_weight")),
+                joint_tool_absolute_rotation_weight=float(
+                    self._param("offline_joint_tool_absolute_rotation_weight")
+                ),
                 joint_xy_target_skeleton_weight=float(
                     self._param("offline_joint_target_skeleton_weight")
                 ),
@@ -1546,31 +1553,44 @@ class BrushTrajectoryDriver(Node):
             f"minimum_singularity_margin={minimum_margin:.3f}"
         )
 
+    def _validate_final_joint_continuity(self) -> None:
+        """Validate the controller list after collision repairs have inserted points."""
+        if not self._targets:
+            return
+        values = np.asarray([target.joints for target in self._targets])
+        if np.any(values < JOINT_LOWER_LIMITS - 1e-9) or np.any(values > JOINT_UPPER_LIMITS + 1e-9):
+            raise RuntimeError("Final joint trajectory exceeds UR10 joint limits")
+        delta = np.diff(values, axis=0)
+        internal = delta[1:]
+        if internal.size and np.max(abs(internal)) > math.pi + 1e-9:
+            row, joint = np.unravel_index(np.argmax(abs(internal)), internal.shape)
+            raise RuntimeError(
+                f"Final joint continuity rejected: target={row + 2}, joint={joint + 1}, "
+                f"delta_deg={math.degrees(internal[row, joint]):.3f}; replan branch"
+            )
+        approach = float(np.max(abs(delta[0]))) if len(delta) else 0.0
+        maximum = float(np.max(abs(internal))) if internal.size else 0.0
+        self.get_logger().info(
+            "Final joint continuity passed: "
+            f"initial_approach_deg={math.degrees(approach):.3f}, "
+            f"max_internal_step_deg={math.degrees(maximum):.3f}, "
+            f"wrist3_total_travel_deg={math.degrees(float(abs(delta[:, 5]).sum())):.3f}"
+        )
+
     def _unwrap_joint_targets(self) -> None:
-        """Choose the nearest limit-valid equivalent angle at every point."""
+        """Choose a global limit-valid path and reject internal full-turn resets."""
 
         previous = np.asarray(SAFE_INITIAL_JOINTS, dtype=np.float64)
         unwrapped: List[JointTarget] = []
         changed = 0
         largest_delta = 0.0
-        for target in self._targets:
-            current = np.asarray(target.joints, dtype=np.float64).copy()
-            for joint_index, value in enumerate(current):
-                equivalents = [
-                    float(value + turns * 2.0 * math.pi)
-                    for turns in range(-2, 3)
-                    if JOINT_LOWER_LIMITS[joint_index] - 1.0e-9
-                    <= value + turns * 2.0 * math.pi
-                    <= JOINT_UPPER_LIMITS[joint_index] + 1.0e-9
-                ]
-                if equivalents:
-                    nearest = min(
-                        equivalents,
-                        key=lambda candidate: abs(candidate - previous[joint_index]),
-                    )
-                    if abs(nearest - value) > 1.0e-8:
-                        changed += 1
-                    current[joint_index] = nearest
+        from .joint_continuity import continuous_joint_path
+        if not self._targets:
+            return
+        raw = np.asarray([target.joints for target in self._targets])
+        path = continuous_joint_path(raw, previous, JOINT_LOWER_LIMITS, JOINT_UPPER_LIMITS)
+        for target, current in zip(self._targets, path):
+            changed += int(np.count_nonzero(abs(current - target.joints) > 1e-8))
             largest_delta = max(
                 largest_delta, float(np.max(np.abs(current - previous)))
             )
@@ -1889,7 +1909,8 @@ class BrushTrajectoryDriver(Node):
                         collision = self._motion_obstacle_collision(seed, first_solved[0])
                         raise RuntimeError(
                             f"UR10 transition rejected at stroke={point.stroke_id}: "
-                            f"IK converged but no collision-free route was found; collision={collision}"
+                            "IK converged but no collision-free route was found; "
+                            f"collision={collision}"
                         )
                     raise RuntimeError(
                         f"strict IK failed at stroke={point.stroke_id}: "
@@ -1945,6 +1966,7 @@ class BrushTrajectoryDriver(Node):
 
         self._unwrap_joint_targets()
         self._validate_obstacle_clearance()
+        self._validate_final_joint_continuity()
         self._retime_joint_targets()
         paper_width = float(self._param("paper_width_m"))
         paper_height = float(self._param("paper_height_m"))

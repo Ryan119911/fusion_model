@@ -53,6 +53,7 @@ class OfflineInversionConfig:
     joint_xy_target_skeleton_weight: float = 0.0
     joint_xy_target_skeleton_max_distance_px: float = 12.0
     joint_xy_target_skeleton_threshold: float = 0.35
+    joint_tool_absolute_rotation_weight: float = 0.0
 
     def validate(self) -> None:
         if not self.model_root.is_dir():
@@ -73,6 +74,8 @@ class OfflineInversionConfig:
             raise ValueError("padding leaves no model image area")
         if self.timeout_s <= 0:
             raise ValueError("offline inversion timeout must be positive")
+        if not math.isfinite(self.joint_tool_absolute_rotation_weight) or self.joint_tool_absolute_rotation_weight < 0:
+            raise ValueError("joint_tool_absolute_rotation_weight must be finite and nonnegative")
 
 
 def _sha256(path: Path) -> str:

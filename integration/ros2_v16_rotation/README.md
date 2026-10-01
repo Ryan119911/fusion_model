@@ -2,6 +2,8 @@
 
 本目录是对已有 `/home/robot/ros2_ws/src/fusion_model_ros2_beta` 源码的窄补丁，不是完整 ROS 包。保留现有 UR10 工厂校准、IK、碰撞、限位、奇异性与提笔规划实现。它不重新训练 V16，不自动注册候选，也不向机械臂发送运动命令。
 
+`robot` 分支的 `ros2_sim_ws/src/fusion_model_ros2_beta` 已直接包含同一功能。本目录供现有独立部署的 ROS 工作区更新使用；不要在已更新的仓库包上重复应用补丁。规划报告绑定实际使用的规划器、运动学、gamma 转换和代价源码 SHA256，不同碰撞包络版本的可行性结果不可混用。
+
 模型端依赖：`optim/tool_orientation.py`、`utils/joint_rotation_metrics.py`，同时发布在 `main`。局部 gamma 按当前 ROS 规则转为绝对角，再计算 `Rz(gamma_abs) @ Ry(beta) @ Rx(alpha) @ Rx(pi)`。反演画布 y 向下、导出纸面 y 向上；新代价在该转换后计算。仅对同一笔内相邻接触点施加 SO(3) 弦长残差，不处理跨笔姿态转换；提笔阶段仍由原 ROS 规划器处理。
 
 ## 部署到已有 ROS 源码

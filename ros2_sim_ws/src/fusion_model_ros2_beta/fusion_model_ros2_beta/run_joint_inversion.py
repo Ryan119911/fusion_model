@@ -12,25 +12,45 @@ from fusion_model_ros2_beta.joint_optimizer import PaperPSOCLM
 import optim.paper_psoc_lm as optimizer
 parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument('--beta_angle_point_weight', type=float, default=0.0)
+parser.add_argument('--beta_tool_absolute_rotation_weight', type=float, default=0.0)
 parser.add_argument('--beta_depth_spatial_weight', type=float, default=0.0)
 parser.add_argument('--beta_depth_mm_per_pixel', type=float, default=1.0)
 parser.add_argument('--beta_difference_scheme', choices=['forward', 'central'], default='forward')
 parser.add_argument('--beta_project_posture_logits', action='store_true')
 parser.add_argument('--beta_neural_domain_weight', type=float, default=0.0)
 parser.add_argument('--beta_hard_neural_domain', action='store_true')
+parser.add_argument('--beta_gamma_local_relative', action='store_true')
 beta_args, remaining = parser.parse_known_args()
 sys.argv = [sys.argv[0]] + remaining
 
 
 class ConfiguredBetaOptimizer(PaperPSOCLM):
     def __init__(self, *args, **kwargs):
+        if beta_args.beta_gamma_local_relative:
+            from dataclasses import replace
+            renderer = args[0] if args else kwargs['renderer']
+            renderer.dynamic = replace(renderer.dynamic, gamma_mode='absolute_heading')
         super().__init__(*args, angle_point_weight=beta_args.beta_angle_point_weight,
+                         tool_absolute_rotation_weight=beta_args.beta_tool_absolute_rotation_weight,
                          depth_spatial_weight=beta_args.beta_depth_spatial_weight,
                          depth_mm_per_pixel=beta_args.beta_depth_mm_per_pixel,
                          project_posture_logits=beta_args.beta_project_posture_logits,
                          neural_domain_weight=beta_args.beta_neural_domain_weight,
                          hard_neural_domain=beta_args.beta_hard_neural_domain,
+                         gamma_inputs_local_relative=beta_args.beta_gamma_local_relative,
                          difference_scheme=beta_args.beta_difference_scheme, **kwargs)
+
+    def optimize(self, xy_canvas, stroke_ids, target_image, *args, **kwargs):
+        if beta_args.beta_gamma_local_relative:
+            import numpy as np
+            from fusion_model_ros2_beta.gamma_semantics import absolute_to_local
+            for name in ('initial_gamma', 'prior_gamma'):
+                value = kwargs.get(name)
+                if value is not None:
+                    kwargs[name] = absolute_to_local(
+                        np.asarray(value, dtype=float), xy_canvas, stroke_ids
+                    ).astype(np.float32)
+        return super().optimize(xy_canvas, stroke_ids, target_image, *args, **kwargs)
 
 
 optimizer.PaperPSOCLM = ConfiguredBetaOptimizer

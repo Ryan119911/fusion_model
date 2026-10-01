@@ -68,6 +68,11 @@ def main():
         render_max_step_px=calibration['render_max_step_px'],
         fused_pose_from_height='--fused_pose_from_height' in command,
     )
+    if metadata.get('gamma_semantics', {}).get('model_gamma') == 'local_rotation_relative_to_forward_xy_heading':
+        from dataclasses import replace
+        # inversion_trajectory.csv stores the actual V16 decoder input.  The
+        # separately exported physical CSV stores ROS absolute tool heading.
+        dynamic = replace(dynamic, gamma_mode='absolute_heading')
     class ObservedRenderer(PaperFusionRenderer):
         def _rotate_about(self, *a, **kw):
             patches = super()._rotate_about(*a, **kw)

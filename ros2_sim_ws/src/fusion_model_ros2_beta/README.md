@@ -1,5 +1,13 @@
 # fusion_model_ros2_beta
 
+## V16 原始目标图：姿态变化与 UR10 腕部转动量对照
+
+当前原始目标图入口联合优化 x/y/H/alpha/beta/gamma。新增 `offline_joint_tool_absolute_rotation_weight` 参数（默认 0）把笔内绝对工具姿态变化接入 LM 残差与结果选择；局部 gamma 按当前纸面前进方向转换，提笔姿态过渡仍由 ROS 规划器处理。
+
+`fusion_model_ros2_beta.evaluate_tool_rotation_tradeoff` 用相同原图、初值与预算做权重对照，并通过现有严格 UR10 规划接口统计三个腕关节的真实累计转动，不对关节增量取模。工具不发布轨迹，不自动注册候选；失败的部分规划不参与排名。
+
+完整命令、质量—转动量输出和现有独立工作区的安全更新方式见[集成说明](../../../integration/ros2_v16_rotation/README.md)。图像质量、H 连续性、边界饱和与真实硬件执行仍需分别验收，不能用减少腕部转动替代字形质量评价。
+
 Current acceptance status and reproduction: [VALIDATION_20260925.md](../../VALIDATION_20260925.md).
 The actual-UR10 full-writing cases remain blocked by dense gamma feasibility and
 camera-envelope clearance; the startup tests do not certify complete writing.
