@@ -1,0 +1,35 @@
+{
+  "format": "ros_v16_rotation_overlay_v1",
+  "files": [
+    {
+      "path": "fusion_model_ros2_beta/joint_optimizer.py",
+      "before_sha256": "b8c1317c0a0506de191b8b55e6f9a99b4e426fab1bef885ab08c8d8f4461c96f",
+      "after_sha256": "1d0849da12e4ab0c5a8afff8c3b9f88ebf59e24e16d9edac83570f274a1513fe"
+    },
+    {
+      "path": "fusion_model_ros2_beta/run_joint_inversion.py",
+      "before_sha256": "ae7042c7e1ac65fd2bd0f79d4d3ff9b1f9f000df67fb1f7705911341e6a5d6d2",
+      "after_sha256": "7b165ccdcb60272f7b3a1ea41c859f2262261c7891527ec878bcd9bbbcafd74d"
+    },
+    {
+      "path": "fusion_model_ros2_beta/offline_fontsize_inversion.py",
+      "before_sha256": "cb4ceefa75d5990d0c8ee5ee34acb9abc607af4277bf6ca71422f0ceec11f466",
+      "after_sha256": "ea0c3a0eeb102c8e93ad8d4ba08e2c0528e85099dd52170ef017c8021ace7293"
+    },
+    {
+      "path": "fusion_model_ros2_beta/original_target_inversion.py",
+      "before_sha256": "41ed48d0523c1d68539723e0ee4c4905801597f30453eddb7708946624832440",
+      "after_sha256": "8dd5888d331bce7d99e1058476df5cfd20a530e7b75d1101c80b44956fce8083"
+    },
+    {
+      "path": "fusion_model_ros2_beta/brush_trajectory_driver.py",
+      "before_sha256": "2adaa8b97536805cb4184bcf26e58900884514d2af73233eb48ae844089531d7",
+      "after_sha256": "70fd16d6778aa6df0d3b30287b7813483eb88d6fcbe9451cd4b250f524959421"
+    },
+    {
+      "path": "launch/ur10_brush_ros2_beta.launch.py",
+      "before_sha256": "2b3426f40d4e32b38e5354cca26363454a8e29d36f347b368fd87ed03e19d562",
+      "after_sha256": "2813aad008cc4084dfd51dea53ad912c4e36bcc1353f25189a957d953f1b0165"
+    }
+  ]
+}

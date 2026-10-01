@@ -1,0 +1,218 @@
+diff --git a/fusion_model_ros2_beta/joint_optimizer.py b/fusion_model_ros2_beta/joint_optimizer.py
+index 27c70e6..19e14e6 100644
+--- a/fusion_model_ros2_beta/joint_optimizer.py
++++ b/fusion_model_ros2_beta/joint_optimizer.py
+@@ -17,6 +17,7 @@ from scipy.ndimage import distance_transform_edt
+ from models.paper_bbsm import PAPER_POSTURE_MAX, PAPER_POSTURE_MIN
+ from models.paper_fusion_renderer import PaperFusionRenderer
+ from optim.chebyshev import barycentric_weights, cgl_nodes, normalize_time_grid
++from optim.tool_orientation import absolute_tool_rotation_residuals, absolute_tool_rotation_report
+ from utils.structure_mask import skeletonize_binary
+ 
+ 
+@@ -559,6 +560,7 @@ class PaperPSOCLM:
+         joint_gate_action: str = "report",
+         allowed_pose_fields: Sequence[str] | None = None,
+         angle_point_weight: float = 0.0,
++        tool_absolute_rotation_weight: float = 0.0,
+         depth_spatial_weight: float = 0.0,
+         depth_mm_per_pixel: float = 1.0,
+         difference_scheme: str = 'forward',
+@@ -585,6 +587,11 @@ class PaperPSOCLM:
+         if not np.isfinite(angle_point_weight) or angle_point_weight < 0:
+             raise ValueError('angle point weight must be finite and nonnegative')
+         self.angle_point_weight = float(angle_point_weight)
++        if not np.isfinite(tool_absolute_rotation_weight) or tool_absolute_rotation_weight < 0:
++            raise ValueError('absolute tool rotation weight must be finite and nonnegative')
++        self.tool_absolute_rotation_weight = float(tool_absolute_rotation_weight)
++        if self.tool_absolute_rotation_weight and not gamma_inputs_local_relative:
++            raise ValueError('absolute tool rotation cost requires explicit local-relative gamma inputs')
+         if order < 1:
+             raise ValueError("order must be >= 1")
+         if optimization_size < 8:
+@@ -1577,6 +1584,10 @@ class PaperPSOCLM:
+                 torch.stack((posture[:, 1], posture[:, 2], gamma_points), dim=1),
+                 point_indices, self.angle_point_weight,
+             ))
++            residuals.extend(absolute_tool_rotation_residuals(
++                rendered_xy, posture, gamma_points, point_indices,
++                self.tool_absolute_rotation_weight,
++            ))
+             residuals.extend(spatial_depth_residuals(
+                 rendered_xy, posture[:, 0], point_indices,
+                 self.depth_spatial_weight, self.depth_mm_per_pixel,
+@@ -2136,6 +2147,7 @@ class PaperPSOCLM:
+             self.h_point_acceleration_weight,
+             self.target_footprint_weight,
+             self.angle_point_weight,
++            self.tool_absolute_rotation_weight,
+             self.depth_spatial_weight,
+             self.neural_domain_weight,
+         ))
+@@ -2333,6 +2345,10 @@ class PaperPSOCLM:
+                 else self.renderer(optimized_xy, posture, ids)
+             )[0, 0]
+         diagnostics: Dict[str, Any] = {
++            "absolute_tool_rotation": (
++                absolute_tool_rotation_report(optimized_xy, posture, optimized_gamma, point_indices)
++                if self.gamma_inputs_local_relative else None
++            ),
+             "checkpoint_selection": {
+                 "metric": selection_metric,
+                 "selected_metric_value": best_selection_value,
+@@ -2357,6 +2373,9 @@ class PaperPSOCLM:
+                 "depth_spatial_penalty": "integrated squared spatial gradient; 0.25 mm length floor; not velocity",
+                 "angle_point_weight": self.angle_point_weight,
+                 "angle_point_penalty": "periodic decoded angles; within stroke only; not angular velocity",
++                "tool_absolute_rotation_weight": self.tool_absolute_rotation_weight,
++                "tool_absolute_rotation_penalty": "SO(3) chord changes of ROS absolute tool rotation; paper y up; within stroke only",
++                "pen_up_orientation_owner": "ROS UR10 planner; no interstroke image-objective penalty",
+                 "initial_posture_source": initial_posture_source,
+                 "posture_prior_source": posture_prior_source,
+                 "field_order": list(self.FIELD_NAMES),
+diff --git a/fusion_model_ros2_beta/run_joint_inversion.py b/fusion_model_ros2_beta/run_joint_inversion.py
+index acff30a..a6940c8 100644
+--- a/fusion_model_ros2_beta/run_joint_inversion.py
++++ b/fusion_model_ros2_beta/run_joint_inversion.py
+@@ -12,6 +12,7 @@ from fusion_model_ros2_beta.joint_optimizer import PaperPSOCLM
+ import optim.paper_psoc_lm as optimizer
+ parser = argparse.ArgumentParser(add_help=False)
+ parser.add_argument('--beta_angle_point_weight', type=float, default=0.0)
++parser.add_argument('--beta_tool_absolute_rotation_weight', type=float, default=0.0)
+ parser.add_argument('--beta_depth_spatial_weight', type=float, default=0.0)
+ parser.add_argument('--beta_depth_mm_per_pixel', type=float, default=1.0)
+ parser.add_argument('--beta_difference_scheme', choices=['forward', 'central'], default='forward')
+@@ -30,6 +31,7 @@ class ConfiguredBetaOptimizer(PaperPSOCLM):
+             renderer = args[0] if args else kwargs['renderer']
+             renderer.dynamic = replace(renderer.dynamic, gamma_mode='absolute_heading')
+         super().__init__(*args, angle_point_weight=beta_args.beta_angle_point_weight,
++                         tool_absolute_rotation_weight=beta_args.beta_tool_absolute_rotation_weight,
+                          depth_spatial_weight=beta_args.beta_depth_spatial_weight,
+                          depth_mm_per_pixel=beta_args.beta_depth_mm_per_pixel,
+                          project_posture_logits=beta_args.beta_project_posture_logits,
+diff --git a/fusion_model_ros2_beta/offline_fontsize_inversion.py b/fusion_model_ros2_beta/offline_fontsize_inversion.py
+index b1092f7..800c84f 100644
+--- a/fusion_model_ros2_beta/offline_fontsize_inversion.py
++++ b/fusion_model_ros2_beta/offline_fontsize_inversion.py
+@@ -53,6 +53,7 @@ class OfflineInversionConfig:
+     joint_xy_target_skeleton_weight: float = 0.0
+     joint_xy_target_skeleton_max_distance_px: float = 12.0
+     joint_xy_target_skeleton_threshold: float = 0.35
++    joint_tool_absolute_rotation_weight: float = 0.0
+ 
+     def validate(self) -> None:
+         if not self.model_root.is_dir():
+@@ -73,6 +74,8 @@ class OfflineInversionConfig:
+             raise ValueError("padding leaves no model image area")
+         if self.timeout_s <= 0:
+             raise ValueError("offline inversion timeout must be positive")
++        if not math.isfinite(self.joint_tool_absolute_rotation_weight) or self.joint_tool_absolute_rotation_weight < 0:
++            raise ValueError("joint_tool_absolute_rotation_weight must be finite and nonnegative")
+ 
+ 
+ def _sha256(path: Path) -> str:
+diff --git a/fusion_model_ros2_beta/original_target_inversion.py b/fusion_model_ros2_beta/original_target_inversion.py
+index 08adbcd..98fa516 100644
+--- a/fusion_model_ros2_beta/original_target_inversion.py
++++ b/fusion_model_ros2_beta/original_target_inversion.py
+@@ -34,7 +34,7 @@ from .offline_fontsize_inversion import (
+ from .target_provenance import render_scaled_original_target, validate_original_target_record
+ 
+ 
+-INTERFACE = "v16_original_target_joint_fontsize_v2"
++INTERFACE = "v16_original_target_joint_fontsize_v3_rotation"
+ MANIFEST_FORMAT = "v16_original_target_manifest_v1"
+ 
+ 
+@@ -87,6 +87,8 @@ class OriginalTargetFontSizeGenerator:
+             "model_weight_version": "V16",
+             "foreground_loss_weight": self.config.joint_foreground_weight,
+             "target_skeleton_weight": self.config.joint_xy_target_skeleton_weight,
++            "tool_absolute_rotation_weight": self.config.joint_tool_absolute_rotation_weight,
++            "pen_up_orientation_owner": "ROS UR10 planner",
+             "inversion_pipeline": "V16 six-field original-target inversion",
+             "checkpoint_sha256": V16_CHECKPOINT_SHA256,
+             "optimized_fields": sorted(FIELDS),
+@@ -170,6 +172,8 @@ class OriginalTargetFontSizeGenerator:
+             Path(__file__).with_name("joint_candidate.py"),
+             Path(__file__).with_name("run_joint_inversion.py"),
+             Path(__file__).with_name("export_neural_ink.py"),
++            Path(__file__).with_name("gamma_semantics.py"),
++            self.config.model_root / "optim/tool_orientation.py",
+             self.config.model_root / "models/paper_fusion_renderer.py",
+             self.config.model_root / "tools/invert_paper_trajectory.py",
+             self.config.model_root / "utils/image_preprocessing.py",
+@@ -267,7 +271,9 @@ class OriginalTargetFontSizeGenerator:
+             self.config, source, initial, scaled_target, output,
+             entry.character, entry.sample_id,
+         )
+-        command.extend(("--beta_gamma_local_relative", "--gamma_max_abs_deg", "30"))
++        command.extend(("--beta_gamma_local_relative", "--gamma_max_abs_deg", "30",
++                        "--beta_tool_absolute_rotation_weight",
++                        str(self.config.joint_tool_absolute_rotation_weight)))
+         if progress:
+             progress(
+                 f"正在以原始目标图对‘{entry.character}’ {size * 1000:.3f} mm "
+@@ -311,6 +317,10 @@ class OriginalTargetFontSizeGenerator:
+         gamma_semantics = convert_physical_csv_local_to_absolute(
+             output / "physical_trajectory.csv"
+         )
++        rotation_audit = report["lm"]["diagnostics"]["absolute_tool_rotation"]
++        (output / "absolute_tool_rotation_audit.json").write_text(
++            json.dumps(rotation_audit, ensure_ascii=False, indent=2), encoding="utf-8"
++        )
+         metadata = {
+             "format": INTERFACE,
+             "character": entry.character,
+@@ -326,6 +336,9 @@ class OriginalTargetFontSizeGenerator:
+             "fixed_fields": [],
+             "derived_fields": ["ros_absolute_gamma_from_local_twist_and_xy_heading"],
+             "gamma_semantics": gamma_semantics,
++            "tool_absolute_rotation_weight": self.config.joint_tool_absolute_rotation_weight,
++            "absolute_tool_rotation": rotation_audit,
++            "pen_up_orientation_owner": "ROS UR10 planner",
+             "quality_metrics": report["metrics"],
+             "target_provenance": provenance,
+             "target_scaling": scaling,
+diff --git a/fusion_model_ros2_beta/brush_trajectory_driver.py b/fusion_model_ros2_beta/brush_trajectory_driver.py
+index 72caa1b..3df62c5 100644
+--- a/fusion_model_ros2_beta/brush_trajectory_driver.py
++++ b/fusion_model_ros2_beta/brush_trajectory_driver.py
+@@ -530,6 +530,7 @@ class BrushTrajectoryDriver(Node):
+         self.declare_parameter("offline_original_target_manifest", "")
+         self.declare_parameter("offline_joint_max_steps", 16)
+         self.declare_parameter("offline_joint_foreground_weight", 1.0)
++        self.declare_parameter("offline_joint_tool_absolute_rotation_weight", 0.0)
+         self.declare_parameter("offline_joint_target_skeleton_weight", 0.0)
+         self.declare_parameter("offline_joint_target_skeleton_max_distance_px", 12.0)
+         self.declare_parameter("offline_joint_target_skeleton_threshold", 0.35)
+@@ -669,6 +670,9 @@ class BrushTrajectoryDriver(Node):
+                 timeout_s=int(self._param("offline_inversion_timeout_s")),
+                 device=str(self._param("offline_inversion_device")),
+                 joint_foreground_weight=float(self._param("offline_joint_foreground_weight")),
++                joint_tool_absolute_rotation_weight=float(
++                    self._param("offline_joint_tool_absolute_rotation_weight")
++                ),
+                 joint_xy_target_skeleton_weight=float(
+                     self._param("offline_joint_target_skeleton_weight")
+                 ),
+diff --git a/launch/ur10_brush_ros2_beta.launch.py b/launch/ur10_brush_ros2_beta.launch.py
+index 6f3b300..6f9429b 100644
+--- a/launch/ur10_brush_ros2_beta.launch.py
++++ b/launch/ur10_brush_ros2_beta.launch.py
+@@ -183,6 +183,7 @@ def generate_launch_description() -> LaunchDescription:
+             {"offline_original_target_manifest": ParameterValue(LaunchConfiguration("offline_original_target_manifest"), value_type=str)},
+             {"offline_joint_max_steps": LaunchConfiguration("offline_joint_max_steps")},
+             {"offline_joint_foreground_weight": ParameterValue(LaunchConfiguration("offline_joint_foreground_weight"), value_type=float)},
++            {"offline_joint_tool_absolute_rotation_weight": ParameterValue(LaunchConfiguration("offline_joint_tool_absolute_rotation_weight"), value_type=float)},
+             {"offline_joint_target_skeleton_weight": ParameterValue(LaunchConfiguration("offline_joint_target_skeleton_weight"), value_type=float)},
+             {"offline_joint_target_skeleton_max_distance_px": ParameterValue(LaunchConfiguration("offline_joint_target_skeleton_max_distance_px"), value_type=float)},
+             {"offline_joint_target_skeleton_threshold": ParameterValue(LaunchConfiguration("offline_joint_target_skeleton_threshold"), value_type=float)},
+@@ -286,6 +287,7 @@ def generate_launch_description() -> LaunchDescription:
+             DeclareLaunchArgument("offline_original_target_manifest", default_value=""),
+             DeclareLaunchArgument("offline_joint_max_steps", default_value="16"),
+             DeclareLaunchArgument("offline_joint_foreground_weight", default_value="1.0"),
++            DeclareLaunchArgument("offline_joint_tool_absolute_rotation_weight", default_value="0.0"),
+             DeclareLaunchArgument("offline_joint_target_skeleton_weight", default_value="0.0"),
+             DeclareLaunchArgument("offline_joint_target_skeleton_max_distance_px", default_value="12.0"),
+             DeclareLaunchArgument("offline_joint_target_skeleton_threshold", default_value="0.35"),

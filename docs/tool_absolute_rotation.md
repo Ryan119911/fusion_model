@@ -1,0 +1,42 @@
+# V16 原始目标图：绝对工具姿态代价与转动量对照
+
+这一功能不重新训练 B-BSMG。冻结 V16 正向模型，以原始目标图联合反演 `x/y/H/alpha/beta/gamma`；图像质量和机器人转动量是两个独立评价维度。
+
+## 坐标与代价
+
+- 神经模型的 `gamma` 是相对当前轨迹前进方向的局部旋转。
+- 当前 ROS 导出使用 `gamma_absolute = wrap(gamma_local + paper_forward_heading)`。每笔最后一点沿用前一条线段的方向，单点笔画方向为零。
+- 反演画布 y 向下；导出的纸面 y 向上。因此代价使用 `atan2(-dy_canvas, dx_canvas)`，不是直接使用画布方向。
+- 与当前 ROS 驱动严格一致的工具旋转为 `Rz(gamma_absolute) @ Ry(beta) @ Rx(alpha) @ Rx(pi)`。
+- 新残差为 `sqrt(weight/2) * (R[i+1] - R[i])`；其平方是周期连续的 SO(3) 弦长代价。它只连接同一笔内的相邻接触点，不连接不同笔画，不规划提笔动作，也不是角速度或碰撞约束。
+
+实现：`optim/tool_orientation.py`。它同时对优化后的 x/y 方向和局部 gamma 求导。改变 alpha/beta 后的整体旋转也进入代价，H 仍通过图像与深度连续性目标优化。新权重必须参与 LM 残差与最优结果选择，不能仅在结束后统计。
+
+## ROS 配对实验
+
+ROS 集成代码保存在 `robot` 分支的 `integration/ros2_v16_rotation/`，部署到已有 `fusion_model_ros2_beta` 包；`main` 不包含完整 ROS 工作区、URDF 或模型权重。
+
+配对实验固定原始目标、V16 权重 SHA256、源轨迹、字体物理尺寸、初始化及迭代预算，只改变绝对姿态代价权重。每个候选分别保存原图来源、六字段 CSV、正向 target/render/diff、图像 MSE/Dice/IoU、骨架距离、实际神经输入训练域与流式正向一致性。
+
+随后通过已有 `BrushTrajectoryDriver._build_targets` 严格 UR10 规划接口评价，不发布 `JointTrajectory`，不启动运动回放。提笔、跨笔移动和落笔姿态过渡由该规划器处理。其 IK、碰撞包络、关节限位、奇异性、路径连续性与时间参数化检查必须全部通过，才计为可行。
+
+`utils/joint_rotation_metrics.py` 在规划器最终展开后的关节序列上计算累计转动。不要对关节增量取模，否则会把真实需要执行的一整圈腕部运动隐藏掉。报告区分：
+
+- 三个腕关节累计绝对转动之和与每个腕关节的累计转动；
+- 同一笔内接触段转动；
+- 提笔、跨笔转移和初始接近转动；
+- 最大关节增量、规划时长、关节速度和规划守卫结果。
+
+失败或只有部分路径的候选不参与低转动量排名。默认选择规则：完整规划可行，IoU 相对无新增代价基线下降不超过 0.01，再最小化三个腕关节累计转动；不满足规则则保留基线或不推荐任何候选。
+
+## 输出与验证边界
+
+`comparison.json` 是完整机器可读对照；`comparison.csv` 为质量/转动量汇总；`comparison.png` 为黑墨白底原始目标、正向结果和绝对差异。每个合格规划保存 `ur10_planned_joints.csv`、其 SHA256 和 `ur10_rotation_planning.json`。原始目标图质量评价不会被姿态代价替代。
+
+这只是当前校准 UR10 运动学与保守碰撞包络下的离线规划评价，不证明真实毛笔足迹、硬件执行安全，也不证明单张图片唯一辨识 alpha/beta。未通过图像/轨迹筛选的候选不得注册为正式 ROS 轨迹。
+
+模型测试：
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q tests/test_tool_orientation.py
+```
