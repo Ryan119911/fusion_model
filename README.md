@@ -264,6 +264,8 @@ $PY -u tools/render_paper_trajectory.py \
 
 筛选后的纸面轨迹可交给 `robot` 分支的注册工具，转换为 `pose_refined.csv + manifest.jsonl`。机器人侧还需 IK、碰撞和奇异位姿检查。`main` 的候选 manifest 不是 ROS 正式注册清单，模型导出的 α/β/γ 也不自动等于机械臂姿态约定。
 
+V16 原始目标图六字段反演的新[绝对工具姿态代价与转动量对照](docs/tool_absolute_rotation.md)沿用当前 ROS 的局部 γ 转换，并分别评价图像质量、笔内工具转动和完整 UR10 规划腕部转动；提笔姿态过渡仍由 ROS 规划器处理。
+
 ## 9. 楷书风格细化（可选）
 
 风格细化保持 B-BSMG 冻结，只改善灰度、笔锋、墨量与端点。已有 `kaishu_style_v27.npz` 时：
