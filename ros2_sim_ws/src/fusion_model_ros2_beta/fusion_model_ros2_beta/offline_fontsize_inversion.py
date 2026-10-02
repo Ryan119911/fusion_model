@@ -54,6 +54,8 @@ class OfflineInversionConfig:
     joint_xy_target_skeleton_max_distance_px: float = 12.0
     joint_xy_target_skeleton_threshold: float = 0.35
     joint_tool_absolute_rotation_weight: float = 0.0
+    joint_actual_wrist_weight: float = 0.0
+    joint_robot_context: str = ''
 
     def validate(self) -> None:
         if not self.model_root.is_dir():
@@ -76,6 +78,10 @@ class OfflineInversionConfig:
             raise ValueError("offline inversion timeout must be positive")
         if not math.isfinite(self.joint_tool_absolute_rotation_weight) or self.joint_tool_absolute_rotation_weight < 0:
             raise ValueError("joint_tool_absolute_rotation_weight must be finite and nonnegative")
+        if not math.isfinite(self.joint_actual_wrist_weight) or self.joint_actual_wrist_weight < 0:
+            raise ValueError('joint_actual_wrist_weight must be finite and nonnegative')
+        if self.joint_actual_wrist_weight and not Path(self.joint_robot_context).is_file():
+            raise ValueError('actual wrist feedback requires pinned robot context')
 
 
 def _sha256(path: Path) -> str:

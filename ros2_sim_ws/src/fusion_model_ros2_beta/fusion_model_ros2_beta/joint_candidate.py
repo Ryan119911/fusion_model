@@ -52,6 +52,8 @@ def load_joint_candidate(folder, *, require_training_domain=False):
     size = float(meta['font_size_m'])
     if not math.isfinite(size) or size <= 0:
         raise ValueError('invalid candidate physical size')
+    from .robot_context_guard import load_pinned_context
+    robot_context=load_pinned_context(folder,meta)
     return TrajectoryEntry(character=meta['character'], status='ready',
         trajectory_csv=folder/'physical_trajectory.csv', target_image=folder/'scaled_target.png',
         sample_id=meta['sample_id'], output_dir=folder,
@@ -60,6 +62,7 @@ def load_joint_candidate(folder, *, require_training_domain=False):
             checkpoint_sha256=V16_CHECKPOINT_SHA256,
             coordinate_frame='glyph_center_m', xy_unit='m', font_size_m=size,
             offline_full_pose_inversion=True, gamma_relative_to_path=False,
+            actual_wrist_robot_context=robot_context,
             neural_ink_path=str(folder/'neural_ink.npz'),
             neural_ink_audit=str(folder/'neural_ink_audit.json')))
 

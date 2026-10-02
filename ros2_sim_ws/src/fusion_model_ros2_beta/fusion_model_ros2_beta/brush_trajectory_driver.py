@@ -531,6 +531,10 @@ class BrushTrajectoryDriver(Node):
         self.declare_parameter("offline_joint_max_steps", 16)
         self.declare_parameter("offline_joint_foreground_weight", 1.0)
         self.declare_parameter("offline_joint_tool_absolute_rotation_weight", 0.0)
+        self.declare_parameter("offline_joint_actual_wrist_weight", 0.0)
+        self.declare_parameter("offline_joint_robot_context", "")
+        self.declare_parameter("optimize_penup_wrist_motion", False)
+        self.declare_parameter("use_exact_calibrated_ik", False)
         self.declare_parameter("offline_joint_target_skeleton_weight", 0.0)
         self.declare_parameter("offline_joint_target_skeleton_max_distance_px", 12.0)
         self.declare_parameter("offline_joint_target_skeleton_threshold", 0.35)
@@ -673,6 +677,8 @@ class BrushTrajectoryDriver(Node):
                 joint_tool_absolute_rotation_weight=float(
                     self._param("offline_joint_tool_absolute_rotation_weight")
                 ),
+                joint_actual_wrist_weight=float(self._param('offline_joint_actual_wrist_weight')),
+                joint_robot_context=str(self._param('offline_joint_robot_context')),
                 joint_xy_target_skeleton_weight=float(
                     self._param("offline_joint_target_skeleton_weight")
                 ),
@@ -1609,6 +1615,12 @@ class BrushTrajectoryDriver(Node):
             f"largest_transition={largest_delta:.3f} rad"
         )
 
+    def _solve_planning_ik(self, target, seed, **kwargs):
+        if bool(self._param('use_exact_calibrated_ik')):
+            from .precise_ur10_validation import solve_exact
+            return solve_exact(target,seed,**kwargs)
+        return solve_ur10_ik(target,seed,**kwargs)
+
     def _build_targets(
         self,
         *,
@@ -1731,6 +1743,10 @@ class BrushTrajectoryDriver(Node):
             if all(canvas_plan):
                 cell_center_x = paper_offset_x + canvas_plan[index]['center_x_m']
                 cell_center_y = paper_offset_y + canvas_plan[index]['center_y_m']
+            from .robot_context_guard import validate_placement
+            validate_placement(entry.metadata.get('actual_wrist_robot_context'),
+                paper_xy=[cell_center_x,cell_center_y],paper_z=float(self._param('paper_z_m')),
+                brush_length=float(self._param('brush_length_m')))
             mapped = place_physical_source_points(
                 source,
                 paper_z=float(self._param("paper_z_m")),
@@ -1809,7 +1825,7 @@ class BrushTrajectoryDriver(Node):
             solved = None
             first_solved = None
             for candidate in candidates:
-                result = solve_ur10_ik(target, candidate)
+                result = self._solve_planning_ik(target, candidate)
                 if result[3]:
                     candidate_joints = np.asarray(result[0], dtype=np.float64)
                     if (
@@ -1833,7 +1849,7 @@ class BrushTrajectoryDriver(Node):
                     if self._motion_obstacle_collision(seed, parking) is not None:
                         continue
                     for candidate in [parking] + candidates:
-                        result = solve_ur10_ik(target, candidate)
+                        result = self._solve_planning_ik(target, candidate)
                         if not result[3]:
                             continue
                         candidate_joints = np.asarray(result[0], dtype=np.float64)
@@ -1883,7 +1899,7 @@ class BrushTrajectoryDriver(Node):
                 random = np.random.default_rng(19082026 + len(self._targets))
                 for _ in range(48):
                     random_seed = random.uniform(-math.pi, math.pi, size=6)
-                    result = solve_ur10_ik(target, random_seed, max_iterations=120)
+                    result = self._solve_planning_ik(target, random_seed, max_iterations=120)
                     if not result[3]:
                         continue
                     candidate_joints = np.asarray(result[0], dtype=np.float64)
@@ -1896,7 +1912,7 @@ class BrushTrajectoryDriver(Node):
                         solved = result
                         break
             if solved is None:
-                result = first_solved or solve_ur10_ik(target, seed)
+                result = first_solved or self._solve_planning_ik(target, seed)
                 result_margin = _joint_singularity_margin(result[0])
                 if result_margin < minimum_singularity_margin:
                     raise RuntimeError(
@@ -1966,6 +1982,10 @@ class BrushTrajectoryDriver(Node):
 
         self._unwrap_joint_targets()
         self._validate_obstacle_clearance()
+        if bool(self._param('optimize_penup_wrist_motion')):
+            from .wrist_aware_transitions import optimize_penup
+            optimize_penup(self)
+            self._validate_obstacle_clearance()
         self._validate_final_joint_continuity()
         self._retime_joint_targets()
         paper_width = float(self._param("paper_width_m"))

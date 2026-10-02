@@ -2,6 +2,8 @@
 
 ## V16 原始目标图：姿态变化与 UR10 腕部转动量对照
 
+新增实验入口 `evaluate_actual_wrist_tradeoff`：工厂标定 UR10 的连续 IK q4/q5/q6 运动残差直接反馈进六维 LM；`optimize_penup_wrist_motion` 单独优化两笔间运动，保持接触姿态不变。所有新增开关默认关闭，不发布机械臂运动、不切换正式轨迹。完整 16 步、139.702/290 mm 固定 A/B/C 的复现命令、SHA 验收和边界见[腕部联合优化说明](../../../integration/ros2_v16_rotation/wrist_joint_20261002/README_wrist_validation.md)。字迹不满足绝对 IoU 门槛时必须拒绝，不能仅凭旋转减少启用。
+
 当前原始目标图入口联合优化 x/y/H/alpha/beta/gamma。新增 `offline_joint_tool_absolute_rotation_weight` 参数（默认 0）把笔内绝对工具姿态变化接入 LM 残差与结果选择；局部 gamma 按当前纸面前进方向转换，提笔姿态过渡仍由 ROS 规划器处理。
 
 `fusion_model_ros2_beta.evaluate_tool_rotation_tradeoff` 用相同原图、初值与预算做权重对照，并通过现有严格 UR10 规划接口统计三个腕关节的真实累计转动，不对关节增量取模。工具不发布轨迹，不自动注册候选；失败的部分规划不参与排名。

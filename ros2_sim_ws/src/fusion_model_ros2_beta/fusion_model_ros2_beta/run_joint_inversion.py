@@ -13,6 +13,8 @@ import optim.paper_psoc_lm as optimizer
 parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument('--beta_angle_point_weight', type=float, default=0.0)
 parser.add_argument('--beta_tool_absolute_rotation_weight', type=float, default=0.0)
+parser.add_argument('--beta_actual_wrist_weight', type=float, default=0.0)
+parser.add_argument('--beta_robot_context', default='')
 parser.add_argument('--beta_depth_spatial_weight', type=float, default=0.0)
 parser.add_argument('--beta_depth_mm_per_pixel', type=float, default=1.0)
 parser.add_argument('--beta_difference_scheme', choices=['forward', 'central'], default='forward')
@@ -26,12 +28,17 @@ sys.argv = [sys.argv[0]] + remaining
 
 class ConfiguredBetaOptimizer(PaperPSOCLM):
     def __init__(self, *args, **kwargs):
+        motion = None
+        if beta_args.beta_actual_wrist_weight:
+            from fusion_model_ros2_beta.ur10_wrist_cost import ActualWristCost
+            motion = ActualWristCost(beta_args.beta_robot_context, beta_args.beta_actual_wrist_weight)
         if beta_args.beta_gamma_local_relative:
             from dataclasses import replace
             renderer = args[0] if args else kwargs['renderer']
             renderer.dynamic = replace(renderer.dynamic, gamma_mode='absolute_heading')
         super().__init__(*args, angle_point_weight=beta_args.beta_angle_point_weight,
                          tool_absolute_rotation_weight=beta_args.beta_tool_absolute_rotation_weight,
+                         robot_motion_cost=motion,
                          depth_spatial_weight=beta_args.beta_depth_spatial_weight,
                          depth_mm_per_pixel=beta_args.beta_depth_mm_per_pixel,
                          project_posture_logits=beta_args.beta_project_posture_logits,

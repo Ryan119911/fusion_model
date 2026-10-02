@@ -567,10 +567,14 @@ class PaperPSOCLM:
         project_posture_logits: bool = False,
         neural_domain_weight: float = 0.0,
         hard_neural_domain: bool = False,
+        robot_motion_cost=None,
     ):
         if not np.isfinite(neural_domain_weight) or neural_domain_weight < 0:
             raise ValueError('invalid neural domain weight')
         self.neural_domain_weight = float(neural_domain_weight)
+        self.robot_motion_cost = robot_motion_cost
+        if robot_motion_cost is not None and (jacobian_mode != 'finite_difference' or not gamma_inputs_local_relative):
+            raise ValueError('actual UR10 wrist feedback requires finite differences and local gamma')
         self.hard_neural_domain = bool(hard_neural_domain)
         if self.hard_neural_domain and jacobian_mode != 'finite_difference':
             raise ValueError('hard-domain constrained LM currently requires finite differences')
@@ -1588,6 +1592,11 @@ class PaperPSOCLM:
                 rendered_xy, posture, gamma_points, point_indices,
                 self.tool_absolute_rotation_weight,
             ))
+            if self.robot_motion_cost is not None:
+                self._robot_row_start = sum(int(r.numel()) for r in residuals)
+                wrist_residual = self.robot_motion_cost.residual(rendered_xy, posture, gamma_points, point_indices)
+                self._robot_row_count = int(wrist_residual.numel())
+                residuals.append(wrist_residual)
             residuals.extend(spatial_depth_residuals(
                 rendered_xy, posture[:, 0], point_indices,
                 self.depth_spatial_weight, self.depth_mm_per_pixel,
@@ -1623,6 +1632,8 @@ class PaperPSOCLM:
             with torch.no_grad():
                 residual = residual_fn(vector)
                 if self.hard_neural_domain and not self._trial_domain_valid:
+                    return float('inf')
+                if self.robot_motion_cost is not None and not self.robot_motion_cost.last_report['valid']:
                     return float('inf')
                 return 0.5 * float(torch.dot(residual, residual).item())
 
@@ -2148,6 +2159,7 @@ class PaperPSOCLM:
             self.target_footprint_weight,
             self.angle_point_weight,
             self.tool_absolute_rotation_weight,
+            1.0 if self.robot_motion_cost is not None else 0.0,
             self.depth_spatial_weight,
             self.neural_domain_weight,
         ))
@@ -2836,6 +2848,16 @@ class PaperPSOCLM:
                 "fixed_value_on_physical_boundary": None,
             }
         diagnostics["field_decisions"] = decisions
+        if self.robot_motion_cost is not None:
+            self.robot_motion_cost.residual(optimized_xy, posture, optimized_gamma, point_indices)
+            diagnostics['actual_ur10_wrist_feedback'] = dict(self.robot_motion_cost.last_report)
+            diagnostics['actual_ur10_wrist_feedback']['weight'] = self.robot_motion_cost.weight
+            if last_jacobian is not None:
+                robot_jac = last_jacobian[self._robot_row_start:self._robot_row_start+self._robot_row_count]
+                mappings = {**field_columns,'gamma':gamma_columns,'xy':xy_columns}
+                diagnostics['actual_ur10_wrist_feedback']['residual_jacobian_field_norms'] = {
+                    name:float(torch.linalg.vector_norm(robot_jac[:,torch.isin(last_columns,cols)]))
+                    for name,cols in mappings.items() if bool(torch.any(torch.isin(last_columns,cols)))}
         return PaperLMResult(
             xy_canvas=optimized_xy.cpu().numpy(),
             posture=posture_np,

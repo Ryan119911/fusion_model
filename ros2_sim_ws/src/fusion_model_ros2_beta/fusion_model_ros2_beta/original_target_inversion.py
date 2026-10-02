@@ -173,6 +173,9 @@ class OriginalTargetFontSizeGenerator:
             Path(__file__).with_name("run_joint_inversion.py"),
             Path(__file__).with_name("export_neural_ink.py"),
             Path(__file__).with_name("gamma_semantics.py"),
+            Path(__file__).with_name("ur10_wrist_cost.py"),
+            Path(__file__).with_name("ur10_actual_kinematics.py"),
+            Path(__file__).with_name("joint_continuity.py"),
             self.config.model_root / "optim/tool_orientation.py",
             self.config.model_root / "models/paper_fusion_renderer.py",
             self.config.model_root / "tools/invert_paper_trajectory.py",
@@ -200,6 +203,7 @@ class OriginalTargetFontSizeGenerator:
             "checkpoint_sha256": V16_CHECKPOINT_SHA256,
             "seed_sha256": _sha256(seed) if seed else None,
             "seed_size_m": seed_size,
+            "robot_context_sha256": _sha256(Path(self.config.joint_robot_context)) if self.config.joint_robot_context else None,
             "config": {
                 key: str(value) if isinstance(value, Path) else value
                 for key, value in asdict(self.config).items()
@@ -285,6 +289,9 @@ class OriginalTargetFontSizeGenerator:
         command.extend(("--beta_gamma_local_relative", "--gamma_max_abs_deg", "30",
                         "--beta_tool_absolute_rotation_weight",
                         str(self.config.joint_tool_absolute_rotation_weight)))
+        if self.config.joint_actual_wrist_weight:
+            command.extend(('--beta_actual_wrist_weight',str(self.config.joint_actual_wrist_weight),
+                            '--beta_robot_context',self.config.joint_robot_context))
         if progress:
             progress(
                 f"正在以原始目标图对‘{entry.character}’ {size * 1000:.3f} mm "
@@ -349,6 +356,8 @@ class OriginalTargetFontSizeGenerator:
             "gamma_semantics": gamma_semantics,
             "initial_gamma_frame": "canvas_absolute; trusted local seeds re-encoded before CLI initialization",
             "tool_absolute_rotation_weight": self.config.joint_tool_absolute_rotation_weight,
+            "actual_wrist_weight": self.config.joint_actual_wrist_weight,
+            "actual_ur10_wrist_feedback": report['lm']['diagnostics'].get('actual_ur10_wrist_feedback'),
             "absolute_tool_rotation": rotation_audit,
             "pen_up_orientation_owner": "ROS UR10 planner",
             "quality_metrics": report["metrics"],
