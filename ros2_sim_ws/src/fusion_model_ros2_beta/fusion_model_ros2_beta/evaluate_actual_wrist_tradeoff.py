@@ -118,6 +118,13 @@ def _generate(args):
 
 
 def plan(args):
+    # Concurrent queue/main workers may finish the same cached GPU case.
+    # Serialize planning too: stroke_residuals.json is an exclusive artifact.
+    with exclusive_case(args.output,args.slots,args.case):
+        _plan(args)
+
+
+def _plan(args):
     import rclpy
     from .brush_trajectory_driver import BrushTrajectoryDriver,_brush_rotation,_flange_target
     from . import brush_trajectory_driver as driver

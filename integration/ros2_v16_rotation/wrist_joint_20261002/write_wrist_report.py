@@ -31,6 +31,14 @@ def create(root):
                 f"{r['ssim']:.6f}",f"{r['mse']:.6f}",*[fmt(v) for v in joints],fmt(r['wrist_deg']),
                 fmt(step),fmt(r['duration_s']),'通过' if r['robot_passed'] else '未通过',
                 '通过' if r['absolute_visual_passed'] else '未通过'])+' |')
+    lines+=['','## 完整预算与优化状态','',
+        '以下如 LM 状态为未收敛，表示在固定完整预算内到达步数上限，不声称已求得全局最优。所有对照保持16步/order11，未增加C预算或减少A/B预算。','',
+        '| 字号(mm) | 组 | 完成步数 | LM数值收敛 | 状态 |',
+        '|---:|:--|---:|:--|:--|']
+    for experiment in report['experiments']:
+        for c in experiment['cases']:
+            lm=c['lm']
+            lines.append(f"| {experiment['canvas']['font_size_m']*1000:.3f} | {c['case']} | {c['steps_completed']} | "+('是' if lm['success'] else '否')+f" | {lm['message']} |")
     lines+=['','## 接触/提笔/初始接近分项','',
         '每格为 q4/q5/q6（度）及三者合计。初始接近不计入纯提笔。','',
         '| 字号(mm) | 组 | 接触 | 两笔之间纯提笔 | 初始接近 |',

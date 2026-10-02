@@ -49,6 +49,23 @@ def fixture(root: Path, iou=.96, feasible=True):
         (tests/f'{name}.xml').write_text('<testsuites><testsuite tests="1" failures="0" errors="0" skipped="0"/></testsuites>')
 
 
+def test_planning_same_case_is_serialized_before_residual_file_write(tmp_path,monkeypatch):
+    from threading import Thread,Event
+    from types import SimpleNamespace
+    from fusion_model_ros2_beta import evaluate_actual_wrist_tradeoff as m
+    entered,second,release=Event(),Event(),Event();calls=[]
+    def stub(args):
+        calls.append(args.worker)
+        if args.worker==1:entered.set();assert release.wait(5.)
+        else:second.set()
+    monkeypatch.setattr(m,'_plan',stub)
+    def args(worker):return SimpleNamespace(output=str(tmp_path),slots=1,case='B',worker=worker)
+    a=Thread(target=m.plan,args=(args(1),));b=Thread(target=m.plan,args=(args(2),))
+    a.start();assert entered.wait(5.);b.start();assert not second.wait(.05)
+    release.set();a.join(5.);b.join(5.)
+    assert calls==[1,2] and second.is_set() and not a.is_alive() and not b.is_alive()
+
+
 def test_bad_glyph_fails_even_if_rotation_and_relative_iou_pass(tmp_path):
     fixture(tmp_path,iou=.5)
     summarize(tmp_path)
