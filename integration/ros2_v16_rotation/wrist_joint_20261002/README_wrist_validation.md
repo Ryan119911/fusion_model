@@ -63,10 +63,17 @@ ssh mu
 cd /home/robot/ros2_ws/evaluation/wrist_joint_20261002
 bash run_tests.sh
 bash run_full_abc.sh
+bash build_optin.sh
+bash run_final_acceptance.sh
 sha256sum -c verification.sha256
+/usr/bin/python3 source/verify_wrist_artifacts.py --output .
 ```
 
-两脚本保存在本目录，内含固定 Python、ROS source、模型、manifest、字号和预算。
+脚本保存在本目录，内含固定 Python、ROS source、模型、manifest、字号和预算。
+`source` 是冻结的反演代码快照；`deployed_source` 是本轮显式 opt-in 补丁部署后的当前 ROS 源码快照。
+最终脚本仅使用后者重新规划六组已完成的候选并跑测试，不启动新训练，不发布运动。
+`build_optin.sh` 只构建 evaluation 内的隔离安装并执行 `--show-args`，不替换正式安装、不启动 launch。
+运行最终脚本时不要把日志重定向到本 evaluation 目录内，否则写日志会改变最终 SHA 清单；可使用 `/tmp/ur10_wrist_final.log`。
 已有完整缓存会校验身份与文件 SHA 后复用；有不完整缓存时 fail closed，不掩盖失败。
 如需全新计算，应复制代码/脚本到新 evaluation 目录并改输出路径，不能覆盖原证据。
 
@@ -91,10 +98,15 @@ OUT=/home/robot/ros2_ws/evaluation/wrist_joint_20261002
 `canvas_*_slots/{A,B,C}_result.json`：原图 IoU/SSIM/MSE、预算、模型 SHA、真实关节累计运动、
 接触/纯提笔/初始接近分项、最大内部关节步长、时长、约束检查、接触 FK 残差和反馈 IK 与实际规划差。
 `{A,B,C}/ur10_planned_joints.csv`：不取模的实际 q1–q6、点姿态、状态和时间。
+其中 x/y/z（m）是根据标定 FK 计算的 `base` 坐标系笔尖位置，alpha/beta/gamma 为同一 ROS 姿态约定的弧度值；q1–q6 为未取模弧度。
+`duration_s` 是相邻目标运动时间，`time_from_start_s` 是累计时间；`desired_*` 保留原规划目标，首行仅为指定初始关节种子，`cartesian_target_applicable=False`。
+候选 `physical_trajectory.csv` 的 x/y 是纸面局部 m，z 是模型 H（mm），gamma 已转为绝对姿态；它不是机器人法兰的世界坐标，不能直接下发为笛卡尔命令。
 `{A,B,C}/stroke_residuals.json`：按源笔画 Voronoi 分区的原图局部残差；这不是人工标注的真实笔画分割。
 `comparison.png` 为黑墨白底 target/render/diff，不是 ROS 视觉渲染。
 `C/feedback_ik.csv` 可独立核对进入反演的腕部关节。
 `tests/*.xml` 保存测试结果；`verification.json` 保存各证据 SHA；`verification.sha256` 校验报告本身。
+`source/verify_wrist_artifacts.py` 独立核验 SHA 清单中的全部文件，不会将不合格字迹提升为通过。
+`frozen_input_verification.json` 还核验六份反演请求固定的原图、初值、V16权重、反演实现、画布上下文和完整预算；变更外部源文件会拒绝验收。
 
 独立绝对字迹门槛 IoU≥0.95、SSIM≥0.90；C 相对 A 的 IoU 下降≤0.01 仅是附加门槛。
 空白背景能使 SSIM 偏高，不能代替前景 IoU。

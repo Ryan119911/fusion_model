@@ -7,7 +7,7 @@ mkdir -p "$ROOT/tests"
 set +u
 source /opt/ros/humble/setup.bash
 set -u
-export PYTHONPATH="$ROOT/source:$MODEL${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="${ROS_PACKAGE_SOURCE:-$ROOT/source}:$MODEL${PYTHONPATH:+:$PYTHONPATH}"
 export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
 cd "$ROOT"
@@ -25,6 +25,9 @@ cd "$ROOT"
   source/test/test_actual_wrist_report.py \
   source/test/test_robot_context_guard.py \
   source/test/test_wrist_deployment.py \
+  source/test/test_wrist_artifacts.py \
+  source/test/test_robot_path_export.py \
+  source/test/test_frozen_requests.py \
   2>&1 | tee "$ROOT/tests/ros.log"
 /home/robot/miniconda3/envs/ddpm/bin/python -m pytest -q -p no:cacheprovider \
   --junitxml="$ROOT/tests/model.xml" \

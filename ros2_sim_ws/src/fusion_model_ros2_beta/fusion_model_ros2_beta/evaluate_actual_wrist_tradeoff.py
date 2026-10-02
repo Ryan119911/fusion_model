@@ -8,6 +8,7 @@ import math
 import sys
 import traceback
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
 from dataclasses import asdict,replace
 from pathlib import Path
 import numpy as np
@@ -29,7 +30,7 @@ def runtime_source_hashes():
         'wrist_aware_transitions.py','joint_continuity.py','gamma_semantics.py',
         'precise_ur10_validation.py','original_image_metrics.py',
         'evaluate_actual_wrist_tradeoff.py','joint_path_audit.py','robot_context_guard.py',
-        'joint_candidate.py')
+        'joint_candidate.py','export_robot_path.py')
     return {name:sha(package/name) for name in names}
 
 
@@ -75,7 +76,24 @@ def setup(args):
     return directory,record,cell,pinned
 
 
+@contextmanager
+def exclusive_case(root, slots, variant):
+    import fcntl
+    root=Path(root);root.mkdir(parents=True,exist_ok=True)
+    with (root/f'.case_{slots}_{variant}.lock').open('a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        try: yield
+        finally: fcntl.flock(lock,fcntl.LOCK_UN)
+
+
 def generate(args):
+    # Shared CPU/GPU workers cannot generate the same case twice or read an
+    # unfinished cache. No input, model or optimization-budget change.
+    with exclusive_case(args.output,args.slots,args.case):
+        _generate(args)
+
+
+def _generate(args):
     directory,record,cell,pinned=setup(args)
     from .offline_fontsize_inversion import OfflineInversionConfig
     from .original_target_inversion import OriginalTargetFontSizeGenerator
@@ -108,6 +126,12 @@ def plan(args):
     def forbidden_motion(*args,**kwargs):
         raise RuntimeError('offline validation forbids mechanical-arm motion publication')
     driver.BrushTrajectoryDriver._publish_once=forbidden_motion
+    def clear_offline_ink(self):
+        # Do not even send RViz DELETEALL while doing an offline acceptance.
+        from visualization_msgs.msg import MarkerArray
+        self._neural_jobs=[]
+        self._ink_markers=MarkerArray()
+    driver.BrushTrajectoryDriver._clear_ink=clear_offline_ink
     from .joint_candidate import load_joint_candidate
     from .ur10_wrist_cost import fk_jacobian,ActualWristCost
     from .stroke_residuals import audit_candidate
@@ -121,9 +145,10 @@ def plan(args):
         runtime_source_sha256=runtime_source_hashes(),
         wrist_measurement_basis='factory-calibrated simulated joint path, not physical encoder measurements')
     # Instantiation has no executor spin and never calls _publish_once. No
-    # controller goal, publisher method or real hardware interface is invoked.
+    # controller goal, RViz clearing or real hardware interface is invoked.
     rclpy.init(args=['--ros-args','-p','enable_input_page:=false','-p','publish_on_start:=false',
-                    '-p','strict_ik:=true','-p','use_exact_calibrated_ik:=true'])
+                    '-p','strict_ik:=true','-p','use_exact_calibrated_ik:=true',
+                    '-r','__ns:=/wrist_eval_20261002'])
     try:
         entry=load_joint_candidate(folder,require_training_domain=True)
         # Context validation is a planning gate, not a change to the frozen
@@ -208,12 +233,8 @@ def plan(args):
             if delta_error>.01: raise ValueError('actual IK feedback differs from planned robot branch')
         # Export both paths and independently audit exact physical target -> IK
         # parity, not simply compare gamma scalars.
-        path=directory/args.case/'ur10_planned_joints.csv'
-        path.parent.mkdir(parents=True,exist_ok=True)
-        with path.open('w',newline='') as f:
-            w=csv.writer(f); w.writerow(['state','stroke_id','duration_s','x','y','z','alpha','beta','gamma']+[f'q{i}' for i in range(1,7)])
-            for t in node._targets:
-                p=t.point; w.writerow([p.state,p.stroke_id,t.duration_s,p.x,p.y,p.z,p.alpha,p.beta,p.gamma,*t.joints])
+        from .export_robot_path import export_path
+        path=export_path(node._targets,directory/args.case/'ur10_planned_joints.csv',.328)
         planned.update(planned_csv=str(path),planned_csv_sha256=sha(path))
     except Exception as exc:
         planned.update(feasible=False,status='rejected',error_type=type(exc).__name__,error=str(exc)); traceback.print_exc()

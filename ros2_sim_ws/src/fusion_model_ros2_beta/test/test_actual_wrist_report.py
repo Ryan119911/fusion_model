@@ -12,6 +12,22 @@ def test_runtime_source_inventory_names_existing_modules():
     assert all(len(v)==64 for v in inventory.values())
 
 
+def test_case_lock_prevents_concurrent_same_case_generation(tmp_path):
+    from threading import Thread,Event
+    from fusion_model_ros2_beta.evaluate_actual_wrist_tradeoff import exclusive_case
+    first,second,release=Event(),Event(),Event()
+    def worker_one():
+        with exclusive_case(tmp_path,1,'B'):
+            first.set();assert release.wait(5.)
+    def worker_two():
+        with exclusive_case(tmp_path,1,'B'):second.set()
+    a=Thread(target=worker_one);b=Thread(target=worker_two)
+    a.start();assert first.wait(5.);b.start()
+    assert not second.wait(.05)
+    release.set();a.join(5.);b.join(5.)
+    assert second.is_set() and not a.is_alive() and not b.is_alive()
+
+
 def fixture(root: Path, iou=.96, feasible=True):
     for slots in (1, 3):
         directory=root/f'canvas_{slots}_slots'; directory.mkdir()

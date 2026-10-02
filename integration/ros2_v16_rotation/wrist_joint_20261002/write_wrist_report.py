@@ -73,10 +73,40 @@ def create(root):
         '真实关节反馈含接触点与跨笔端点增量；独立提笔规划处理路径绕行附加运动。',
         '未验证真实加速度、力矩、压力和机器人实际执行；初始关节固定为当前规划安全初值，不是本次读取的实际硬件关节。',
         '绝对字迹门槛 IoU≥0.95、SSIM≥0.90；相对下降≤0.01不能替代绝对门槛。高背景SSIM不能替代前景IoU。','',
+        '| 字号(mm) | 组 | 接触FK位置/角度最大误差(m/rad) | 最小关节限位余量(rad) | 原ROS奇异余量 | 全链最小归一化奇异值 | 最大关节速度(rad/s) |',
+        '|---:|:--|:--|---:|---:|---:|---:|']
+    for experiment in report['experiments']:
+        for c in experiment['cases']:
+            p=c['planning'];m=p.get('metrics',{});audit=p.get('independent_final_path_audit',{})
+            fmt=lambda v:f'{v:.6g}' if v is not None else '未通过/未生成'
+            errors=p.get('max_contact_fk_residual_m_rad',[])
+            lines.append('| '+' | '.join([f"{experiment['canvas']['font_size_m']*1000:.3f}",c['case'],
+                ' / '.join(fmt(v) for v in errors) if errors else '未通过/未生成',
+                fmt(audit.get('minimum_joint_limit_margin_rad')),
+                fmt(m.get('minimum_singularity_margin')),
+                fmt(audit.get('minimum_full_chain_normalized_singular_value')),
+                fmt(audit.get('max_joint_speed_rad_s'))])+' |')
+    lines+=['','### H 与平面坐标的连续性诊断','',
+        '以下是模型采样点间诊断，不是已标定的压力，也不是真实机器人加速度；关节路径仍通过限速重定时。','',
+        '| 字号(mm) | 组 | H最大一阶差(mm) | H最大二阶差(mm) | x/y最大分量位移(px) | x/y触边比例 |',
+        '|---:|:--|---:|---:|---:|---:|']
+    for experiment in report['experiments']:
+        for c in experiment['cases']:
+            diagnostics=c['lm']['diagnostics'];h=diagnostics.get('trajectory_continuity',{});xy=diagnostics.get('xy_optimization',{})
+            fmt=lambda v:f'{v:.6g}' if v is not None else '—'
+            lines.append('| '+' | '.join([f"{experiment['canvas']['font_size_m']*1000:.3f}",c['case'],
+                fmt(h.get('first_difference',{}).get('max_abs_mm')),
+                fmt(h.get('second_difference',{}).get('max_abs_mm')),
+                fmt(xy.get('max_abs_change_px')),fmt(xy.get('component_bound_fraction_within_1pct'))])+' |')
+    lines+=['','## 自动化测试','']
+    for name,evidence in report['tests'].items():
+        lines.append(f"- {name}: tests={evidence.get('tests',0)}, failures={evidence.get('failures',0)}, errors={evidence.get('errors',0)}, skipped={evidence.get('skipped',0)}；"+('通过' if evidence['passed'] else '未通过'))
+    lines+=['',
         '## 复现与证据','',
         '完整说明、ROS显式参数和命令见 README_wrist_validation.md。执行 `bash run_tests.sh`、`bash run_full_abc.sh`、`sha256sum -c verification.sha256`。',
         '所有输出路径以 *_result.json 指向的 candidate 为准，不使用目录修改时间选旧缓存或未完成结果。',
-        'verification.json 保存图像、代码、测试、CSV、模型流和几何资源SHA256；verification.sha256保存报告本身SHA。','']
+        'verification.json 保存图像、代码、测试、CSV、模型流和几何资源SHA256；verification.sha256保存报告本身SHA。',
+        '另运行 `/usr/bin/python3 source/verify_wrist_artifacts.py --output .` 校验全部记录；哈希通过不改变字迹/机器人验收失败结论。','']
     (root/'acceptance_report.md').write_text('\n'.join(lines),encoding='utf-8')
     with (root/'stroke_residuals.csv').open('w',newline='') as f:
         w=csv.DictWriter(f,fieldnames=list(stroke_rows[0]));w.writeheader();w.writerows(stroke_rows)
