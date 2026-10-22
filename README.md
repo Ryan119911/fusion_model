@@ -306,3 +306,10 @@ bash -n tools/run_kaishu_v17_full.sh tools/run_kaishu_v17_parallel.sh
 ```
 
 算法测试通过代表代码行为受到检查，不代表全库轨迹或真实机器人执行已验收。当前项目提供纸面仿真候选；真实毛笔、相机、纸面、TCP 与机器人基座标定是后续硬件阶段的工作。
+
+
+## ROS 2 与 robot 分支合并
+
+保留 main 的笔触模型说明，并合入 robot 的 ROS 2、UR10 标定及轨迹注册功能。
+参见 [轨迹注册](docs/ros_pose_registry.md) 和 [腕部验证说明](integration/ros2_v16_rotation/wrist_joint_20261002/README_wrist_validation.md)。
+完整旧 robot 分支说明保存在 [归档](docs/archive/robot_readme_before_merge_20261022.md)。
