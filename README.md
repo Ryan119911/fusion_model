@@ -2,7 +2,9 @@
 
 本项目研究从目标楷书图像和给定二维轨迹，生成多组修正后的 `x/y/z/alpha/beta/gamma`，再通过动态笔刷与 B-BSMG 正向渲染检验结果。当前主流程是 **冻结通用 B-BSMG，执行 v17 多初值反演与可信度评估**。
 
-GitHub `main` 保存笔触模型、数据构建、训练、渲染和反演代码；`robot` 保存机器人仿真与 ROS 对接代码。模型权重、原始数据库和运行输出没有随代码上传，克隆仓库后需要另行准备。
+`main` 统一维护笔触模型、数据构建、训练、渲染、反演、ROS 2 和 UR10 毛笔实机工具。机器人代码与模型代码在同一主分支集成，不再要求切换 `robot` 分支。模型权重、原始数据库、标定记录和运行输出不随代码上传，克隆仓库后需要另行准备。
+
+入口导航：[模型流程](#1-流程与版本) · [机械臂写字命令](docs/机械臂写字.md) · [写后相机采集](docs/brush_write_capture.md) · [悬空力参考采样](docs/brush_unloaded_calibration.md) · [ROS 2 轨迹注册](docs/ros_pose_registry.md)
 
 ## 1. 流程与版本
 
@@ -62,7 +64,7 @@ H 范围为 11–20 mm，α 为 0–10°，β 为 0–5°。网络的局部 γ �
 
 ## 3. Ubuntu 环境与工作区
 
-已有 `robot` 工作区带本地修改时，使用独立 `main` worktree：
+在同步后的 `main` 项目根目录运行。需要保留现有本地修改并另建独立副本时，可使用只读起点的 worktree：
 
 ```bash
 cd /home/robot/coppeliasim/machine_learning/model
@@ -262,7 +264,7 @@ $PY -u tools/render_paper_trajectory.py \
 
 当前 v17 的 `export_eligible` 只覆盖图像/触边/连续性门限，仍需单独审查稳定性和字段可信度。低 IoU、严重触边或不稳定候选不能因名次靠前而采用。α/β 无法辨识时保留低置信多解；增加像素相似度不能证明姿态唯一。
 
-筛选后的纸面轨迹可交给 `robot` 分支的注册工具，转换为 `pose_refined.csv + manifest.jsonl`。机器人侧还需 IK、碰撞和奇异位姿检查。`main` 的候选 manifest 不是 ROS 正式注册清单，模型导出的 α/β/γ 也不自动等于机械臂姿态约定。
+筛选后的纸面轨迹可交给同一 `main` 分支内的 ROS 注册工具，转换为 `pose_refined.csv + manifest.jsonl`。机器人侧还需 IK、碰撞和奇异位姿检查。模型候选 manifest 不是 ROS 正式注册清单，模型导出的 α/β/γ 也不自动等于机械臂姿态约定。
 
 V16 原始目标图六字段反演的新[绝对工具姿态代价与转动量对照](docs/tool_absolute_rotation.md)沿用当前 ROS 的局部 γ 转换，并分别评价图像质量、笔内工具转动和完整 UR10 规划腕部转动；提笔姿态过渡仍由 ROS 规划器处理。
 
@@ -305,11 +307,48 @@ $PY -m pytest tests/test_paper_v17_multisolution.py \
 bash -n tools/run_kaishu_v17_full.sh tools/run_kaishu_v17_parallel.sh
 ```
 
-算法测试通过代表代码行为受到检查，不代表全库轨迹或真实机器人执行已验收。当前项目提供纸面仿真候选；真实毛笔、相机、纸面、TCP 与机器人基座标定是后续硬件阶段的工作。
+算法测试通过代表代码行为受到检查，不代表全库轨迹或真实机器人执行已验收。实机工作已推进到 UR10 初始换算试写；其标定来源、局部验证范围和未完成项见下面的实机入口说明。
 
 
-## ROS 2 与 robot 分支合并
+## 11. UR10 毛笔实机工具（2026-10-23）
 
-保留 main 的笔触模型说明，并合入 robot 的 ROS 2、UR10 标定及轨迹注册功能。
+当前交付包括完整三笔“工”字初始换算试写、实测悬空起点接入、已通过路径证据复用、原始力与位姿记录，以及独立拍照位的离线设计和墨迹测量工具。默认入口为离线预览，实际运动需要显式传入 `--execute --accept-initial-trial`。
+
+```bash
+# 离线预览；不会发送运动，也不会连接机械臂。
+/usr/bin/python3 -B tools/run_gong_model_trial.py
+```
+
+上述命令需要现场已有的 `outputs/brush_mapping_20261023/` 轨迹、零点、TCP、纸面、碰撞和力参考资料。该目录被 Git 忽略，未随本次代码发布；全新克隆不会自动具备实机运行资格。运行主机 MU、jx 的 SSH 配置及 jx 中现有 UR10/ROS 工具也属于现场环境。
+
+| 组件 | 入口／说明 |
+| --- | --- |
+| 模型三笔试写 | `tools/run_gong_model_trial.py`、`tools/gong_model_trial_remote.py` |
+| 当前位置接入 | `tools/brush_model_start.py`；保持原书写路径和零点，单独检查新增接入段 |
+| 原生缓冲运动与保护 | `tools/brush_buffered_motion.py`、`tools/brush_buffered_guard.py`；保留笔画内圆滑过渡、抬落笔分隔与控制器看门狗 |
+| 原始力数据读取 | `tools/brush_force_snapshot.py`；读取最新十帧，保存失效时的样本年龄诊断 |
+| 悬空姿态参考 | `tools/brush_unloaded_calibration.py`、`tools/validate_brush_unloaded_sweep.py` |
+| 写后固定相机采集与测量 | `tools/brush_write_capture.py`、`tools/brush_capture_measure.py`，见[采集说明](docs/brush_write_capture.md) |
+| 既有标定工具依赖 | `integration/ur10_paper_calibration/`；保留源记录与各自验证状态 |
+
+**当前实机结果：**完整路径及新增接入段曾通过检查；发布后只完成第一笔，在第二笔落笔前因力数据更新保护停止，第三笔未执行。不能将此写成完整三笔验收成功。之后按用户要求将本次试写的力数据接收与源时间戳允许延迟改为 **1.5 秒**，软件测试通过，尚未改后实机复验。位姿、主机心跳和控制器看门狗仍为 **150 ms**，力增量停机阈值仍为 **10 N**。
+
+模型 H 使用显式初始换算 `H × 0.045`，得到约 0.495～0.9 mm 的指令下压量；α/β/γ 增益为 0.2/0.2/0.02。XY 保持原尺寸并在纸面平移，变姿位置按自然笔尖 TCP 完整补偿。H 不等同于实测压入量，模型 H 不裁剪，原始 6＋4＋6 个控制点及全部字段保留。局部悬空参考的跨位置和接触精度仍未独立验证。
+
+全部现场命令、用途、是否驱动机械臂和验证范围集中维护在[机械臂写字](docs/机械臂写字.md)。现场主副本为 `/home/robot/Documents/机械臂写字.md`；后续验证可用的写字命令同步更新到两处。当前实机命令都从第一笔开始，不是断点续写命令。
+
+相关代码验证可在不连接机械臂的情况下运行：
+
+```bash
+/usr/bin/python3 -B -m unittest discover -s tests -p 'test_brush_*.py'
+/usr/bin/python3 -B -m unittest discover -s tests -p 'test_run_gong_model_trial.py'
+/usr/bin/python3 -B -m unittest discover -s tests -p 'test_prepare_brush_capture_runtime.py'
+/usr/bin/python3 -B -m unittest discover -s tests -p 'test_validate_brush_unloaded_sweep.py'
+/usr/bin/python3 -B -m unittest discover -s tests -p 'test_write_gong_1mm.py'
+```
+
+## 12. ROS 2 与机器人仿真
+
+`main` 同时保留笔触模型、ROS 2、UR10 标定及轨迹注册功能。
 参见 [轨迹注册](docs/ros_pose_registry.md) 和 [腕部验证说明](integration/ros2_v16_rotation/wrist_joint_20261002/README_wrist_validation.md)。
 完整旧 robot 分支说明保存在 [归档](docs/archive/robot_readme_before_merge_20261022.md)。
