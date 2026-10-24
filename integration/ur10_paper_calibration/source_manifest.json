@@ -1,0 +1,51 @@
+{
+  "source_host": "jx",
+  "source_directory": "/home/jx/.dsh-analysis",
+  "robot_model": "UR10 CB3",
+  "robot_serial": "2022300602",
+  "factory_calibration_hash": "calib_15120592593058779304",
+  "files": [
+    {
+      "name": "calibrate_paper_plane_auto.py",
+      "before_sha256": "20064846255fa65c1b102687f691f9d93e8ebc04ca8681dd7c2ff689e76f34c4",
+      "after_sha256": "abfb14d9f8f6e8abd7076888d6643b8134d98bb8fc130f8e949e4746662e694d",
+      "upstream_original_sha256": "9b5b084bb390a8bd5e6371d9a3ad8cd1264c6a1f5e744da9dcff5576f29575fa"
+    },
+    {
+      "name": "calibrate_pen_tcp.py",
+      "before_sha256": "dd3458f4725b739ba32c18fe6f5931330a0a2cd3ae8a6b80fc1162b0495e8203",
+      "after_sha256": "dd3458f4725b739ba32c18fe6f5931330a0a2cd3ae8a6b80fc1162b0495e8203",
+      "upstream_original_sha256": "dd3458f4725b739ba32c18fe6f5931330a0a2cd3ae8a6b80fc1162b0495e8203"
+    },
+    {
+      "name": "paper_ur_support.py",
+      "before_sha256": "7920465041a8c72a87008dd73a75f82d29f5e1f7386c73b7a4562c85e41ebca6",
+      "after_sha256": "7920465041a8c72a87008dd73a75f82d29f5e1f7386c73b7a4562c85e41ebca6",
+      "upstream_original_sha256": null
+    },
+    {
+      "name": "probe_paper_height.py",
+      "before_sha256": "627f893cd85e5d2642944a531ef7f648b95edccf7f26f953289220fa9fa3fa7b",
+      "after_sha256": "4299b89ba065e6b3bf5920d588513c441080a7475232c11d4fe9e0cec46ded87",
+      "upstream_original_sha256": "f2cd0270785c474b69b3dc30cc1b50a35aaa6098b4fe260d4b3c6aca3774f960"
+    },
+    {
+      "name": "test_paper_motion.py",
+      "before_sha256": "2b3f53580926137ece9eaa4f571360dfca6adc0d940a278633c43026b4665561",
+      "after_sha256": "310684e0c9dd5ab29d00d5e909d2d19f54e6df0bf9dad3fc496458cbe8424152",
+      "upstream_original_sha256": null
+    },
+    {
+      "name": "test_paper_plane_auto.py",
+      "before_sha256": "084d2bcc7224a25b3e92becca2932815791e146aba2e97e7d748c692cb0c04e3",
+      "after_sha256": "084d2bcc7224a25b3e92becca2932815791e146aba2e97e7d748c692cb0c04e3",
+      "upstream_original_sha256": "f8925d243a2e2326caf442cc9e691c5e69981049af06e3fc44d5083731215e6c"
+    },
+    {
+      "name": "recover_paper_start.py",
+      "before_sha256": "f1ab9bb6760c63f0e9484e35f30467d4d77134f7a595552d3410c0d4e3e8fc97",
+      "after_sha256": "f1ab9bb6760c63f0e9484e35f30467d4d77134f7a595552d3410c0d4e3e8fc97",
+      "upstream_original_sha256": null
+    }
+  ]
+}
