@@ -312,6 +312,8 @@ bash -n tools/run_kaishu_v17_full.sh tools/run_kaishu_v17_parallel.sh
 
 ## 11. UR10 毛笔实机工具（2026-10-23）
 
+2026-10-27 [相机直装模型与 ROS 同步](integration/ur10_camera_direct_mount_20261027/README.md)：长边水平、宽面贴灰色支架、相机端顶部齐平；包含与 MU 一致的 CAD 装配、四个末端网格及碰撞包络。相同模型已推送到共同维护的 UR10 仓库；本次不更新手眼标定。
+
 当前交付包括完整三笔“工”字初始换算试写、实测悬空起点接入、已通过路径证据复用、原始力与位姿记录，以及独立拍照位的离线设计和墨迹测量工具。默认入口为离线预览，实际运动需要显式传入 `--execute --accept-initial-trial`。
 
 ```bash

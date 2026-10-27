@@ -31,6 +31,10 @@ setup(
             glob("meshes/ur10/collision/*"),
         ),
         (
+            "share/" + package_name + "/meshes/end_effector",
+            glob("meshes/end_effector/*"),
+        ),
+        (
             "share/" + package_name + "/third_party/ur_description",
             glob("third_party/ur_description/*"),
         ),

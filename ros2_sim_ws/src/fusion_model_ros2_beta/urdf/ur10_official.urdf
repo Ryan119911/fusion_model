@@ -628,30 +628,49 @@
     <parent link="flange"/>
     <child link="tool0"/>
   </joint>
-  <!-- Physical end-effector stack from the real UR10 repository.  The ATI and
-       Robotiq dimensions are conservative envelopes; the grasp centre at
-       tool0 +Z=220 mm is a manual physical measurement. -->
-  <link name="ati_sensor_link">
-    <visual><origin xyz="0 0 0.015" rpy="0 0 0"/><geometry><cylinder radius="0.040" length="0.030"/></geometry><material name="ati_blue"><color rgba="0.10 0.35 0.75 1"/></material></visual>
-    <collision><origin xyz="0 0 0.015" rpy="0 0 0"/><geometry><cylinder radius="0.040" length="0.030"/></geometry></collision>
+  <!-- Exact SolidWorks-exported rigid end-effector assembly from the real UR10
+       repository.  CAD -Y maps to tool0 +Z and the operator-confirmed assembly
+       clocking is 270 degrees.  All four meshes share this registration. -->
+  <link name="cad_force_sensor_link">
+    <visual><geometry><mesh filename="package://fusion_model_ros2_beta/meshes/end_effector/end_effector_force_sensor.stl" scale="0.001 0.001 0.001"/></geometry><material name="ati_blue"><color rgba="0.10 0.35 0.75 1"/></material></visual>
+    <collision><geometry><mesh filename="package://fusion_model_ros2_beta/meshes/end_effector/end_effector_force_sensor.stl" scale="0.001 0.001 0.001"/></geometry></collision>
   </link>
-  <joint name="tool0-ati_sensor" type="fixed">
-    <origin xyz="0 0 0" rpy="0 0 0"/><parent link="tool0"/><child link="ati_sensor_link"/>
+  <joint name="tool0-cad_force_sensor" type="fixed">
+    <origin xyz="-0.080221162 0.327612370 0.238737610" rpy="-1.570796327 0 -1.570796327"/>
+    <parent link="tool0"/><child link="cad_force_sensor_link"/>
   </joint>
-  <link name="robotiq_gripper_link">
-    <visual><origin xyz="0 0 0.105" rpy="0 0 0"/><geometry><box size="0.080 0.070 0.150"/></geometry><material name="gripper_gray"><color rgba="0.18 0.20 0.23 1"/></material></visual>
-    <collision><origin xyz="0 0 0.105" rpy="0 0 0"/><geometry><box size="0.080 0.070 0.150"/></geometry></collision>
+  <link name="cad_connector_link">
+    <visual><geometry><mesh filename="package://fusion_model_ros2_beta/meshes/end_effector/end_effector_connector.stl" scale="0.001 0.001 0.001"/></geometry><material name="connector_gray"><color rgba="0.60 0.60 0.60 1"/></material></visual>
+    <collision><geometry><mesh filename="package://fusion_model_ros2_beta/meshes/end_effector/end_effector_connector.stl" scale="0.001 0.001 0.001"/></geometry></collision>
   </link>
-  <joint name="ati_sensor-robotiq_gripper" type="fixed">
-    <origin xyz="0 0 0.030" rpy="0 0 0"/><parent link="ati_sensor_link"/><child link="robotiq_gripper_link"/>
+  <joint name="tool0-cad_connector" type="fixed">
+    <origin xyz="-0.080221162 0.327612370 0.238737610" rpy="-1.570796327 0 -1.570796327"/>
+    <parent link="tool0"/><child link="cad_connector_link"/>
   </joint>
-  <link name="mecheye_camera_link">
-    <visual><geometry><box size="0.200 0.200 0.170"/></geometry><material name="camera_orange"><color rgba="0.95 0.45 0.20 1"/></material></visual>
-    <collision><geometry><box size="0.200 0.200 0.170"/></geometry></collision>
+  <link name="cad_robotiq_2f85_link">
+    <visual><geometry><mesh filename="package://fusion_model_ros2_beta/meshes/end_effector/end_effector_2f85_closed.stl" scale="0.001 0.001 0.001"/></geometry><material name="gripper_gray"><color rgba="0.18 0.20 0.23 1"/></material></visual>
+    <collision><geometry><mesh filename="package://fusion_model_ros2_beta/meshes/end_effector/end_effector_2f85_closed.stl" scale="0.001 0.001 0.001"/></geometry></collision>
   </link>
-  <joint name="tool0-mecheye_camera" type="fixed">
+  <joint name="tool0-cad_robotiq_2f85" type="fixed">
+    <origin xyz="-0.080221162 0.327612370 0.238737610" rpy="-1.570796327 0 -1.570796327"/>
+    <parent link="tool0"/><child link="cad_robotiq_2f85_link"/>
+  </joint>
+  <!-- Photo-based direct camera mount: horizontal long edge, broad side
+       against connector, top flush with camera-end top. CAD model only. -->
+  <link name="cad_mecheye_camera_link">
+    <visual><geometry><mesh filename="package://fusion_model_ros2_beta/meshes/end_effector/end_effector_camera.stl" scale="0.001 0.001 0.001"/></geometry><material name="camera_direct_mount_blue"><color rgba="0.27 0.49 0.60 1"/></material></visual>
+    <collision><geometry><mesh filename="package://fusion_model_ros2_beta/meshes/end_effector/end_effector_camera.stl" scale="0.001 0.001 0.001"/></geometry></collision>
+  </link>
+  <joint name="tool0-cad_mecheye_camera" type="fixed">
+    <origin xyz="-0.080221162 0.327612370 0.238737610" rpy="-1.570796327 0 -1.570796327"/>
+    <parent link="tool0"/><child link="cad_mecheye_camera_link"/>
+  </joint>
+  <!-- HISTORICAL 2026-09-21 optical transform, invalid for the changed mount.
+       Retained under a legacy frame name; new optical calibration is NOT provided. -->
+  <link name="mecheye_camera_optical_frame_legacy_20260921"/>
+  <joint name="tool0-mecheye_camera_optical_legacy_20260921" type="fixed">
     <origin xyz="0.0484942352 0.2520224071 0.1993161073" rpy="-1.1547020625 -0.0002532205 -3.1353642945"/>
-    <parent link="tool0"/><child link="mecheye_camera_link"/>
+    <parent link="tool0"/><child link="mecheye_camera_optical_frame_legacy_20260921"/>
   </joint>
   <!-- Rigid 60 mm handle + 48 mm brush tip held at the measured grasp centre. -->
   <link name="brush_link">
@@ -674,9 +693,10 @@
       </material>
     </visual>
   </link>
-  <joint name="gripper-brush" type="fixed">
-    <origin xyz="0 0 0.190" rpy="0 0 0"/>
-    <parent link="robotiq_gripper_link"/>
+  <joint name="tool0-brush" type="fixed">
+    <!-- Manually measured closed-jaw grasp centre in the real-robot repository. -->
+    <origin xyz="0 0 0.220" rpy="0 0 0"/>
+    <parent link="tool0"/>
     <child link="brush_link"/>
   </joint>
 

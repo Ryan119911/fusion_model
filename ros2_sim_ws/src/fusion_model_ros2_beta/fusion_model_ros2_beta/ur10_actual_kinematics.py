@@ -35,10 +35,28 @@ FACTORY_JOINT_ORIGINS = (
 
 WRIST3_TO_FLANGE_RPY = (0.0, -math.pi / 2.0, -math.pi / 2.0)
 FLANGE_TO_TOOL0_RPY = (math.pi / 2.0, 0.0, math.pi / 2.0)
+# Historical optical calibration, retained as a record; not the new housing pose.
 MECH_EYE_TRANSLATION_M = (0.04849423522761702, 0.25202240709668144,
                           0.19931610726118562)
 MECH_EYE_RPY = (-1.1547020625425162, -0.00025322052810483777,
                 -3.1353642944665703)
+
+
+# SolidWorks assembly registration from the real-robot repository.  The CAD
+# source is in millimetres, its -Y axis maps to tool0 +Z, and the confirmed
+# flange clocking is 270 degrees.  Centres/half sizes below are exact AABBs of
+# the four uploaded STL parts, retained as oriented boxes after registration.
+CAD_ASSEMBLY_RPY = (-math.pi / 2.0, 0.0, -math.pi / 2.0)
+CAD_ATTACHMENT_ENVELOPES = (
+    ("force_sensor", (0.0, 0.0, 0.025000003),
+     (0.06300002, 0.02500000, 0.06300000)),
+    ("connector", (0.0, 0.0350592134, 0.0789999932),
+     (0.09494080, 0.02900000, 0.08000000)),
+    ("robotiq_2f85", (0.0, 0.0, 0.154467878),
+     (0.03750002, 0.08310988, 0.06317389)),
+    ("mecheye_camera", (0.0, 0.1550000190, 0.1055000027),
+     (0.02500000, 0.042500003, 0.06500000)),
+)
 
 
 def _rot_x(angle: float) -> np.ndarray:
@@ -95,13 +113,9 @@ def attachment_envelopes(joints: Sequence[float], *, oriented=False):
     """
     tool = forward_kinematics(joints)
     result = []
-    for name, local, half_size in (
-        ("ati_and_robotiq", transform((0.0, 0.0, 0.105)),
-         np.array((0.045, 0.045, 0.105))),
-        ("mecheye_camera",
-         transform(MECH_EYE_TRANSLATION_M, MECH_EYE_RPY),
-         np.array((0.100, 0.100, 0.085))),
-    ):
+    for name, centre_tool0, half_size in CAD_ATTACHMENT_ENVELOPES:
+        local = transform(centre_tool0, CAD_ASSEMBLY_RPY)
+        half_size = np.asarray(half_size, dtype=np.float64)
         pose = tool @ local
         centre = pose[:3, 3]
         axis_aligned_half_extent = np.abs(pose[:3, :3]) @ half_size
