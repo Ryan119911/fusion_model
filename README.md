@@ -310,44 +310,36 @@ bash -n tools/run_kaishu_v17_full.sh tools/run_kaishu_v17_parallel.sh
 算法测试通过代表代码行为受到检查，不代表全库轨迹或真实机器人执行已验收。实机工作已推进到 UR10 初始换算试写；其标定来源、局部验证范围和未完成项见下面的实机入口说明。
 
 
-## 11. UR10 毛笔实机工具（2026-10-23）
+## 11. UR10 毛笔实机工具（更新至 2026-10-29）
 
-2026-10-27 [相机直装模型与 ROS 同步](integration/ur10_camera_direct_mount_20261027/README.md)：长边水平、宽面贴灰色支架、相机端顶部齐平；包含与 MU 一致的 CAD 装配、四个末端网格及碰撞包络。相同模型已推送到共同维护的 UR10 仓库；本次不更新手眼标定。
+已完成新相机安装下的完整三笔“工”试写和固定相机写后采集。2026-10-28 21:13（北京时间）的纸面补偿版返回 `completed_buffered_program`，427个实际路点、三笔0/1/2和末尾抬笔均完成。此前原0.045增益也完整完成两次，0.22增益完成一次；部分失败与发布前拒绝记录全部保留。
 
-当前交付包括完整三笔“工”字初始换算试写、实测悬空起点接入、已通过路径证据复用、原始力与位姿记录，以及独立拍照位的离线设计和墨迹测量工具。默认入口为离线预览，实际运动需要显式传入 `--execute --accept-initial-trial`。
+[公开进展、轨迹和实拍](integration/gong_trial_20261028/README.md) · [进展数据摘录](integration/gong_trial_20261028/progress.json) · [详细验收材料](docs/验收_20261028_工字完整三笔.md) · [现场运行命令](docs/机械臂写字.md)。
 
-```bash
-# 离线预览；不会发送运动，也不会连接机械臂。
-/usr/bin/python3 -B tools/run_gong_model_trial.py
-```
+| 项目 | 当前试写配置／结果 |
+| --- | --- |
+| 模型轨迹 | 冻结三笔6＋4＋6控制点，完整保留XY/H/alpha/beta/gamma；V16权重不改 |
+| 字位 | 相对旧方案沿纸面向Base X−收回50mm，保持字号 |
+| 下压换算 | `0.22 × H_model + 1.6 mm`，指令4.02～6.00mm；模型H不直接等于真实压入 |
+| 纸面补偿来源 | 相机点云估计比历史平面低1.61mm；是本次试写估计，不是通用默认 |
+| 姿态增益 | alpha/beta/gamma为0.2/0.2/0.02，纸面gamma转换一次，完整自然笔尖TCP补偿 |
+| 力条件 | 用户允许运动停止默认100N；参考误差接受限值10N；3点局部参考仍为声明外推 |
+| 数据时效 | 力接收与源时间戳1.5s；位姿、主机心跳和控制器看门狗150ms |
+| 结果范围 | 程序三笔完成；实施方报告平均线宽5.21mm，尚未独立复算及重复性验收 |
 
-上述命令需要现场已有的 `outputs/brush_mapping_20261023/` 轨迹、零点、TCP、纸面、碰撞和力参考资料。该目录被 Git 忽略，未随本次代码发布；全新克隆不会自动具备实机运行资格。运行主机 MU、jx 的 SSH 配置及 jx 中现有 UR10/ROS 工具也属于现场环境。
+默认入口仅离线预览；实际运动仍需显式执行参数与当前有效现场资料。`outputs/`中的候选、力参考、TCP、零点、完整碰撞证据及MU/jx环境不随代码发布，全新克隆不能直接下发历史命令。上述数据摘录也不是运动包。
 
 | 组件 | 入口／说明 |
 | --- | --- |
-| 模型三笔试写 | `tools/run_gong_model_trial.py`、`tools/gong_model_trial_remote.py` |
-| 当前位置接入 | `tools/brush_model_start.py`；保持原书写路径和零点，单独检查新增接入段 |
-| 原生缓冲运动与保护 | `tools/brush_buffered_motion.py`、`tools/brush_buffered_guard.py`；保留笔画内圆滑过渡、抬落笔分隔与控制器看门狗 |
-| 原始力数据读取 | `tools/brush_force_snapshot.py`；读取最新十帧，保存失效时的样本年龄诊断 |
-| 悬空姿态参考 | `tools/brush_unloaded_calibration.py`、`tools/validate_brush_unloaded_sweep.py` |
-| 写后固定相机采集与测量 | `tools/brush_write_capture.py`、`tools/brush_capture_measure.py`，见[采集说明](docs/brush_write_capture.md) |
-| 既有标定工具依赖 | `integration/ur10_paper_calibration/`；保留源记录与各自验证状态 |
+| 完整模型试写与当前起点接入 | `tools/run_gong_model_trial.py`、`tools/gong_model_trial_remote.py`、`tools/brush_model_start.py` |
+| 当前安装离线准备、重采样与H补偿 | `tools/prepare_gong_model_trial.py`、`tools/resample_gong_candidate.py`、`tools/regain_gong_candidate.py` |
+| 轨迹读取 | `tools/read_gong_trajectory.py`；现场读取冻结源、纸面字段与插值，公开16点副本见上方进展目录 |
+| 原生过渡及保护 | `tools/brush_buffered_motion.py`、`tools/brush_buffered_guard.py`、`tools/brush_live_state.py` |
+| 悬空力与局部参考 | `tools/observe_gong_current_mount.py`、`tools/run_gong_air_alignment.py`、`tools/gong_reference_local.py`、`tools/fit_gong_current_mount_reference.py` |
+| 当前几何检查 | `tools/brush_current_mount_collision.py`、`tools/check_gong_current_geometry.py` |
+| 固定相机与纸面／下压采集 | `tools/photo_gong_ink.py`、`tools/calibrate_gong_paper.py`、`tools/calibrate_gong_press.py` |
 
-**当前实机结果：**完整路径及新增接入段曾通过检查；发布后只完成第一笔，在第二笔落笔前因力数据更新保护停止，第三笔未执行。不能将此写成完整三笔验收成功。之后按用户要求将本次试写的力数据接收与源时间戳允许延迟改为 **1.5 秒**，软件测试通过，尚未改后实机复验。位姿、主机心跳和控制器看门狗仍为 **150 ms**，力增量停机阈值仍为 **10 N**。
-
-模型 H 使用显式初始换算 `H × 0.045`，得到约 0.495～0.9 mm 的指令下压量；α/β/γ 增益为 0.2/0.2/0.02。XY 保持原尺寸并在纸面平移，变姿位置按自然笔尖 TCP 完整补偿。H 不等同于实测压入量，模型 H 不裁剪，原始 6＋4＋6 个控制点及全部字段保留。局部悬空参考的跨位置和接触精度仍未独立验证。
-
-全部现场命令、用途、是否驱动机械臂和验证范围集中维护在[机械臂写字](docs/机械臂写字.md)。现场主副本为 `/home/robot/Documents/机械臂写字.md`；后续验证可用的写字命令同步更新到两处。当前实机命令都从第一笔开始，不是断点续写命令。
-
-相关代码验证可在不连接机械臂的情况下运行：
-
-```bash
-/usr/bin/python3 -B -m unittest discover -s tests -p 'test_brush_*.py'
-/usr/bin/python3 -B -m unittest discover -s tests -p 'test_run_gong_model_trial.py'
-/usr/bin/python3 -B -m unittest discover -s tests -p 'test_prepare_brush_capture_runtime.py'
-/usr/bin/python3 -B -m unittest discover -s tests -p 'test_validate_brush_unloaded_sweep.py'
-/usr/bin/python3 -B -m unittest discover -s tests -p 'test_write_gong_1mm.py'
-```
+相机长边水平直接安装及MU ROS装配见[相机模型说明](integration/ur10_camera_direct_mount_20261027/README.md)。本次发布仅在MU整理和推送，没有操作jx或重做手眼标定。线宽重复性、完整H/姿态映射及墨迹边缘/拖痕质量仍是后续工作。
 
 ## 12. ROS 2 与机器人仿真
 

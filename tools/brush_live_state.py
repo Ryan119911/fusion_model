@@ -64,7 +64,12 @@ class ContinuousState:
         deadline=time.monotonic()+3;window=deque(maxlen=9)
         while time.monotonic()<deadline:
             sample=self.fresh(timeout=3 if self.latest is None else .15)
-            if np.linalg.norm(sample[2][:3])>.0001 or np.linalg.norm(sample[2][3:])>.001:
+            # Measured 2026-10-28 at an air posture: the controller's velocity
+            # estimate spikes to 0.011-0.025 rad/s while the position holds
+            # within 0.03 mm, so the old 0.1 mm/s / 0.001 rad/s gate never
+            # settled. The position and rotation spread checks below still
+            # reject a genuinely moving arm (0.1 mm / 0.05 deg over nine frames).
+            if np.linalg.norm(sample[2][:3])>.005 or np.linalg.norm(sample[2][3:])>.03:
                 window.clear();continue
             window.append(sample)
             if len(window)<9:continue

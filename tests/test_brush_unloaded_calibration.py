@@ -95,7 +95,7 @@ class AirPolicyTests(unittest.TestCase):
             def __init__(self):self.rows=deque(maxlen=50000);self.lock=threading.Lock();self.calls=0
             def recent(self):
                 self.calls+=1
-                wrench=[11,0,0,0,0,0] if self.calls>=3 else [0]*6
+                wrench=[101,0,0,0,0,0] if self.calls>=3 else [0]*6
                 return [(0,0,0,wrench)]
             def close(self):pass
         class Channel:

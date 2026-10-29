@@ -136,7 +136,49 @@ class AirReader:
         return self.check(self.reader.stationary())
 
 
-def execute_air_segment(request, out, support, capture):
+def validate_prechecked_session(points, session):
+    """Reuse a complete, directly matched session audit instead of each leg gate."""
+    audit,collision=session['audit'],session['collision']
+    if not audit.get('passed_numeric') or not audit.get('samples') or collision.get('supplied_samples')!=audit['samples']:
+        raise ValueError('session route/audit/collision mismatch')
+    if len(collision.get('models',{}))!=2 or not all(m.get('passed_20mm') and m['minimum_clearance_mm']>=20 for m in collision['models'].values()):
+        raise ValueError('session collision clearance failed')
+    route=session['points']
+    match=any(all(a['pose_m_rad']==b['pose_m_rad'] and a['q_rad']==b['q_rad']
+                  for a,b in zip(route[i:i+len(points)],points))
+              for i in range(len(route)-len(points)+1))
+    if not match:raise ValueError('segment is not part of the checked session route')
+
+
+def wait_final_air_pose(air, force, points, timeout=2.):
+    """Keep the same final-pose limits, allowing bounded stationary settling."""
+    target=np.asarray(points[-1]['pose_m_rad']);deadline=time.monotonic()+timeout
+    while True:
+        health_tick(air,force,points)
+        _,end,_=air.stationary()
+        if (np.linalg.norm(end[:3]-target[:3])<=.0001 and
+            (Rotation.from_rotvec(end[3:]).inv()*Rotation.from_rotvec(target[3:])).magnitude()<=math.radians(.1)):
+            return end
+        if time.monotonic()>=deadline:
+            raise RuntimeError('callback closed without final pose after bounded settling')
+
+
+def collect_static_air_window(air, force, points, end):
+    """Collect a complete stable 3 s window within 9 s; keep all live guards."""
+    deadline=time.monotonic()+9.
+    stable_since=time.monotonic();samples=[]
+    while True:
+        _,pose,_=health_tick(air,force,points)
+        now=time.monotonic()
+        if (np.linalg.norm(pose[:3]-end[:3])>.0001 or
+                (Rotation.from_rotvec(end[3:]).inv()*Rotation.from_rotvec(pose[3:])).magnitude()>math.radians(.05)):
+            end=pose.copy();stable_since=now;samples=[]
+        samples.extend(force.recent())
+        if now-stable_since>=3.:return end,samples
+        if now>=deadline:raise RuntimeError('movement during stationary force reference after bounded settling')
+
+
+def execute_air_segment(request, out, support, capture, checked_session=None):
     """One finite air movement; a failure aborts the caller's entire sweep."""
     import fcntl
     from brush_write_capture import RecordingRows
@@ -178,11 +220,14 @@ def execute_air_segment(request, out, support, capture):
             expected = np.array(points[0]['pose_m_rad'])
             if np.linalg.norm(start[:3]-expected[:3]) > .0002 or (Rotation.from_rotvec(start[3:]).inv()*Rotation.from_rotvec(expected[3:])).magnitude() > math.radians(.05):
                 raise RuntimeError('start differs from checked route')
-            prior_q, prior_pose = q, start
-            for point in points:
-                support.model_gate(prior_q, prior_pose, np.array(point['pose_m_rad']), np.zeros(6))
-                prior_q = np.array(point['q_rad']);prior_pose=np.array(point['pose_m_rad'])
-                support.model_gate(prior_q, prior_pose, prior_pose, np.zeros(6))
+            if checked_session is not None:
+                validate_prechecked_session(points,checked_session)
+            else:
+                prior_q, prior_pose = q, start
+                for point in points:
+                    support.model_gate(prior_q, prior_pose, np.array(point['pose_m_rad']), np.zeros(6))
+                    prior_q = np.array(point['q_rad']);prior_pose=np.array(point['pose_m_rad'])
+                    support.model_gate(prior_q, prior_pose, prior_pose, np.zeros(6))
             force = support.RawForce()
             with force.lock:
                 force.rows = RecordingRows(force.rows, raw, request['reference_id'])
@@ -214,18 +259,12 @@ def execute_air_segment(request, out, support, capture):
                 sequence+=1;channel.sendall(struct.pack('>i',sequence))
                 if sequence%25==0:report['ticks'].append({'sequence':sequence,'raw_change_n':level,'pose_m_rad':pose.tolist()})
             else:raise RuntimeError('air segment runtime exceeded')
-            _,end,_=air.stationary();target=np.array(points[-1]['pose_m_rad'])
-            if np.linalg.norm(end[:3]-target[:3])>.0001 or (Rotation.from_rotvec(end[3:]).inv()*Rotation.from_rotvec(target[3:])).magnitude()>math.radians(.1):
-                raise RuntimeError('callback closed without final pose')
+            end=wait_final_air_pose(air,force,points)
+            if not request.get('collect_reference',True):
+                report.update(status='completed_air_alignment_segment',final_pose_m_rad=end.tolist(),static_reference=None)
+                return report
             # Independently record a stationary window; do not tare or reset the session guard baseline.
-            samples=[];deadline=time.monotonic()+3.
-            while time.monotonic()<deadline:
-                _, static_pose, _ = health_tick(air,force,points)
-                if (np.linalg.norm(static_pose[:3]-end[:3])>.0001
-                        or (Rotation.from_rotvec(end[3:]).inv()*Rotation.from_rotvec(static_pose[3:])).magnitude()>math.radians(.05)):
-                    raise RuntimeError('movement during stationary force reference')
-                rows=force.recent()
-                samples.extend(rows)
+            end,samples=collect_static_air_window(air,force,points,end)
             unique={r[1]:r for r in samples};rows=list(unique.values())
             values=np.array([r[3] for r in rows])
             if len(rows)<200 or np.max(np.std(values[:,:3],axis=0))>.5:

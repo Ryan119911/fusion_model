@@ -1,0 +1,107 @@
+{
+  "record_kind": "published_local_evidence_extract_not_a_motion_bundle",
+  "updated_on": "2026-10-29",
+  "source_run": "outputs/brush_mapping_20261027/gong_current_mount_trial_cal/runs/gong-model-execute-20261028T125622594927Z/remote_evidence",
+  "status": "completed_buffered_program",
+  "motion_sent": true,
+  "finished_at": "2026-10-28T13:13:42.390015+00:00",
+  "finished_at_beijing": "2026-10-28T21:13:42+08:00",
+  "runtime_waypoints": 427,
+  "candidate_waypoints": 424,
+  "control_counts": [
+    6,
+    4,
+    6
+  ],
+  "original_control_rows_equal_organized_csv": true,
+  "conversion": {
+    "status": "explicit_provisional_initial_conversion_not_calibrated",
+    "xy_scale": 1.0,
+    "paper_translation_mm": [
+      -0.8353645932808457,
+      -15.006773048863572
+    ],
+    "H_command_mm_per_model_mm": 0.22,
+    "H_command_is_measured_compression": false,
+    "H_clipping": false,
+    "alpha_gain": 0.2,
+    "beta_gain": 0.2,
+    "gamma_gain": 0.02,
+    "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+    "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+    "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+    "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+    "baseline_tool0_rotation_rad": [
+      0.20689299394047447,
+      -2.7669355241799423,
+      0.4397447185863423
+    ],
+    "tool_brush_axis": [
+      0,
+      0,
+      1
+    ],
+    "H_command_offset_mm": 1.6
+  },
+  "commanded_depth_mm_range": [
+    4.02,
+    6.0
+  ],
+  "observed_stroke_ids": [
+    0,
+    1,
+    2
+  ],
+  "final_phase": "lift_clear",
+  "final_pose_m_rad": [
+    0.6796820632103,
+    0.03764758913703189,
+    0.4934751144980047,
+    0.21563431641072994,
+    -2.7655468666106406,
+    0.43803934676138706
+  ],
+  "recorded_guard_tick_force_delta_peak_n": 8.442354430439602,
+  "force_peak_scope": "maximum among saved guard ticks, not an independently recomputed full raw-force peak",
+  "declared_force_stop_default_n": 100,
+  "force_reference_acceptance_limit_n": 10,
+  "operator_accepted_configuration": "100 N stop default and relaxed stationary/start/end criteria explicitly confirmed in original user conversation",
+  "ink_measurement_reported_by_implementer": {
+    "average_width_mm": 5.21,
+    "vertical_width_mm": 7.6,
+    "independently_recomputed_in_publication": false,
+    "same_sheet_prior_ink": true
+  },
+  "limitations": [
+    "commanded depth is not independently measured brush compression",
+    "local reference uses 3 postures and declared extrapolation; no complete H/posture map",
+    "body clearance about17.44mm accepted for this trial, not a20mm pass",
+    "latest calibrated image crops part of the character; wider image is from an earlier trial",
+    "single-run width and paper-plane repeatability not established; edge/drag quality not finally accepted",
+    "full feedback/raw force/cloud/weights remain in local ignored outputs; this extract is not executable"
+  ],
+  "files": {
+    "scaled_initial_pose.numeric.csv": {
+      "sha256": "3fa5df4f20919678818e28cc8fa82530873cf420cad1fbb881a6275f624c60ef",
+      "size_bytes": 7090
+    },
+    "organized_controls.csv": {
+      "sha256": "2ed53e2436578144fe843d3923afe5b4f2cab0ec3876b4838fff0ac57737973e",
+      "size_bytes": 3847
+    },
+    "paper_plane_record.json": {
+      "sha256": "31a92aea009739587b807a413121f26ae164e89a0b6003cacb01bb6b579e94eb",
+      "size_bytes": 1328
+    }
+  },
+  "publication_validation": {
+    "host": "MU",
+    "date": "2026-10-29",
+    "software_tests_passed": 51,
+    "python_syntax_checked": true,
+    "ssh_attempted": false,
+    "robot_motion_sent": false,
+    "environment": "system Python with PYTHONNOUSERSITE=1 and PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
+    "scope": "local mocked guard/force, conversion, air acquisition and offline preview checks; no new hardware validation"
+  }
+}

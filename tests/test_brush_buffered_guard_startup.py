@@ -34,7 +34,7 @@ class GuardStartupTests(unittest.TestCase):
         p={'pose_m_rad':pose.tolist(),'contact':False,'q_rad':q.tolist(),'unloaded_wrench_n_nm':[0.]*6}
         bundle={'points':[p.copy(),p.copy()],'start_pose_m_rad':pose.tolist(),'active_tcp_offset_m_rad':[0.]*6,'maximum_runtime_s':1.}
         ticks=[]
-        def tick(*args):
+        def tick(*args,**kwargs):
             ticks.append(1)
             if fail_during_motion and len(ticks)>1:raise RuntimeError('continuous state stream failed: stale >150ms')
             return (0,q.copy()),pose.copy(),0.

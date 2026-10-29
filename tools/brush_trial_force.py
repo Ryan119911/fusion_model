@@ -11,8 +11,11 @@ class TrialForceStop(RuntimeError):
 
 
 def trial_force_level(force, baseline, threshold_n):
-    if not math.isfinite(threshold_n) or not 1 <= threshold_n <= 10:
-        raise ValueError('trial stop threshold must be finite and between 1 and 10 N')
+    # Operator decision 2026-10-28: every brush program now uses a 100 N force
+    # increment stop, replacing the earlier 10 N default. Each run still records
+    # the threshold it used in the bundle and in its evidence.
+    if not math.isfinite(threshold_n) or not 1 <= threshold_n <= 100:
+        raise ValueError('trial stop threshold must be finite and between 1 and 100 N')
     baseline = np.asarray(baseline,dtype=float)
     if baseline.shape != (6,) or not np.isfinite(baseline).all():
         raise ValueError('invalid force reference baseline')

@@ -16,6 +16,10 @@ class GuardTests(unittest.TestCase):
         self.assertAlmostEqual(trial_force_level(Force([[9.99,0,0]]*10),np.zeros(6),10),9.99)
         with self.assertRaises(TrialForceStop):trial_force_level(Force([[10,0,0]]*10),np.zeros(6),10)
 
+    def test_operator_selected_100n_boundary(self):
+        self.assertAlmostEqual(trial_force_level(Force([[99.99,0,0]]*10),np.zeros(6),100),99.99)
+        with self.assertRaises(TrialForceStop):trial_force_level(Force([[100,0,0]]*10),np.zeros(6),100)
+
     def test_one_raw_spike_stops(self):
         with self.assertRaises(TrialForceStop):
             trial_force_level(Force([[0,0,0]]*9+[[0,10.01,0]]),np.zeros(6),10)
@@ -26,7 +30,7 @@ class GuardTests(unittest.TestCase):
         self.assertAlmostEqual(trial_force_level(Force([[5,12,64]]*10),baseline,10),1.)
 
     def test_invalid_thresholds_and_data(self):
-        for threshold in (0,10.01,float('nan'),float('inf')):
+        for threshold in (0,100.01,float('nan'),float('inf')):
             with self.assertRaises(ValueError):trial_force_level(Force([[0,0,0]]),np.zeros(6),threshold)
         with self.assertRaises(RuntimeError):trial_force_level(Force([[float('nan'),0,0]]),np.zeros(6),10)
 

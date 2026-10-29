@@ -1,0 +1,32 @@
+{
+  "status": "paper_plane_measured",
+  "date": "2026-10-28",
+  "capture": "/home/robot/coppeliasim/machine_learning/model/outputs/brush_mapping_20261027/photo-pose/h022b-20261028T1225Z",
+  "tool_pose_m_rad": [
+    0.666034,
+    -0.038206,
+    0.540208,
+    2.203957,
+    -2.22116,
+    -0.013583
+  ],
+  "method": "Mech-Eye point cloud -> base frame with the 2026-10-27 hand-eye record -> dominant plane fit within 10 mm of the commanded standoff",
+  "result": {
+    "tilt_deg": 0.54,
+    "height_at_character_mm": -1.61,
+    "height_p05_mm": -1.99,
+    "height_p95_mm": -1.05,
+    "plane_residual_p50_mm": 0.32,
+    "plane_residual_p95_mm": 1.01,
+    "points_used": 874171,
+    "camera_to_paper_mm": 352.2,
+    "commanded_standoff_mm": 350
+  },
+  "interpretation": [
+    "the sheet is 1.6 mm below the historical 2026-10-23 plane at the character footprint, so every commanded press was 1.6 mm shallower than intended",
+    "tilt is 0.54 deg, negligible",
+    "the thickened character lands exactly on the previous one, so the lateral paper position still matches the model frame"
+  ],
+  "consequence": "commanded depth must be raised by about 1.6 mm to equal the intended penetration; candidate gong_current_mount_trial_cal applies a constant 1.6 mm offset on top of the 0.22 gain",
+  "tool": "tools/calibrate_gong_paper.py"
+}

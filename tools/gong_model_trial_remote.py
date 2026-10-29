@@ -1,5 +1,5 @@
 """Remote body injected by run_gong_model_trial. No motion unless EXECUTE is true."""
-import copy,datetime as dt,json,struct,sys,time,types,traceback
+import copy,datetime as dt,json,math,struct,sys,time,types,traceback
 from pathlib import Path
 from types import SimpleNamespace
 import numpy as np
@@ -31,16 +31,26 @@ def event(value):
     if 'ticks' in value:console['recorded_guard_ticks']=len(value['ticks'])
     print(json.dumps(console,ensure_ascii=False),flush=True)
 def prediction(rotations):
-    fit=acceptance['local_fit']
+    fit=acceptance['local_fit'];kind=fit.get('basis_kind','quadratic')
     x=(Rotation.from_rotvec(fit['baseline_rotation_rad']).inv()*Rotation.from_rotvec(rotations)).as_rotvec()/np.deg2rad(4)
     a,b,c=np.atleast_2d(x).T
-    f=np.column_stack((np.ones(len(a)),a,b,c,a*a,b*b,c*c,a*b,a*c,b*c))
-    return f@np.array(fit['coefficients_10x6'])
+    if kind=='linear':f=np.column_stack((a,b,c))
+    elif kind=='affine':f=np.column_stack((np.ones(len(a)),a,b,c))
+    elif kind=='quadratic':f=np.column_stack((np.ones(len(a)),a,b,c,a*a,b*b,c*c,a*b,a*c,b*c))
+    else:raise RuntimeError('unsupported local reference basis: '+str(kind))
+    coefficients=fit['coefficients'] if 'coefficients' in fit else fit['coefficients_10x6']
+    return f@np.array(coefficients)+np.array(fit.get('offset',[0.]*6))
 try:
     for name,text in P['original_software'].items():
         if Path(sys.modules[name].__file__).read_text()!=text:raise RuntimeError('original production source changed: '+name)
-    if not C['audit']['passed_numeric'] or P['collision']['supplied_samples']!=C['audit']['samples']:
+    expected_samples=[(r.get('phase'),r.get('sample',r.get('source_waypoint_index')))
+        for r in list(C['audit']['samples'])+list(C.get('native_blend_neighborhood',{}).get('samples',[]))]
+    supplied=P['collision'].get('supplied_samples')
+    if (not C['audit']['passed_numeric'] or not isinstance(supplied,list) or
+            [(r.get('phase'),r.get('sample',r.get('source_waypoint_index'))) for r in supplied]!=expected_samples):
         raise RuntimeError('offline full-route evidence mismatch')
+    if P.get('body_collision',{}).get('minimum_clearance_mm',0)<P['body_collision'].get('margin_mm',20):
+        raise RuntimeError('arm-body clearance is below the accepted margin')
     watch=json.loads(existing.WATCHDOG.read_text())
     if watch.get('passed') is not True or watch.get('compiler_sha256')!=existing.sha(compiler.__file__):raise RuntimeError('controller watchdog validation invalid')
     support.controller_ready('192.168.1.3')
@@ -124,9 +134,23 @@ try:
     if discrepancy>=10:raise RuntimeError('fresh suspended reference error reaches the selected 10 N limit')
     force.close();force=None;reader.close();reader=None
     script,manifest=compiler.compile_program(points,'192.168.1.10',50071);identity=compiler.route_identity(points)
-    duration=sum(np.linalg.norm(np.array(b['pose_m_rad'][:3])-a['pose_m_rad'][:3])/b['speed_m_s'] for a,b in zip(points,points[1:]))
+    # Constant-speed distance/v badly under-estimates short segments: a 0.4 mm
+    # move at 10 mm/s never reaches v because the acceleration limit dominates.
+    # Use the rest-to-rest minimum move time per segment (trapezoid/triangle),
+    # then a measured margin: actual/estimate was 1.21 on the 1 mm/s route and
+    # 1.63 on the fast route (518 s actual vs 317 s estimate), so 1.8 is used.
+    def segment_time(distance,speed,acceleration):
+        if distance<=0.:return 0.
+        if distance<=speed*speed/acceleration:return 2.*math.sqrt(distance/acceleration)
+        return distance/speed+speed/acceleration
+    pairs=list(zip(points,points[1:]))
+    duration=sum(segment_time(float(np.linalg.norm(np.array(b['pose_m_rad'][:3])-a['pose_m_rad'][:3])),
+                              float(b['speed_m_s']),float(b['acceleration_m_s2'])) for a,b in pairs)
+    constant=sum(float(np.linalg.norm(np.array(b['pose_m_rad'][:3])-a['pose_m_rad'][:3]))/float(b['speed_m_s'])
+                 for a,b in pairs)
     budget=max(120.,float(duration)*1.8+60.)
-    if budget>1800:raise RuntimeError('finite trial exceeds existing runtime budget')
+    ceiling=float(P.get('maximum_runtime_s',1800.))
+    if budget>ceiling:raise RuntimeError('finite trial exceeds the accepted %.0f s runtime ceiling'%ceiling)
     reports={
         'physical_mapping':{'passed':True,'route_sha256':identity,'scope':'arithmetic conversion of model fields into explicit physical commands, accepted only for one provisional trial; not calibrated brush compression',
              'conversion':C['conversion'],'zero_source':C['zero'],'paper':C['paper'],'tcp':C['tcp'],'brush_mapping_calibrated':False},
@@ -134,7 +158,8 @@ try:
              'reference_acceptance':acceptance,'fresh_start_error_n':discrepancy,'reference_translation_validated':False,
              'force_data_max_age_s':force_data_max_age_s,'operator_policy':P['operator_policy']},
         'blended_path_audit':{**audit,'route_sha256':identity,'program_sha256':manifest['program_sha256'],
-             'offline_two_model_collision':P['collision'],'new_start_connection_checks':connector_checks,
+             'offline_two_model_collision':P['collision'],'offline_arm_body_collision':P.get('body_collision'),
+             'new_start_connection_checks':connector_checks,
              'paper_numeric':{'passed':C['audit']['passed_numeric'],'source_scope':C['audit']['scope']}}}
     evidence={}
     for name,data in reports.items():
@@ -150,6 +175,7 @@ try:
     save(out/'bundle.json',bundle);save(out/'compiler_manifest.json',manifest);(out/'program.script.preview').write_text(script)
     save(out/'request.json',P)
     report.update(status='preflight_passed_no_motion',runtime_budget_s=budget,estimated_translation_motion_s=float(duration),
+         estimated_constant_speed_s=float(constant),estimate_model='rest-to-rest minimum move time per segment, 1.8 margin + 60 s',
          start_reference_error_n=discrepancy,waypoints=len(points),conversion=C['conversion'],zero=C['zero'],
          start_tip_height_m=height,start_height_gate_m=[.010,start_height_upper_m],start_connection=connection)
     event(report)
