@@ -98,8 +98,8 @@ def main():
     p.add_argument('--accept-extrapolation', help='operator reason recorded when the trial postures '
                                                   'lie outside the measured posture span')
     a = p.parse_args()
-    if not 0 < a.limit_n <= 10:
-        p.error('reference error limit must remain within (0,10] N')
+    if not 0 < a.limit_n <= 100:
+        p.error('reference error limit must remain within (0,100] N')
     record = build(a.run, a.candidate, a.model_kind, a.limit_n, a.accept_extrapolation)
     with a.output.open('x') as stream:
         json.dump(record, stream, indent=2)

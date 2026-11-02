@@ -17,7 +17,9 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-LIMIT_N = 10.
+# Operator decision 2026-10-28/30: every brush force limit is 100 N, including
+# the local air-reference acceptance bound.
+LIMIT_N = 100.
 
 
 def basis(rotations, baseline, kind):

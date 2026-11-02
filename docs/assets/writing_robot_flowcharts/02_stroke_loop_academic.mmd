@@ -1,0 +1,27 @@
+%%{init: {"theme": "base", "flowchart": {"curve": "stepAfter", "nodeSpacing": 45, "rankSpacing": 55}, "themeVariables": {"fontFamily": "Noto Sans CJK SC, sans-serif", "fontSize": "18px", "lineColor": "#2E4053"}}}%%
+flowchart TB
+    target["确定目标形态<br/>中心线、沿程笔宽、轮廓与起收笔"]
+    calibration["建立可重复的局部响应<br/>固定条件，标定下压 d → 笔宽 w"]
+    generate["生成并筛选可执行候选<br/>局部逆映射＋起收笔参数<br/>约束有效域、平滑性与机器人运动"]
+    write["实写一笔 → 抬笔拍照"]
+    measure["共同纸面尺度下测误差<br/>位置、笔宽、轮廓与端点分别评价"]
+    accept{"满足预定质量<br/>并通过独立重复？"}
+    keep["保留参数与原始证据<br/>进入同一工字验证"]
+    correct["按误差归因修正<br/>位置 → XY／纸面<br/>笔宽 → 下压；拖痕 → 收笔"]
+    valid{"局部响应可靠<br/>且仍在标定域内？"}
+    recalibrate["补充观测或重新标定<br/>不直接外推下压"]
+    target --> calibration
+    calibration --> generate
+    generate --> write
+    write --> measure
+    measure --> accept
+    accept -->|是| keep
+    accept -->|否| correct
+    correct --> valid
+    valid -->|是：小步更新| generate
+    valid -->|否| recalibrate
+    recalibrate --> calibration
+    classDef blue fill:#EAF3FC,stroke:#2E4053,stroke-width:1.6px,color:#172B3A,rx:0,ry:0;
+    classDef green fill:#EAF5EE,stroke:#2E4053,stroke-width:1.6px,color:#172B3A,rx:0,ry:0;
+    class target,generate,write,measure blue;
+    class calibration,accept,keep,correct,valid,recalibrate green;

@@ -1,0 +1,22 @@
+%%{init: {"theme": "base", "flowchart": {"curve": "stepAfter", "nodeSpacing": 45, "rankSpacing": 55}, "themeVariables": {"fontFamily": "Noto Sans CJK SC, sans-serif", "fontSize": "18px", "lineColor": "#2E4053"}}}%%
+flowchart TB
+    input["目标字帖＋给定二维笔画轨迹"]
+    inverse["模型预测与反演<br/>冻结 V16；v17 多初值求解"]
+    candidates["候选筛选<br/>Top-K、连续性与字段可信度"]
+    mapping["经验换算与机器人规划<br/>纸面／TCP 转换、IK、连续运动"]
+    write["UR10 实写<br/>已有完整三笔“工”字执行证据"]
+    observe["真实观测与记录<br/>墨迹图、机器人反馈、力记录"]
+    measure["拟完善：纸面配准与局部测量<br/>笔宽、轮廓、位置与端点误差"]
+    update["拟完善：实测响应与参数修正<br/>替换经验换算，生成下一次轨迹"]
+    input --> inverse
+    inverse --> candidates
+    candidates --> mapping
+    mapping --> write
+    write --> observe
+    observe -->|写后反馈| measure
+    measure --> update
+    update -->|下一次指令| mapping
+    classDef blue fill:#EAF3FC,stroke:#2E4053,stroke-width:1.6px,color:#172B3A,rx:0,ry:0;
+    classDef green fill:#EAF5EE,stroke:#2E4053,stroke-width:1.6px,color:#172B3A,rx:0,ry:0;
+    class input,inverse,candidates,mapping,write,observe blue;
+    class measure,update green;

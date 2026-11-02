@@ -82,6 +82,8 @@ def contact_bounds(candidate):
     result={}
     for sid in [None,0,1,2]:
         points=[p for p in candidate['points'] if p['contact'] and (sid is None or p['stroke_id']==sid)]
+        if not points:
+            continue
         xyz=np.array([np.asarray(p['pose_m_rad'][:3])+Rotation.from_rotvec(p['pose_m_rad'][3:]).apply(tip) for p in points])
         result['all' if sid is None else str(sid)]={'tip_base_min_mm':(xyz.min(0)*1000).tolist(),
                                                        'tip_base_max_mm':(xyz.max(0)*1000).tolist()}

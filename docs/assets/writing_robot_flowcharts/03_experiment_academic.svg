@@ -1,0 +1,367 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="1072.8pt" height="1087.2pt" viewBox="0 0 1072.8 1087.2" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.5.1, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 1087.2 
+L 1072.8 1087.2 
+L 1072.8 0 
+L 0 0 
+z
+" style="fill: #ffffff"/>
+  </g>
+  <g id="axes_1">
+   <g id="line2d_1">
+    <path d="M 331.2 108 
+L 331.2 135.36 
+" clip-path="url(#pc9bb8eecc9)" style="fill: none; stroke: #2e4053; stroke-width: 1.6; stroke-linejoin: miter"/>
+   </g>
+   <g id="line2d_2">
+    <path d="M 331.2 230.4 
+L 331.2 257.76 
+" clip-path="url(#pc9bb8eecc9)" style="fill: none; stroke: #2e4053; stroke-width: 1.6; stroke-linejoin: miter"/>
+   </g>
+   <g id="line2d_3">
+    <path d="M 331.2 331.2 
+L 331.2 358.56 
+" clip-path="url(#pc9bb8eecc9)" style="fill: none; stroke: #2e4053; stroke-width: 1.6; stroke-linejoin: miter"/>
+   </g>
+   <g id="line2d_4">
+    <path d="M 331.2 446.4 
+L 331.2 473.76 
+" clip-path="url(#pc9bb8eecc9)" style="fill: none; stroke: #2e4053; stroke-width: 1.6; stroke-linejoin: miter"/>
+   </g>
+   <g id="line2d_5">
+    <path d="M 331.2 590.4 
+L 331.2 628.56 
+" clip-path="url(#pc9bb8eecc9)" style="fill: none; stroke: #2e4053; stroke-width: 1.6; stroke-linejoin: miter"/>
+   </g>
+   <g id="line2d_6">
+    <path d="M 489.6 536.4 
+L 792 536.4 
+L 792 650.16 
+" clip-path="url(#pc9bb8eecc9)" style="fill: none; stroke: #2e4053; stroke-width: 1.6; stroke-linejoin: miter"/>
+   </g>
+   <g id="line2d_7">
+    <path d="M 331.2 702 
+L 331.2 729.36 
+" clip-path="url(#pc9bb8eecc9)" style="fill: none; stroke: #2e4053; stroke-width: 1.6; stroke-linejoin: miter"/>
+   </g>
+   <g id="line2d_8">
+    <path d="M 331.2 802.8 
+L 331.2 833.76 
+" clip-path="url(#pc9bb8eecc9)" style="fill: none; stroke: #2e4053; stroke-width: 1.6; stroke-linejoin: miter"/>
+   </g>
+   <g id="line2d_9">
+    <path d="M 331.2 943.2 
+L 331.2 977.76 
+" clip-path="url(#pc9bb8eecc9)" style="fill: none; stroke: #2e4053; stroke-width: 1.6; stroke-linejoin: miter"/>
+   </g>
+   <g id="line2d_10">
+    <path d="M 489.6 892.8 
+L 792 892.8 
+L 792 768.24 
+" clip-path="url(#pc9bb8eecc9)" style="fill: none; stroke: #2e4053; stroke-width: 1.6; stroke-linejoin: miter"/>
+   </g>
+   <g id="line2d_11">
+    <path d="M 936 709.2 
+L 1015.2 709.2 
+L 1015.2 68.4 
+L 541.44 68.4 
+" clip-path="url(#pc9bb8eecc9)" style="fill: none; stroke: #2e4053; stroke-width: 1.6; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_2">
+    <path d="M 331.2 144 
+L 327.24 135.36 
+L 335.16 135.36 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #2e4053; stroke: #2e4053; stroke-width: 0.5; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_3">
+    <path d="M 331.2 266.4 
+L 327.24 257.76 
+L 335.16 257.76 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #2e4053; stroke: #2e4053; stroke-width: 0.5; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 331.2 367.2 
+L 327.24 358.56 
+L 335.16 358.56 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #2e4053; stroke: #2e4053; stroke-width: 0.5; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 331.2 482.4 
+L 327.24 473.76 
+L 335.16 473.76 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #2e4053; stroke: #2e4053; stroke-width: 0.5; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_6">
+    <path d="M 331.2 637.2 
+L 327.24 628.56 
+L 335.16 628.56 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #2e4053; stroke: #2e4053; stroke-width: 0.5; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_7">
+    <path d="M 792 658.8 
+L 788.04 650.16 
+L 795.96 650.16 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #2e4053; stroke: #2e4053; stroke-width: 0.5; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_8">
+    <path d="M 331.2 738 
+L 327.24 729.36 
+L 335.16 729.36 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #2e4053; stroke: #2e4053; stroke-width: 0.5; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_9">
+    <path d="M 331.2 842.4 
+L 327.24 833.76 
+L 335.16 833.76 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #2e4053; stroke: #2e4053; stroke-width: 0.5; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_10">
+    <path d="M 331.2 986.4 
+L 327.24 977.76 
+L 335.16 977.76 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #2e4053; stroke: #2e4053; stroke-width: 0.5; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_11">
+    <path d="M 792 759.6 
+L 795.96 768.24 
+L 788.04 768.24 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #2e4053; stroke: #2e4053; stroke-width: 0.5; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_12">
+    <path d="M 532.8 68.4 
+L 541.44 64.44 
+L 541.44 72.36 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #2e4053; stroke: #2e4053; stroke-width: 0.5; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_13">
+    <path d="M 129.6 28.8 
+L 532.8 28.8 
+L 532.8 108 
+L 129.6 108 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #eaf3fc; stroke: #2e4053; stroke-width: 1.4; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_14">
+    <path d="M 129.6 144 
+L 532.8 144 
+L 532.8 230.4 
+L 129.6 230.4 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #eaf3fc; stroke: #2e4053; stroke-width: 1.4; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_15">
+    <path d="M 129.6 266.4 
+L 532.8 266.4 
+L 532.8 331.2 
+L 129.6 331.2 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #eaf3fc; stroke: #2e4053; stroke-width: 1.4; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_16">
+    <path d="M 129.6 367.2 
+L 532.8 367.2 
+L 532.8 446.4 
+L 129.6 446.4 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #eaf3fc; stroke: #2e4053; stroke-width: 1.4; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_17">
+    <path d="M 331.2 482.4 
+L 489.6 536.4 
+L 331.2 590.4 
+L 172.8 536.4 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #eaf5ee; stroke: #2e4053; stroke-width: 1.4; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_18">
+    <path d="M 129.6 637.2 
+L 532.8 637.2 
+L 532.8 702 
+L 129.6 702 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #eaf3fc; stroke: #2e4053; stroke-width: 1.4; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_19">
+    <path d="M 129.6 738 
+L 532.8 738 
+L 532.8 802.8 
+L 129.6 802.8 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #eaf3fc; stroke: #2e4053; stroke-width: 1.4; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_20">
+    <path d="M 331.2 842.4 
+L 489.6 892.8 
+L 331.2 943.2 
+L 172.8 892.8 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #eaf5ee; stroke: #2e4053; stroke-width: 1.4; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_21">
+    <path d="M 129.6 986.4 
+L 532.8 986.4 
+L 532.8 1051.2 
+L 129.6 1051.2 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #eaf5ee; stroke: #2e4053; stroke-width: 1.4; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_22">
+    <path d="M 648 658.8 
+L 936 658.8 
+L 936 759.6 
+L 648 759.6 
+z
+" clip-path="url(#pc9bb8eecc9)" style="fill: #eaf5ee; stroke: #2e4053; stroke-width: 1.4; stroke-linejoin: miter"/>
+   </g>
+   <g id="text_1">
+    <g id="patch_23">
+     <path d="M 345.84 625.64 
+L 366.96 625.64 
+L 366.96 604.12 
+L 345.84 604.12 
+z
+" style="fill: #ffffff"/>
+    </g>
+    <text style="fill: #172b3a; font: 16px 'sans-serif'; text-anchor: middle" x="356.4" y="619.415" transform="rotate(-0, 356.4, 619.415)">能</text>
+   </g>
+   <g id="text_2">
+    <g id="patch_24">
+     <path d="M 557.44 531.32 
+L 594.56 531.32 
+L 594.56 509.8 
+L 557.44 509.8 
+z
+" style="fill: #ffffff"/>
+    </g>
+    <text style="fill: #172b3a; font: 16px 'sans-serif'; text-anchor: middle" x="576" y="525.095" transform="rotate(-0, 576, 525.095)">不能</text>
+   </g>
+   <g id="text_3">
+    <g id="patch_25">
+     <path d="M 345.04 975.56 
+L 382.16 975.56 
+L 382.16 954.04 
+L 345.04 954.04 
+z
+" style="fill: #ffffff"/>
+    </g>
+    <text style="fill: #172b3a; font: 16px 'sans-serif'; text-anchor: middle" x="363.6" y="969.335" transform="rotate(-0, 363.6, 969.335)">通过</text>
+   </g>
+   <g id="text_4">
+    <g id="patch_26">
+     <path d="M 556.64 887.72 
+L 609.76 887.72 
+L 609.76 866.2 
+L 556.64 866.2 
+z
+" style="fill: #ffffff"/>
+    </g>
+    <text style="fill: #172b3a; font: 16px 'sans-serif'; text-anchor: middle" x="583.2" y="881.495" transform="rotate(-0, 583.2, 881.495)">未通过</text>
+   </g>
+   <g id="text_5">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="331.2" y="51.901875" transform="rotate(-0, 331.2, 51.901875)">固定实验条件</text>
+   </g>
+   <g id="text_6">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="331.2" y="73.501875" transform="rotate(-0, 331.2, 73.501875)">统一纸面零点、实心支撑</text>
+   </g>
+   <g id="text_7">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="331.2" y="95.101875" transform="rotate(-0, 331.2, 95.101875)">姿态、速度与上墨流程保持一致</text>
+   </g>
+   <g id="text_8">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="331.2" y="170.701875" transform="rotate(-0, 331.2, 170.701875)">首轮探索：三档重复短线</text>
+   </g>
+   <g id="text_9">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="331.2" y="192.301875" transform="rotate(-0, 331.2, 192.301875)">d = 2.0／2.5／3.0 mm，各 3 条</text>
+   </g>
+   <g id="text_10">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="331.2" y="213.901875" transform="rotate(-0, 331.2, 213.901875)">每条 25 mm；顺序交错、位置均衡</text>
+   </g>
+   <g id="text_11">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="331.2" y="293.101875" transform="rotate(-0, 331.2, 293.101875)">逐条独立上墨与书写</text>
+   </g>
+   <g id="text_12">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="331.2" y="314.701875" transform="rotate(-0, 331.2, 314.701875)">保存实际指令、位姿与完整原图</text>
+   </g>
+   <g id="text_13">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="331.2" y="390.301875" transform="rotate(-0, 331.2, 390.301875)">共同尺度测量</text>
+   </g>
+   <g id="text_14">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="331.2" y="411.901875" transform="rotate(-0, 331.2, 411.901875)">行笔宽度与波动</text>
+   </g>
+   <g id="text_15">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="331.2" y="433.501875" transform="rotate(-0, 331.2, 433.501875)">起收笔、拖痕另行记录</text>
+   </g>
+   <g id="text_16">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="331.2" y="530.701875" transform="rotate(-0, 331.2, 530.701875)">档间差异能否与</text>
+   </g>
+   <g id="text_17">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="331.2" y="552.301875" transform="rotate(-0, 331.2, 552.301875)">同档波动区分？</text>
+   </g>
+   <g id="text_18">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="331.2" y="663.901875" transform="rotate(-0, 331.2, 663.901875)">拟合局部下压—笔宽映射</text>
+   </g>
+   <g id="text_19">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="331.2" y="685.501875" transform="rotate(-0, 331.2, 685.501875)">冻结换算与参数</text>
+   </g>
+   <g id="text_20">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="331.2" y="764.701875" transform="rotate(-0, 331.2, 764.701875)">另采独立书写批次</text>
+   </g>
+   <g id="text_21">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="331.2" y="786.301875" transform="rotate(-0, 331.2, 786.301875)">检查预测误差与重复性</text>
+   </g>
+   <g id="text_22">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="331.2" y="897.901875" transform="rotate(-0, 331.2, 897.901875)">独立验证通过？</text>
+   </g>
+   <g id="text_23">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="331.2" y="1013.101875" transform="rotate(-0, 331.2, 1013.101875)">同一工字的空白纸验证</text>
+   </g>
+   <g id="text_24">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="331.2" y="1034.701875" transform="rotate(-0, 331.2, 1034.701875)">比较笔宽、轮廓、端点与拖痕</text>
+   </g>
+   <g id="text_25">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="792" y="692.701875" transform="rotate(-0, 792, 692.701875)">定位条件或模型误差</text>
+   </g>
+   <g id="text_26">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="792" y="714.301875" transform="rotate(-0, 792, 714.301875)">核查含墨、零点与支撑</text>
+   </g>
+   <g id="text_27">
+    <text style="fill: #172b3a; font: 18px 'sans-serif'; text-anchor: middle" x="792" y="735.901875" transform="rotate(-0, 792, 735.901875)">修订后重新采样</text>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="pc9bb8eecc9">
+   <rect x="0" y="0" width="1072.8" height="1087.2"/>
+  </clipPath>
+ </defs>
+</svg>

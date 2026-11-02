@@ -55,20 +55,30 @@ points = [{'pose_m_rad': start.tolist(), 'phase': 'measured_current_start', 'con
            'unloaded_wrench_n_nm': [0.]*6}]
 
 _rotation = Rotation.from_rotvec(rot)
-def add(tip_point, phase, speed, contact, stroke):
-    tool0 = tip_point-_rotation.apply(tip)
-    points.append({'pose_m_rad': list(map(float, np.r_[tool0, rot])), 'phase': phase,
+def add(tip_point, phase, speed, contact, stroke, rotation=None):
+    use = _rotation if rotation is None else rotation
+    tool0 = tip_point-use.apply(tip)
+    points.append({'pose_m_rad': list(map(float, np.r_[tool0, use.as_rotvec()])),
+                   'phase': phase,
                    'contact': contact, 'stroke_id': stroke, 'speed_m_s': speed,
                    'acceleration_m_s2': .100, 'unloaded_wrench_n_nm': [0.]*6})
 
 for index, depth in enumerate(DEPTHS):
     vv = V_START+GAP*index
-    left = origin+u*(U_START/1000)+v*(vv/1000)
-    right = origin+u*((U_START+LENGTH)/1000)+v*(vv/1000)
-    add(left+normal*.003, 'cal_approach', .005, False, None)
-    add(left-normal*(depth/1000), 'cal_touch', .0005, False, None)
-    add(right-normal*(depth/1000), 'cal_line', .010, True, index)
-    add(right+normal*.003, 'cal_lift', .005, False, None)
+    alpha = ALPHAS[index]
+    beta = BETAS[index]
+    tilt = (Rotation.from_rotvec(v*beta)*Rotation.from_rotvec(u*alpha)
+            *Rotation.from_rotvec(rot))
+    # Commanded depth is measured from the paper surface: the sheet sits
+    # PAPER_HEIGHT above (positive) or below (negative) the historical plane.
+    surface = origin+u*(U_START/1000)+v*(vv/1000)+normal*(PAPER_HEIGHT/1000)
+    left = surface
+    right = surface+u*(LENGTH/1000)
+    up = STANDOFF/1000.
+    add(left+normal*up, 'cal_approach', .005, False, None, tilt)
+    add(left-normal*(depth/1000), 'cal_touch', TOUCH_SPEED, False, None, tilt)
+    add(right-normal*(depth/1000), 'cal_line', .010, True, index, tilt)
+    add(right+normal*up, 'cal_lift', .005, False, None, tilt)
 
 def measured_baseline(force, limit_n):
     start = time.monotonic(); deadline = start+10
@@ -125,7 +135,8 @@ if EXECUTE:
             'route_sha256': manifest['route_sha256'], 'program_sha256': manifest['program_sha256'],
             'scope': audit['scope'], 'joints_deg': report['joints_deg']})}
     bundle = {'sample_id': 'press-ladder', 'points': points, 'start_pose_m_rad': start.tolist(),
-              'active_tcp_offset_m_rad': [0.]*6, 'maximum_runtime_s': 300.,
+              'active_tcp_offset_m_rad': [0.]*6,
+              'maximum_runtime_s': float(min(1800., 120.+60.*len(DEPTHS))),
               'physical_mapping_verified': True, 'force_reference_verified': True,
               'controller_watchdog_hardware_validated': True, 'evidence': evidence,
               'force_stop_n': FORCE_STOP_N,
@@ -149,6 +160,17 @@ def main():
     parser.add_argument('--candidate', type=Path,
                         default=OUTPUT/'gong_current_mount_trial_fast/candidate.PREVIEW_ONLY.json')
     parser.add_argument('--depths', nargs='+', type=float, default=[0.5, 1.0, 1.5, 2.0])
+    parser.add_argument('--alphas', nargs='+', type=float, default=None,
+                        help='per-row brush tilt about the paper u axis, in degrees')
+    parser.add_argument('--betas', nargs='+', type=float, default=None,
+                        help='per-row brush tilt about the paper v axis, in degrees')
+    parser.add_argument('--touch-speed-mm-s', type=float, default=.5,
+                        help='descent speed from the pen-up height to the commanded depth')
+    parser.add_argument('--standoff-mm', type=float, default=3.,
+                        help='pen-up height above the paper surface between lines; too small leaves drag marks')
+    parser.add_argument('--paper-height-mm', type=float, default=-1.73,
+                        help='measured paper surface height above the historical plane; '
+                             'commanded depth is measured from this surface')
     parser.add_argument('--max-depth-mm', type=float, default=2.0)
     parser.add_argument('--length-mm', type=float, default=25.)
     parser.add_argument('--gap-mm', type=float, default=15.)
@@ -165,6 +187,10 @@ def main():
         parser.error('--execute requires --accept-ladder with the operator reason')
     if max(args.depths) > args.max_depth_mm:
         parser.error('depth exceeds the approved --max-depth-mm')
+    alphas = args.alphas or [0.]*len(args.depths)
+    betas = args.betas or [0.]*len(args.depths)
+    if len(alphas) != len(args.depths) or len(betas) != len(args.depths):
+        parser.error('--alphas/--betas must have one entry per depth')
     if not 0 < args.force_stop_n <= 100:
         parser.error('--force-stop-n must stay within (0,100] N')
     if min(args.depths) <= 0:
@@ -179,8 +205,10 @@ def main():
     # the 2026-10-28 Mech-Eye cloud covers u 2..198 mm and v -62..104 mm.
     u_end = args.u_start_mm+args.length_mm
     v_end = args.v_start_mm+args.gap_mm*(len(args.depths)-1)
-    if u_end > 195 or args.u_start_mm < 0 or args.v_start_mm < -62 or v_end > 102:
-        parser.error('calibration pattern leaves the measured paper (u 2..198, v -62..104 mm)')
+    # Bounds measured from the white sheet on 2026-10-28 (A4 284.8 x 195.1 mm
+    # in the historical frame, u -124..161, v -112..83).
+    if u_end > 158 or args.u_start_mm < -120 or args.v_start_mm < -108 or v_end > 80:
+        parser.error('calibration pattern leaves the measured A4 sheet (u -124..161, v -112..83 mm)')
     stamp = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
     folder = OUTPUT/'press-ladder'/('run-'+stamp)
     folder.mkdir(parents=True, exist_ok=False)
@@ -188,6 +216,11 @@ def main():
     header = ('BASELINE_LIMIT_N=' + repr(float(args.baseline_limit_n)) + chr(10) +
               'FORCE_STOP_N=' + repr(float(args.force_stop_n)) + chr(10) +
               'DEPTHS=' + repr([float(x) for x in args.depths]) + chr(10) +
+              'ALPHAS=' + repr([float(x)*np.pi/180 for x in alphas]) + chr(10) +
+              'BETAS=' + repr([float(x)*np.pi/180 for x in betas]) + chr(10) +
+              'PAPER_HEIGHT=' + repr(float(args.paper_height_mm)) + chr(10) +
+              'STANDOFF=' + repr(float(args.standoff_mm)) + chr(10) +
+              'TOUCH_SPEED=' + repr(float(args.touch_speed_mm_s)/1000.) + chr(10) +
               'LENGTH=' + repr(float(args.length_mm)) + chr(10) +
               'GAP=' + repr(float(args.gap_mm)) + chr(10) +
               'U_START=' + repr(float(args.u_start_mm)) + chr(10) +

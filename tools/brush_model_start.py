@@ -23,22 +23,27 @@ def connect_start(points,start,tip,origin,normal,domain,baseline):
         p=copy.deepcopy(template);p.update(phase=phase,pose_m_rad=value.tolist(),contact=False,stroke_id=None,speed_m_s=speed,acceleration_m_s2=.002,unloaded_wrench_n_nm=None)
         prefix.append(p)
     add('measured_current_start',current_tip,r)
+    angle=(r.inv()*old).magnitude()
     safe=max(.040,height,old_height)
-    raised=current_tip+(safe-height)*normal
-    # Pen-up travel only, kept well below the 30 mm/s writing speed; it must fit
-    # the production guard's existing 1800 s ceiling regardless of where the
-    # measured start happens to be.
-    add('lift_clear',raised,r,.020)
-    above_old=old_tip+(safe-old_height)*normal
-    add('air_start_translate',above_old,r,.020)
-    # Rotate at a fixed compensated tip, retaining <=0.5 deg interpolation.
-    angle=(r.inv()*old).magnitude();count=max(1,math.ceil(math.degrees(angle)/.5))
-    for rot in Slerp([0,1],Rotation.from_matrix([r.as_matrix(),old.as_matrix()]))(np.linspace(0,1,count+1)[1:]):
-        # Rotation about the brush axis barely translates tool0 (0.03 mm per 0.5 deg),
-        # so the half-millimetre speed would imply an unusable joint rate; the
-        # existing air-alignment speed is used for this phase.
-        add('air_start_reorient',above_old,rot,.0015)
-    if np.linalg.norm(above_old-old_tip)>1e-8:add('air_start_descend',old_tip,old,.020)
+    if np.linalg.norm(current_tip-old_tip)<.030 and angle<math.radians(2.):
+        # The arm already sits on the writing start: go straight there instead of
+        # lifting, translating and re-orienting through a fixed standby pose.
+        add('direct_to_start',old_tip,old,.010)
+    else:
+        raised=current_tip+(safe-height)*normal
+        # Pen-up travel only, kept well below the 30 mm/s writing speed; it must
+        # fit the production guard's existing 1800 s ceiling.
+        add('lift_clear',raised,r,.020)
+        above_old=old_tip+(safe-old_height)*normal
+        add('air_start_translate',above_old,r,.020)
+        # Rotate at a fixed compensated tip, retaining <=0.5 deg interpolation.
+        count=max(1,math.ceil(math.degrees(angle)/.5))
+        for rot in Slerp([0,1],Rotation.from_matrix([r.as_matrix(),old.as_matrix()]))(np.linspace(0,1,count+1)[1:]):
+            # Rotation about the brush axis barely translates tool0 (0.03 mm per
+            # 0.5 deg), so the half-millimetre speed would imply an unusable joint
+            # rate; the existing air-alignment speed is used for this phase.
+            add('air_start_reorient',above_old,rot,.0015)
+        if np.linalg.norm(above_old-old_tip)>1e-8:add('air_start_descend',old_tip,old,.020)
     # The exact original first pose is the final connector endpoint.
     if np.linalg.norm(np.array(prefix[-1]['pose_m_rad'])-original)<1e-7:prefix.pop()
     combined=prefix+copy.deepcopy(points)

@@ -1,0 +1,27 @@
+%%{init: {"theme": "base", "flowchart": {"curve": "stepAfter", "nodeSpacing": 45, "rankSpacing": 55}, "themeVariables": {"fontFamily": "Noto Sans CJK SC, sans-serif", "fontSize": "18px", "lineColor": "#2E4053"}}}%%
+flowchart TB
+    conditions["固定实验条件<br/>统一纸面零点、实心支撑<br/>姿态、速度与上墨流程保持一致"]
+    design["首轮探索：三档重复短线<br/>d = 2.0／2.5／3.0 mm，各 3 条<br/>每条 25 mm；顺序交错、位置均衡"]
+    collect["逐条独立上墨与书写<br/>保存实际指令、位姿与完整原图"]
+    measure["共同尺度测量<br/>行笔宽度与波动<br/>起收笔、拖痕另行记录"]
+    separable{"档间差异能否与<br/>同档波动区分？"}
+    fit["拟合局部下压—笔宽映射<br/>冻结换算与参数"]
+    holdout["另采独立书写批次<br/>检查预测误差与重复性"]
+    pass{"独立验证通过？"}
+    glyph["同一工字的空白纸验证<br/>比较笔宽、轮廓、端点与拖痕"]
+    investigate["定位条件或模型误差<br/>核查含墨、零点与支撑<br/>修订后重新采样"]
+    conditions --> design
+    design --> collect
+    collect --> measure
+    measure --> separable
+    separable -->|能| fit
+    separable -->|不能| investigate
+    fit --> holdout
+    holdout --> pass
+    pass -->|通过| glyph
+    pass -->|未通过| investigate
+    investigate --> conditions
+    classDef blue fill:#EAF3FC,stroke:#2E4053,stroke-width:1.6px,color:#172B3A,rx:0,ry:0;
+    classDef green fill:#EAF5EE,stroke:#2E4053,stroke-width:1.6px,color:#172B3A,rx:0,ry:0;
+    class conditions,design,collect,measure,fit,holdout blue;
+    class separable,pass,glyph,investigate green;

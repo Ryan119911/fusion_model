@@ -1,0 +1,1625 @@
+{
+  "record_kind": "read_only_publication_extract_not_motion_evidence_bundle",
+  "updated_on": "2026-11-02",
+  "source_period": "2026-10-30 local runtime/preparation records",
+  "publication_host": "MU",
+  "robot_connection_attempted": false,
+  "new_motion_sent_by_publisher": false,
+  "status_counts": {
+    "completed_buffered_program": 2,
+    "stopped_on_error": 9
+  },
+  "runs": [
+    {
+      "candidate": "gong_current_mount_trial_cal28",
+      "source": "outputs/brush_mapping_20261027/gong_current_mount_trial_cal28/runs/gong-model-execute-20261030T051653228767Z/remote_evidence/RESULT.json",
+      "source_sha256": "cb4340a4bb5d9eb77e28f878ecc8ba62a37e984cdbc279f2fae758e0d01a57ea",
+      "run": "gong-model-execute-20261030T051653228767Z",
+      "status": "completed_buffered_program",
+      "motion_sent": true,
+      "error": null,
+      "finished_at": "2026-10-30T05:32:40.946416+00:00",
+      "waypoints": 427,
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.28,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 0.2,
+        "beta_gain": 0.2,
+        "gamma_gain": 0.02,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "H_command_offset_mm": 1.6
+      },
+      "final_pose_m_rad": [
+        0.6796861903232032,
+        0.037652629652783924,
+        0.4934722001497705,
+        0.21571692161294673,
+        -2.7655546679769434,
+        0.4380666080047502
+      ],
+      "start_reference_error_n": 3.7491738827580834,
+      "finished_at_beijing": "2026-10-30T13:32:40.946416+08:00",
+      "programmed_contact_stroke_ids": [
+        0,
+        1,
+        2
+      ],
+      "programmed_final_phase": "lift_clear"
+    },
+    {
+      "candidate": "gong_current_mount_trial_g025",
+      "source": "outputs/brush_mapping_20261027/gong_current_mount_trial_g025/runs/gong-model-execute-20261030T082815355224Z/remote_evidence/RESULT.json",
+      "source_sha256": "afaa63fac1ecefe1a1162c55f1a6a33233e0160dcde20ee0af6556b93ec834cf",
+      "run": "gong-model-execute-20261030T082815355224Z",
+      "status": "completed_buffered_program",
+      "motion_sent": true,
+      "error": null,
+      "finished_at": "2026-10-30T08:47:07.036955+00:00",
+      "waypoints": 427,
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.22,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 0.25,
+        "beta_gain": 0.25,
+        "gamma_gain": 0.02,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "H_command_offset_mm": 0.0
+      },
+      "final_pose_m_rad": [
+        0.6796758471263625,
+        0.0376470856309565,
+        0.49344061521926325,
+        0.2156148105311452,
+        -2.7654974507547663,
+        0.43807528680812235
+      ],
+      "start_reference_error_n": 3.694034955892217,
+      "finished_at_beijing": "2026-10-30T16:47:07.036955+08:00",
+      "programmed_contact_stroke_ids": [
+        0,
+        1,
+        2
+      ],
+      "programmed_final_phase": "lift_clear"
+    },
+    {
+      "candidate": "gong_current_mount_trial_full6e",
+      "source": "outputs/brush_mapping_20261027/gong_current_mount_trial_full6e/runs/gong-model-execute-20261030T091824611122Z/remote_evidence/RESULT.json",
+      "source_sha256": "3f72ac404bfe126de1e54b9d3fd78689c9c282f8c092240a1d870bb8249f56d9",
+      "run": "gong-model-execute-20261030T091824611122Z",
+      "status": "stopped_on_error",
+      "motion_sent": true,
+      "error": "RuntimeError: complete buffered program exceeded runtime budget",
+      "finished_at": "2026-10-30T09:47:30.398908+00:00",
+      "waypoints": 184,
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_offset_mm": -4.388889
+      },
+      "final_pose_m_rad": null,
+      "start_reference_error_n": 4.817329865313407,
+      "finished_at_beijing": "2026-10-30T17:47:30.398908+08:00",
+      "programmed_contact_stroke_ids": [
+        0,
+        1,
+        2
+      ],
+      "programmed_final_phase": "lift_clear"
+    },
+    {
+      "candidate": "gong_current_mount_trial_z7",
+      "source": "outputs/brush_mapping_20261027/gong_current_mount_trial_z7/runs/gong-model-execute-20261030T111522799349Z/remote_evidence/RESULT.json",
+      "source_sha256": "289c75c984d86ebbe57082ce0579b2a34e88c61fe39f39f88bc5b12f2e03ea47",
+      "run": "gong-model-execute-20261030T111522799349Z",
+      "status": "stopped_on_error",
+      "motion_sent": false,
+      "error": "RuntimeError: offline full-route evidence mismatch",
+      "finished_at": "2026-10-30T11:15:25.244420+00:00",
+      "waypoints": null,
+      "conversion": null,
+      "final_pose_m_rad": null,
+      "start_reference_error_n": null,
+      "finished_at_beijing": "2026-10-30T19:15:25.244420+08:00"
+    },
+    {
+      "candidate": "gong_current_mount_trial_z7",
+      "source": "outputs/brush_mapping_20261027/gong_current_mount_trial_z7/runs/gong-model-execute-20261030T112048168556Z/remote_evidence/RESULT.json",
+      "source_sha256": "cca5201bb93a68dfe7e3384f00ae8664c7f387e5b1c6d0c66f7c8cfecd9d305f",
+      "run": "gong-model-execute-20261030T112048168556Z",
+      "status": "stopped_on_error",
+      "motion_sent": true,
+      "error": "RuntimeError: complete buffered program exceeded runtime budget",
+      "finished_at": "2026-10-30T11:49:10.102963+00:00",
+      "waypoints": 256,
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          20.0
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "final_pose_m_rad": null,
+      "start_reference_error_n": 6.6933762565325114,
+      "finished_at_beijing": "2026-10-30T19:49:10.102963+08:00",
+      "programmed_contact_stroke_ids": [
+        0,
+        1,
+        2
+      ],
+      "programmed_final_phase": "lift_clear"
+    },
+    {
+      "candidate": "gong_current_mount_trial_z7_s2b",
+      "source": "outputs/brush_mapping_20261027/gong_current_mount_trial_z7_s2b/runs/gong-model-execute-20261030T120108794095Z/remote_evidence/RESULT.json",
+      "source_sha256": "50571e663a4f6cb99aa551a639ceb600b41da9d22dfd929a70d48bc34ea5c3e8",
+      "run": "gong-model-execute-20261030T120108794095Z",
+      "status": "stopped_on_error",
+      "motion_sent": false,
+      "error": "ValueError: original connection target must be at least 35 mm above paper",
+      "finished_at": "2026-10-30T12:01:11.427002+00:00",
+      "waypoints": null,
+      "conversion": null,
+      "final_pose_m_rad": null,
+      "start_reference_error_n": null,
+      "finished_at_beijing": "2026-10-30T20:01:11.427002+08:00"
+    },
+    {
+      "candidate": "gong_current_mount_trial_z7_s2c",
+      "source": "outputs/brush_mapping_20261027/gong_current_mount_trial_z7_s2c/runs/gong-model-execute-20261030T121254101223Z/remote_evidence/RESULT.json",
+      "source_sha256": "1da8685de05da356af8d9b93e8ec93162270d11e7cf403447b3533b6c6423ba5",
+      "run": "gong-model-execute-20261030T121254101223Z",
+      "status": "stopped_on_error",
+      "motion_sent": false,
+      "error": "ValueError: original connection target must be at least 35 mm above paper",
+      "finished_at": "2026-10-30T12:12:57.507753+00:00",
+      "waypoints": null,
+      "conversion": null,
+      "final_pose_m_rad": null,
+      "start_reference_error_n": null,
+      "finished_at_beijing": "2026-10-30T20:12:57.507753+08:00"
+    },
+    {
+      "candidate": "gong_current_mount_trial_z7_s2d",
+      "source": "outputs/brush_mapping_20261027/gong_current_mount_trial_z7_s2d/runs/gong-model-execute-20261030T130932005483Z/remote_evidence/RESULT.json",
+      "source_sha256": "ec52fa5dd24e57b37db190513d10775e824b151f3079406c7832b39a3f63c351",
+      "run": "gong-model-execute-20261030T130932005483Z",
+      "status": "stopped_on_error",
+      "motion_sent": false,
+      "error": "RuntimeError: fresh suspended reference error reaches the selected 10 N limit",
+      "finished_at": "2026-10-30T13:09:59.067300+00:00",
+      "waypoints": null,
+      "conversion": null,
+      "final_pose_m_rad": null,
+      "start_reference_error_n": null,
+      "finished_at_beijing": "2026-10-30T21:09:59.067300+08:00"
+    },
+    {
+      "candidate": "gong_current_mount_trial_z7_s2d",
+      "source": "outputs/brush_mapping_20261027/gong_current_mount_trial_z7_s2d/runs/gong-model-execute-20261030T131450778347Z/remote_evidence/RESULT.json",
+      "source_sha256": "721b1524b7932a83537503693dfaf9a70414acaf5473785b7651c42e6493535a",
+      "run": "gong-model-execute-20261030T131450778347Z",
+      "status": "stopped_on_error",
+      "motion_sent": true,
+      "error": "ForceFreshnessError: raw force stream stale >1.5 s",
+      "finished_at": "2026-10-30T13:23:08.925547+00:00",
+      "waypoints": 100,
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          20.0
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "final_pose_m_rad": null,
+      "start_reference_error_n": 12.999467967808691,
+      "finished_at_beijing": "2026-10-30T21:23:08.925547+08:00",
+      "programmed_contact_stroke_ids": [
+        2
+      ],
+      "programmed_final_phase": "lift_clear"
+    },
+    {
+      "candidate": "gong_current_mount_trial_z7_s2d",
+      "source": "outputs/brush_mapping_20261027/gong_current_mount_trial_z7_s2d/runs/gong-model-execute-20261030T133005642258Z/remote_evidence/RESULT.json",
+      "source_sha256": "474bb46d444de13b08c8b64e417b311984fda6b3a31181b7b918bccba4d7b9ba",
+      "run": "gong-model-execute-20261030T133005642258Z",
+      "status": "stopped_on_error",
+      "motion_sent": true,
+      "error": "ForceFreshnessError: raw force stream stale >1.5 s",
+      "finished_at": "2026-10-30T13:39:39.444435+00:00",
+      "waypoints": 100,
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          20.0
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "final_pose_m_rad": null,
+      "start_reference_error_n": 13.00125494792269,
+      "finished_at_beijing": "2026-10-30T21:39:39.444435+08:00",
+      "programmed_contact_stroke_ids": [
+        2
+      ],
+      "programmed_final_phase": "lift_clear"
+    },
+    {
+      "candidate": "gong_current_mount_trial_z7_s2e",
+      "source": "outputs/brush_mapping_20261027/gong_current_mount_trial_z7_s2e/runs/gong-model-execute-20261030T134025850296Z/remote_evidence/RESULT.json",
+      "source_sha256": "1d44a43101a6837ad66d741a46afbe1f6b6fe1debd03c239f26645117be62996",
+      "run": "gong-model-execute-20261030T134025850296Z",
+      "status": "stopped_on_error",
+      "motion_sent": false,
+      "error": "RuntimeError: planned unwrapped joint speed estimate exceeds0.60rad/s",
+      "finished_at": "2026-10-30T13:40:31.910279+00:00",
+      "waypoints": null,
+      "conversion": null,
+      "final_pose_m_rad": null,
+      "start_reference_error_n": null,
+      "finished_at_beijing": "2026-10-30T21:40:31.910279+08:00"
+    }
+  ],
+  "candidates": [
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_cal28",
+      "prepared_status": "depth_rescaled_candidate_checked",
+      "waypoint_count": 424,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.28,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 0.2,
+        "beta_gain": 0.2,
+        "gamma_gain": 0.02,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "H_command_offset_mm": 1.6
+      },
+      "slice": null,
+      "numeric_passed": true,
+      "numeric_failure_count": 0,
+      "operator_accepted_failures_record": null,
+      "blend_passed": true,
+      "source_result_sha256": "0fe9cacc7dd32250d41b9f368c473cdf737e1fac17f1552ff085aa07da1c7ea3"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_full6d",
+      "prepared_status": "depth_rescaled_candidate_check_failed",
+      "waypoint_count": 209,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 41,
+        "H_command_offset_mm": -4.388889
+      },
+      "slice": null,
+      "numeric_passed": false,
+      "numeric_failure_count": 27,
+      "operator_accepted_failures_record": null,
+      "blend_passed": true,
+      "source_result_sha256": "43857cb6ae2c2c16b0a87977b40b6caf88506006b226c6a4ed1bb29a11e5428b"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_full6e",
+      "prepared_status": "depth_rescaled_candidate_checked",
+      "waypoint_count": 181,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_offset_mm": -4.388889
+      },
+      "slice": null,
+      "numeric_passed": true,
+      "numeric_failure_count": 0,
+      "operator_accepted_failures_record": null,
+      "blend_passed": true,
+      "source_result_sha256": "8c58bea8d1fed15f4a880f15765313addb41fcaf71998aa85f1278853d4d9c39"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_g025",
+      "prepared_status": "depth_rescaled_candidate_checked",
+      "waypoint_count": 424,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.22,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 0.25,
+        "beta_gain": 0.25,
+        "gamma_gain": 0.02,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "H_command_offset_mm": 0.0
+      },
+      "slice": null,
+      "numeric_passed": true,
+      "numeric_failure_count": 0,
+      "operator_accepted_failures_record": null,
+      "blend_passed": true,
+      "source_result_sha256": "ade09fc84e2f5ea3f7d25a1960687afcd1c5580ebe77622b5a47e1e24ffc316b"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_z1",
+      "prepared_status": "depth_rescaled_candidate_check_failed",
+      "waypoint_count": 184,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          20.0
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "slice": null,
+      "numeric_passed": false,
+      "numeric_failure_count": 1,
+      "operator_accepted_failures_record": null,
+      "blend_passed": true,
+      "source_result_sha256": "205ecc2a4707828785651924d31b447bd8f840120ddfe678b5e6f3fdcb62fb48"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_z1b",
+      "prepared_status": "depth_rescaled_candidate_checked",
+      "waypoint_count": 177,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          4.5
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "slice": null,
+      "numeric_passed": true,
+      "numeric_failure_count": 0,
+      "operator_accepted_failures_record": null,
+      "blend_passed": true,
+      "source_result_sha256": "0635f4805905283f96fbd850b90ed2ec30367fef24345d5f1e2b5310abf99c91"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_z1c",
+      "prepared_status": "depth_rescaled_candidate_check_failed",
+      "waypoint_count": 184,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          20.0
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "slice": null,
+      "numeric_passed": false,
+      "numeric_failure_count": 12,
+      "operator_accepted_failures_record": null,
+      "blend_passed": true,
+      "source_result_sha256": "4eb546d60278ac158a9fbecef10ce48ca2b1a8d58b047c9cba1614a23cc5eefb"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_z1d",
+      "prepared_status": "depth_rescaled_candidate_check_failed",
+      "waypoint_count": 174,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          10.0
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "slice": null,
+      "numeric_passed": false,
+      "numeric_failure_count": 1,
+      "operator_accepted_failures_record": null,
+      "blend_passed": true,
+      "source_result_sha256": "6b7f54c5ffa669c77e605ce2abe04a249423def390215f697c1eacc632e50e97"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_z1e",
+      "prepared_status": "depth_rescaled_candidate_check_failed",
+      "waypoint_count": 174,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          10.0
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "slice": null,
+      "numeric_passed": false,
+      "numeric_failure_count": 40,
+      "operator_accepted_failures_record": null,
+      "blend_passed": true,
+      "source_result_sha256": "dc32dde289c709bc4b4bc2f60499af120b424d5a75b81fbc18032e4db8279922"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_z2",
+      "prepared_status": "depth_rescaled_candidate_check_failed",
+      "waypoint_count": 184,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          20.0
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "slice": null,
+      "numeric_passed": false,
+      "numeric_failure_count": 35,
+      "operator_accepted_failures_record": null,
+      "blend_passed": true,
+      "source_result_sha256": "a05190d47611b7d4a1b7b88037e9514a82d5dad706e8429ad442a16a6374eb5c"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_z3",
+      "prepared_status": "depth_rescaled_candidate_check_failed",
+      "waypoint_count": 184,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          20.0
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "slice": null,
+      "numeric_passed": false,
+      "numeric_failure_count": 1,
+      "operator_accepted_failures_record": null,
+      "blend_passed": true,
+      "source_result_sha256": "edeae2ed60037cca7b1a13295a02af38fcb9d3b8b4ab6bcd5ee3800b9bbf0dc8"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_z4",
+      "prepared_status": "depth_rescaled_candidate_check_failed",
+      "waypoint_count": 184,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          20.0
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "slice": null,
+      "numeric_passed": false,
+      "numeric_failure_count": 1,
+      "operator_accepted_failures_record": null,
+      "blend_passed": true,
+      "source_result_sha256": "d2a8cac78e393bc3c5cde3c950ce8bf13ce2db89c6e993fba5e8db998d5d509c"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_z5",
+      "prepared_status": "depth_rescaled_candidate_check_failed",
+      "waypoint_count": 255,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          20.0
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "slice": null,
+      "numeric_passed": false,
+      "numeric_failure_count": 1,
+      "operator_accepted_failures_record": null,
+      "blend_passed": true,
+      "source_result_sha256": "307406ddab6249afc2bf5a27d35089ae3c179fd6c705e551537788416c627403"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_z6",
+      "prepared_status": "depth_rescaled_candidate_checked_with_accepted_failures",
+      "waypoint_count": 255,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          20.0
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "slice": null,
+      "numeric_passed": false,
+      "numeric_failure_count": 1,
+      "operator_accepted_failures_record": null,
+      "blend_passed": true,
+      "source_result_sha256": "fd1cd5abf674b857a7999cb6918c29ea48fc429ff56476735c11919e4fc59863"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_z7",
+      "prepared_status": "depth_rescaled_candidate_checked_with_accepted_failures",
+      "waypoint_count": 255,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          20.0
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "slice": null,
+      "numeric_passed": false,
+      "numeric_failure_count": 1,
+      "operator_accepted_failures_record": {
+        "accepted": true,
+        "reason": "operator ordered a full 1:1 six-DOF write with model z as press depth and will stop manually if needed",
+        "failures": 1,
+        "scope": "numeric route audit reported failures that the operator accepted explicitly"
+      },
+      "blend_passed": true,
+      "source_result_sha256": "5fe3afad8e26e0a0a5e053fd832f1bfc60b8f99b5ffa6741bb5c028d30a5ed7a"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_z7_s2b",
+      "prepared_status": "slice_checked_with_accepted_failures",
+      "waypoint_count": 105,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          20.0
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "slice": {
+        "source": "/home/robot/coppeliasim/machine_learning/model/outputs/brush_mapping_20261027/gong_current_mount_trial_z7",
+        "start": 150,
+        "end": 254,
+        "kept": 105,
+        "scope": "single-stroke sub-route; poses unchanged"
+      },
+      "numeric_passed": false,
+      "numeric_failure_count": 1,
+      "operator_accepted_failures_record": {
+        "accepted": true,
+        "reason": "operator ordered a full 1:1 six-DOF write with model z as press depth and will stop manually if needed",
+        "failures": 1,
+        "scope": "numeric route audit reported failures that the operator accepted explicitly"
+      },
+      "blend_passed": true,
+      "source_result_sha256": "8b868ee9c02df251f21a5fe0b4b4d2ef863efb5a4aa85f36393e8107a0d0d740"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_z7_s2c",
+      "prepared_status": "slice_checked_with_accepted_failures",
+      "waypoint_count": 105,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          20.0
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "slice": {
+        "source": "/home/robot/coppeliasim/machine_learning/model/outputs/brush_mapping_20261027/gong_current_mount_trial_z7",
+        "start": 150,
+        "end": 254,
+        "kept": 105,
+        "scope": "single-stroke sub-route; poses unchanged"
+      },
+      "numeric_passed": false,
+      "numeric_failure_count": 1,
+      "operator_accepted_failures_record": {
+        "accepted": true,
+        "reason": "operator ordered a full 1:1 six-DOF write with model z as press depth and will stop manually if needed",
+        "failures": 1,
+        "scope": "numeric route audit reported failures that the operator accepted explicitly"
+      },
+      "blend_passed": true,
+      "source_result_sha256": "ed70de70fd33617b765f87a2a0a3953d724ade21b2ffd0d3b58e5b7a03645edb"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_z7_s2d",
+      "prepared_status": "slice_checked_with_accepted_failures",
+      "waypoint_count": 99,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          20.0
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "slice": {
+        "source": "/home/robot/coppeliasim/machine_learning/model/outputs/brush_mapping_20261027/gong_current_mount_trial_z7",
+        "start": 156,
+        "end": 254,
+        "kept": 99,
+        "scope": "single-stroke sub-route; poses unchanged"
+      },
+      "numeric_passed": false,
+      "numeric_failure_count": 1,
+      "operator_accepted_failures_record": {
+        "accepted": true,
+        "reason": "operator ordered a full 1:1 six-DOF write with model z as press depth and will stop manually if needed",
+        "failures": 1,
+        "scope": "numeric route audit reported failures that the operator accepted explicitly"
+      },
+      "blend_passed": true,
+      "source_result_sha256": "7f7054ad2924933c381e2fcfb2776f16d9086891a84d9a631f3e87c29ff4bada"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_z7_s2e",
+      "prepared_status": "slice_checked_with_accepted_failures",
+      "waypoint_count": 99,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          20.0
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "slice": {
+        "source": "/home/robot/coppeliasim/machine_learning/model/outputs/brush_mapping_20261027/gong_current_mount_trial_z7",
+        "start": 156,
+        "end": 254,
+        "kept": 99,
+        "scope": "single-stroke sub-route; poses unchanged"
+      },
+      "numeric_passed": false,
+      "numeric_failure_count": 43,
+      "operator_accepted_failures_record": {
+        "accepted": true,
+        "reason": "operator ordered a full 1:1 six-DOF write with model z as press depth and will stop manually if needed",
+        "failures": 1,
+        "scope": "numeric route audit reported failures that the operator accepted explicitly"
+      },
+      "blend_passed": true,
+      "source_result_sha256": "4c0e9bb0067993ab54bd4de0bf230a486604c6ce1236dd680a6d22b84135eb2a"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_z7_s2f",
+      "prepared_status": "slice_checked_with_accepted_failures",
+      "waypoint_count": 99,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          20.0
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "slice": {
+        "source": "/home/robot/coppeliasim/machine_learning/model/outputs/brush_mapping_20261027/gong_current_mount_trial_z7",
+        "start": 156,
+        "end": 254,
+        "kept": 99,
+        "scope": "single-stroke sub-route; poses unchanged"
+      },
+      "numeric_passed": false,
+      "numeric_failure_count": 43,
+      "operator_accepted_failures_record": {
+        "accepted": true,
+        "reason": "operator ordered a full 1:1 six-DOF write with model z as press depth and will stop manually if needed",
+        "failures": 1,
+        "scope": "numeric route audit reported failures that the operator accepted explicitly"
+      },
+      "blend_passed": true,
+      "source_result_sha256": "7807b503fabd91a6ab358b7cc67c7ee9475a73645c8fb71b2b912bc4690b00c0"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_z7_s2h",
+      "prepared_status": "slice_checked_with_accepted_failures",
+      "waypoint_count": 179,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          20.0
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "slice": {
+        "source": "/home/robot/coppeliasim/machine_learning/model/outputs/brush_mapping_20261027/gong_current_mount_trial_z7",
+        "start": 156,
+        "end": 254,
+        "kept": 179,
+        "scope": "single-stroke sub-route; poses unchanged"
+      },
+      "numeric_passed": false,
+      "numeric_failure_count": 83,
+      "operator_accepted_failures_record": {
+        "accepted": true,
+        "reason": "operator ordered a full 1:1 six-DOF write with model z as press depth and will stop manually if needed",
+        "failures": 1,
+        "scope": "numeric route audit reported failures that the operator accepted explicitly"
+      },
+      "blend_passed": true,
+      "source_result_sha256": "d95965eec51bc2c4cabc8e85e2286a6f188df092667a381ac8544ac627932a22"
+    },
+    {
+      "directory": "outputs/brush_mapping_20261027/gong_current_mount_trial_z7_stroke2",
+      "prepared_status": "slice_check_failed",
+      "waypoint_count": 105,
+      "control_counts": [
+        6,
+        4,
+        6
+      ],
+      "conversion": {
+        "status": "explicit_provisional_initial_conversion_not_calibrated",
+        "xy_scale": 1.0,
+        "paper_translation_mm": [
+          -0.8353645932808457,
+          -15.006773048863572
+        ],
+        "H_command_mm_per_model_mm": 0.4444444,
+        "H_command_is_measured_compression": false,
+        "H_clipping": false,
+        "alpha_gain": 1.0,
+        "beta_gain": 1.0,
+        "gamma_gain": 1.0,
+        "gamma_input": "gamma_absolute_paper_rad; no further canvas conversion",
+        "orientation_order": "R(paper_v*0.2*beta) * R(paper_u*0.2*alpha) * R_baseline * R(tool_brush_axis*0.02*gamma)",
+        "tool0_position": "desired_natural_tip_base - R_command * accepted_tool0_to_natural_tip",
+        "interpolation": "piecewise linear XY/H/alpha/beta/gamma; endpoints retained; <=1mm XY and <=0.5deg scalar angle step",
+        "baseline_tool0_rotation_rad": [
+          0.20689299394047447,
+          -2.7669355241799423,
+          0.4397447185863423
+        ],
+        "tool_brush_axis": [
+          0,
+          0,
+          1
+        ],
+        "paper_surface_height_mm": -2.98,
+        "alpha_beta_smooth_window": 61,
+        "H_command_clip_mm": [
+          0.5,
+          20.0
+        ],
+        "H_command_offset_mm": 0.0
+      },
+      "slice": {
+        "source": "/home/robot/coppeliasim/machine_learning/model/outputs/brush_mapping_20261027/gong_current_mount_trial_z7",
+        "start": 150,
+        "end": 254,
+        "kept": 105,
+        "scope": "single-stroke sub-route; poses unchanged"
+      },
+      "numeric_passed": false,
+      "numeric_failure_count": 1,
+      "operator_accepted_failures_record": {
+        "accepted": true,
+        "reason": "operator ordered a full 1:1 six-DOF write with model z as press depth and will stop manually if needed",
+        "failures": 1,
+        "scope": "numeric route audit reported failures that the operator accepted explicitly"
+      },
+      "blend_passed": true,
+      "source_result_sha256": "8ec38c9b2bfe9d35ca7c941a877ce8904d131fbc65b360f7c20fcbfdfe828d46"
+    }
+  ],
+  "limitations": [
+    "complete program status does not certify ink quality or repeatability",
+    "clipping, smoothing, full-angle gains and accepted numeric failures are experimental options, distinct from the frozen raw model",
+    "an operator acceptance flag does not make numeric failure or blend failure pass",
+    "slice completion would cover only that subroute, not all three strokes",
+    "100 N local reference threshold is a later code change; records with earlier10N rejection retain their historical meaning",
+    "source logs/candidates, weights and point clouds remain local; this extract must never be used to generate robot motion"
+  ],
+  "reported_latest_prepare_time_beijing": "2026-10-30T21:43:09+08:00",
+  "publication_validation": {
+    "date": "2026-11-02",
+    "host": "MU",
+    "software_tests_passed": 51,
+    "test_scope": "same10 mocked/offline test modules listed in2026-10-29 commands; not exhaustive validation of new experimental flags",
+    "changed_python_sources_parse": true,
+    "new_document_relative_links_resolve": true,
+    "help_commands_checked": [
+      "regain_gong_candidate.py --help",
+      "slice_gong_candidate.py --help",
+      "calibrate_gong_press.py --help"
+    ],
+    "robot_connection_attempted": false,
+    "motion_sent": false
+  }
+}

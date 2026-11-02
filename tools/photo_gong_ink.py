@@ -180,7 +180,8 @@ if EXECUTE:
             'scope': audit['scope'], 'joints_deg': report['joints_deg']})}
     bundle = {'sample_id': 'photo-pose-move', 'points': points,
               'start_pose_m_rad': start.tolist(), 'active_tcp_offset_m_rad': [0.]*6,
-              'maximum_runtime_s': 120., 'physical_mapping_verified': True,
+              'maximum_runtime_s': float(min(1800., max(120., 150.*max(1, len(points)-1)))),
+              'physical_mapping_verified': True,
               'force_reference_verified': True, 'controller_watchdog_hardware_validated': True,
               'evidence': evidence, 'scope': 'pen-up photo pose move',
               'force_data_max_age_s': 1.5}

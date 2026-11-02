@@ -1,0 +1,30 @@
+flowchart TB
+    target["确定目标形态<br/>中心线、沿程笔宽、轮廓与起收笔"]
+    calibration["建立可重复的局部响应<br/>固定条件，标定下压 d → 笔宽 w"]
+    generate["生成并筛选可执行候选<br/>局部逆映射＋起收笔参数<br/>约束有效域、平滑性与机器人运动"]
+    write["实写一笔 → 抬笔拍照"]
+    measure["共同纸面尺度下测误差<br/>位置、笔宽、轮廓与端点分别评价"]
+    accept{"满足预定质量<br/>并通过独立重复？"}
+    keep["保留参数与原始证据<br/>进入同一工字验证"]
+    correct["按误差归因修正<br/>位置 → XY／纸面<br/>笔宽 → 下压；拖痕 → 收笔"]
+    valid{"局部响应可靠<br/>且仍在标定域内？"}
+    recalibrate["补充观测或重新标定<br/>不直接外推下压"]
+    target --> calibration
+    calibration --> generate
+    generate --> write
+    write --> measure
+    measure --> accept
+    accept -->|是| keep
+    accept -.->|否| correct
+    correct -.-> valid
+    valid -.->|是：小步更新| generate
+    valid -.->|否| recalibrate
+    recalibrate -.-> calibration
+    classDef base fill:#EDF4F0,stroke:#49776A,color:#172725;
+    classDef planned fill:#FFF1E9,stroke:#B94C37,stroke-dasharray:5 3,color:#172725;
+    classDef decision fill:#FFF6E3,stroke:#A87926,color:#172725;
+    classDef ending fill:#173E3A,stroke:#173E3A,color:#FFFFFF;
+    class target,generate,write,measure base;
+    class calibration,correct,recalibrate planned;
+    class accept,valid decision;
+    class keep ending;

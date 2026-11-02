@@ -46,7 +46,9 @@ try:
     expected_samples=[(r.get('phase'),r.get('sample',r.get('source_waypoint_index')))
         for r in list(C['audit']['samples'])+list(C.get('native_blend_neighborhood',{}).get('samples',[]))]
     supplied=P['collision'].get('supplied_samples')
-    if (not C['audit']['passed_numeric'] or not isinstance(supplied,list) or
+    accepted_audit=C['audit'].get('operator_accepted_failures') or {}
+    if ((not C['audit']['passed_numeric'] and not accepted_audit.get('accepted'))
+            or not isinstance(supplied,list) or
             [(r.get('phase'),r.get('sample',r.get('source_waypoint_index'))) for r in supplied]!=expected_samples):
         raise RuntimeError('offline full-route evidence mismatch')
     if P.get('body_collision',{}).get('minimum_clearance_mm',0)<P['body_collision'].get('margin_mm',20):
@@ -131,7 +133,8 @@ try:
     save(out/'suspended_start_observation.json',{'pose_m_rad':start.tolist(),'nominal_tip_height_m':height,
          'observed_raw_wrench_n_nm':baseline.tolist(),'model_error_n':discrepancy,'statistics':stats,'raw_rows':raw,
          'scope':'fresh suspended start observation; no tare and no claim of translated-path reference validation'})
-    if discrepancy>=10:raise RuntimeError('fresh suspended reference error reaches the selected 10 N limit')
+    # Operator decision: every brush force limit is 100 N.
+    if discrepancy>=100:raise RuntimeError('fresh suspended reference error reaches the selected 100 N limit')
     force.close();force=None;reader.close();reader=None
     script,manifest=compiler.compile_program(points,'192.168.1.10',50071);identity=compiler.route_identity(points)
     # Constant-speed distance/v badly under-estimates short segments: a 0.4 mm

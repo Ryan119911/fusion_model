@@ -1,0 +1,28 @@
+digraph "01_system" {
+	bgcolor="#F7F6F2" dpi=160 nodesep=0.5 outputorder=edgesfirst pad=0.35 rankdir=TB ranksep=0.45 splines=polyline
+	node [fontcolor="#172725" fontname="Noto Sans CJK SC" fontsize=19 margin="0.22,0.16" penwidth=1.6]
+	edge [arrowsize=0.8 color="#657F74" fontcolor="#4C6158" fontname="Noto Sans CJK SC" fontsize=15 penwidth=1.5]
+	input [label="目标字帖＋给定二维笔画轨迹" color="#49776A" fillcolor="#EDF4F0" shape=box style="rounded,filled"]
+	inverse [label="模型预测与反演
+冻结 V16；v17 多初值求解" color="#49776A" fillcolor="#EDF4F0" shape=box style="rounded,filled"]
+	candidates [label="候选筛选
+Top-K、连续性与字段可信度" color="#49776A" fillcolor="#EDF4F0" shape=box style="rounded,filled"]
+	mapping [label="经验换算与机器人规划
+纸面／TCP 转换、IK、连续运动" color="#49776A" fillcolor="#EDF4F0" shape=box style="rounded,filled"]
+	write [label="UR10 实写
+已有完整三笔“工”字执行证据" color="#49776A" fillcolor="#EDF4F0" shape=box style="rounded,filled"]
+	observe [label="真实观测与记录
+墨迹图、机器人反馈、力记录" color="#49776A" fillcolor="#EDF4F0" shape=box style="rounded,filled"]
+	measure [label="拟完善：纸面配准与局部测量
+笔宽、轮廓、位置与端点误差" color="#B94C37" fillcolor="#FFF1E9" shape=box style="rounded,filled,dashed"]
+	update [label="拟完善：实测响应与参数修正
+替换经验换算，生成下一次轨迹" color="#B94C37" fillcolor="#FFF1E9" shape=box style="rounded,filled,dashed"]
+	input -> inverse [label=""]
+	inverse -> candidates [label=""]
+	candidates -> mapping [label=""]
+	mapping -> write [label=""]
+	write -> observe [label=""]
+	observe -> measure [label="写后反馈" color="#B94C37" fontcolor="#9B4435" style=dashed]
+	measure -> update [label="" color="#B94C37" fontcolor="#9B4435" style=dashed]
+	update -> mapping [label="下一次指令" color="#B94C37" constraint=false fontcolor="#9B4435" style=dashed]
+}
