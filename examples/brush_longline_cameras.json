@@ -1,0 +1,19 @@
+{
+  "side": {
+    "kind": "opencv",
+    "device": "/dev/video0",
+    "fps": 25.0,
+    "width": 1280,
+    "height": 720,
+    "maximum_frame_age_s": 0.5
+  },
+  "overhead": {
+    "kind": "ros",
+    "topic": "/mechmind/color_image",
+    "maximum_frame_age_s": 2.0,
+    "trigger": {
+      "service": "/mechmind/capture_color_image",
+      "service_type": "mechmind_interfaces/srv/CaptureColorImage"
+    }
+  }
+}

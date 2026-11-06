@@ -1,0 +1,23 @@
+{
+  "status": "synthetic_demo_completed",
+  "not_real_brush_calibration": true,
+  "metrics": {
+    "within_hull_evaluated_rows": 90,
+    "same_training_trial_present": false,
+    "same_training_repeat_group_present": false,
+    "mae_mm": [
+      1.1195663825643483e-08,
+      4.770086125404461e-10
+    ],
+    "rmse_mm": [
+      1.3781218313037072e-08,
+      5.733477874874089e-10
+    ],
+    "absolute_p95_mm": [
+      2.6957689924778094e-08,
+      1.1019203306761315e-09
+    ]
+  },
+  "motion_sent": false,
+  "camera_triggered": false
+}

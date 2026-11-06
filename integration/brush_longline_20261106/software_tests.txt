@@ -1,0 +1,29 @@
+test_all_scan_kinds_compile_without_hardware (test_brush_longline_calibration.GeometryTests) ... ok
+test_feedback_reconstructs_physical_inputs (test_brush_longline_calibration.GeometryTests) ... ok
+test_invalid_basis_bounds_and_numeric_inputs_are_rejected (test_brush_longline_calibration.GeometryTests) ... ok
+test_single_variable_scans_do_not_change_other_inputs (test_brush_longline_calibration.GeometryTests) ... ok
+test_tilted_paper_and_two_axis_tip_compensation (test_brush_longline_calibration.GeometryTests) ... ok
+test_unsafe_id_knots_and_angular_speed_are_rejected (test_brush_longline_calibration.GeometryTests) ... ok
+test_zero_is_linear_and_constant_posture (test_brush_longline_calibration.GeometryTests) ... ok
+test_collinear_inputs_are_not_joint_calibration (test_brush_longline_calibration.MeasurementTests) ... ok
+test_hand_camera_uses_separate_measured_photo_poses (test_brush_longline_calibration.MeasurementTests) ... ok
+test_initial_contact_and_unobserved_event_do_not_define_zero (test_brush_longline_calibration.MeasurementTests) ... ok
+test_metric_width_is_measured_without_inventing_input_labels (test_brush_longline_calibration.MeasurementTests) ... ok
+test_multiple_components_and_touching_edges_fail (test_brush_longline_calibration.MeasurementTests) ... ok
+test_response_recovers_joint_effects_and_flags_domain (test_brush_longline_calibration.MeasurementTests) ... ok
+test_side_video_preserves_measured_frame_times_and_gap (test_brush_longline_calibration.MeasurementTests) ... ok
+test_small_feedback_jitter_is_reported_but_large_reversal_is_rejected (test_brush_longline_calibration.MeasurementTests) ... ok
+test_visual_zero_has_height_bracket_and_does_not_update_config (test_brush_longline_calibration.MeasurementTests) ... ok
+test_camera_start_failure_never_calls_executor_and_is_archived (test_brush_longline_calibration.RuntimeTests) ... ok
+test_changed_plan_is_detected (test_brush_longline_calibration.RuntimeTests) ... ok
+test_execute_without_camera_configuration_fails_before_motion (test_brush_longline_calibration.RuntimeTests) ... ok
+test_execution_failure_retains_motion_status_and_skips_after_capture (test_brush_longline_calibration.RuntimeTests) ... ok
+test_force_reference_requires_fresh_bound_validation (test_brush_longline_calibration.RuntimeTests) ... ok
+test_preparation_refuses_example_geometry_before_any_hardware_import (test_brush_longline_calibration.RuntimeTests) ... ok
+test_run_default_has_no_camera_or_robot_access (test_brush_longline_calibration.RuntimeTests) ... ok
+test_validated_force_fit_is_bound_and_has_expected_wrenches (test_brush_longline_calibration.RuntimeTests) ... ok
+
+----------------------------------------------------------------------
+Ran 24 tests in 0.353s
+
+OK

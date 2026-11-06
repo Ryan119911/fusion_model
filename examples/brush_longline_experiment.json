@@ -1,0 +1,32 @@
+{
+  "schema": "brush_longline_experiment_v1",
+  "geometry_status": "example_replace_before_live",
+  "geometry": {
+    "paper_origin_base_m": [0.5, 0.0, 0.2],
+    "paper_u_base": [1.0, 0.0, 0.0],
+    "paper_v_base": [0.0, 1.0, 0.0],
+    "paper_normal_base": [0.0, 0.0, 1.0],
+    "tip_tool_m": [0.0, 0.0, 0.315],
+    "baseline_rotation_rad": [3.141592653589793, 0.0, 0.0],
+    "paper_bounds_uv_mm": [-100.0, 100.0, -80.0, 80.0]
+  },
+  "motion": {
+    "start_uv_mm": [-60.0, 0.0],
+    "length_mm": 120.0,
+    "speed_mm_s": 3.0,
+    "sample_spacing_mm": 1.0,
+    "standoff_mm": 10.0,
+    "touch_speed_mm_s": 0.3,
+    "lift_speed_mm_s": 3.0,
+    "acceleration_mm_s2": 20.0,
+    "max_angular_speed_deg_s": 2.0,
+    "force_stop_n": 100.0
+  },
+  "inputs": {
+    "H_mm": {"min": 0.2, "max": 0.8, "baseline": 0.5},
+    "alpha_deg": {"min": -2.0, "max": 2.0, "baseline": 0.0},
+    "beta_deg": {"min": -2.0, "max": 2.0, "baseline": 0.0}
+  },
+  "zero_scan": {"start_H_mm": -2.0, "end_H_mm": 0.3},
+  "description": "Synthetic geometry and illustrative input limits. Replace with measured geometry and tested bounds. No code sends motion without run --execute."
+}
