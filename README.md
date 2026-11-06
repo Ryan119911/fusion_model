@@ -4,7 +4,7 @@
 
 `main` 统一维护笔触模型、数据构建、训练、渲染、反演、ROS 2 和 UR10 毛笔实机工具。机器人代码与模型代码在同一主分支集成，不再要求切换 `robot` 分支。模型权重、原始数据库、标定记录和运行输出不随代码上传，克隆仓库后需要另行准备。
 
-入口导航：[模型流程](#1-流程与版本) · [机械臂写字命令](docs/机械臂写字.md) · [写后相机采集](docs/brush_write_capture.md) · [悬空力参考采样](docs/brush_unloaded_calibration.md) · [ROS 2 轨迹注册](docs/ros_pose_registry.md)
+入口导航：[模型流程](#1-流程与版本) · [机械臂写字命令](docs/机械臂写字.md) · [毛笔长线标定测试](docs/毛笔长线标定_代码使用.md) · [写后相机采集](docs/brush_write_capture.md) · [悬空力参考采样](docs/brush_unloaded_calibration.md) · [ROS 2 轨迹注册](docs/ros_pose_registry.md)
 
 ## 1. 流程与版本
 

@@ -1,0 +1,17 @@
+test_changed_start_stops_before_any_motion (test_brush_buffered_guard_startup.GuardStartupTests) ... ok
+test_live_stream_failure_still_stops_and_does_not_reconnect (test_brush_buffered_guard_startup.GuardStartupTests) ... ok
+test_new_live_stream_starts_only_after_heavy_preflight (test_brush_buffered_guard_startup.GuardStartupTests) ... ok
+test_force_reference_interpolates (test_brush_buffered_motion.BufferedTests) ... ok
+test_full_physical_z_and_orientation_not_clamped (test_brush_buffered_motion.BufferedTests) ... ok
+test_no_contact_or_stroke_boundary_blends (test_brush_buffered_motion.BufferedTests) ... ok
+test_one_program_without_host_waits (test_brush_buffered_motion.BufferedTests) ... ok
+test_route_escape_prevents_heartbeat_permission (test_brush_buffered_motion.BufferedTests) ... ok
+test_stale_state_or_force_prevents_heartbeat_permission (test_brush_buffered_motion.BufferedTests) ... ok
+test_tiny_segments_do_not_overlap (test_brush_buffered_motion.BufferedTests) ... ok
+test_unverified_complete_model_cannot_run (test_brush_buffered_motion.BufferedTests) ... ok
+test_watchdog_precedes_motion_and_kill_precedes_stop (test_brush_buffered_motion.BufferedTests) ... ok
+
+----------------------------------------------------------------------
+Ran 12 tests in 1.976s
+
+OK

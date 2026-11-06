@@ -1,0 +1,8 @@
+{
+  "brush_roi_px": [350, 100, 900, 620],
+  "paper_line_abc": [0.0, -1.0, 600.0],
+  "mm_per_pixel": 0.05,
+  "dark_threshold": 100,
+  "minimum_brush_area_px": 100,
+  "description": "Illustrative side silhouette setup. Replace ROI, oriented paper line and scale. ax+by+c is positive above paper. Use a bright clean background; verify that the largest dark component is the visible brush, not the table, shaft or shadow. Output is a projected visible contact candidate."
+}
